@@ -1,0 +1,26 @@
+{
+  "name": "jobhunter-n8n",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "node --env-file=.env services/core/server.mjs",
+    "migrate": "node --env-file=.env scripts/migrate.mjs",
+    "health": "node --env-file=.env scripts/healthcheck.mjs",
+    "workflows": "node scripts/generate-workflows.mjs"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "pdf-parse": "^2.4.5",
+    "pg": "^8.16.3",
+    "playwright": "^1.55.0",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}
