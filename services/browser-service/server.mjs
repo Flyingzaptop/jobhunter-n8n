@@ -13,7 +13,7 @@ export function browserConfig(env = process.env) {
     enabled: env.JOBHUNTER_ENABLED !== 'false', dryRun: env.DRY_RUN !== 'false', allowRealSubmit: env.ALLOW_REAL_SUBMIT === 'true', allowMockSubmit: env.ALLOW_MOCK_SUBMIT === 'true',
     allowMockNetwork: env.ALLOW_MOCK_NETWORK === 'true', mockHosts: (env.MOCK_ALLOWED_HOSTS || '127.0.0.1,localhost,mock-job-board').split(','),
     allowDomains: (env.APPLICATION_DOMAIN_ALLOWLIST || '').split(',').filter(Boolean), denyDomains: (env.APPLICATION_DOMAIN_DENYLIST || '').split(',').filter(Boolean),
-    artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/artifacts'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
+    artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/cv'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
     executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined };
 }
 

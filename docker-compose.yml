@@ -51,6 +51,9 @@ services:
       GENERIC_TIMEZONE: Europe/Warsaw
       TZ: Europe/Warsaw
       N8N_DIAGNOSTICS_ENABLED: 'false'
+      N8N_COMMUNITY_PACKAGES_ENABLED: 'false'
+      N8N_PUBLIC_API_DISABLED: 'true'
+      N8N_TEMPLATES_ENABLED: 'false'
       N8N_BLOCK_ENV_ACCESS_IN_NODE: 'true'
     volumes:
       - n8n_data:/home/node/.n8n

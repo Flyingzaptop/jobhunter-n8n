@@ -18,12 +18,14 @@ test('browser network policy rejects private IPv4, IPv6, redirects and unsafe sc
   const mock = browserConfig({ALLOW_MOCK_NETWORK:'true'}); assert.equal((await validateDestination('http://127.0.0.1:3002/jobs',mock)).mock,true);
   await assert.rejects(validateDestination('http://127.0.0.1:3001/jobs',mock));
   await assert.rejects(validateDestination('http://192.168.1.1:3002/jobs',mock));
+  await assert.rejects(validateDestination('http://mock-job-board:3002/jobs',mock,async()=>[{address:'8.8.8.8',family:4}]),/MOCK_DESTINATION_MUST_BE_LOCAL/);
 });
 
 test('submit gating and consent classification fail closed', () => {
   const base = browserConfig({ ALLOW_MOCK_NETWORK:'true', ALLOW_MOCK_SUBMIT:'true' });
   assert.equal(submitPermission('http://127.0.0.1:3002/apply/1',base),null);
   assert.equal(submitPermission('https://employer.example/apply',base),'DRY_RUN');
+  assert.equal(submitPermission('http://public.example:3002/apply',{...base,mockHosts:['public.example']}),'DRY_RUN');
   assert.equal(submitPermission('https://employer.example/apply',{...base,dryRun:false,allowRealSubmit:true}),'DOMAIN_NOT_ALLOWED');
   assert.equal(submitPermission('https://employer.example/apply',{...base,dryRun:false,allowRealSubmit:true,allowDomains:['employer.example']}),null);
   assert.equal(submitPermission('http://127.0.0.1:3002/apply/1',{...base,enabled:false}),'PAUSED');

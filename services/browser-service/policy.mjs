@@ -22,7 +22,7 @@ export function privateAddress(ip) {
 }
 
 export function isMockUrl(url, config) {
-  return config.allowMockNetwork && url.protocol === 'http:' && Number(url.port) === 3002 && config.mockHosts.includes(url.hostname);
+  return config.allowMockNetwork && url.protocol === 'http:' && Number(url.port) === 3002 && ['127.0.0.1','localhost','mock-job-board'].includes(url.hostname) && config.mockHosts.includes(url.hostname);
 }
 
 export async function validateDestination(value, config, lookup = dns.lookup) {
@@ -30,6 +30,7 @@ export async function validateDestination(value, config, lookup = dns.lookup) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('UNSAFE_URL');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const addresses = net.isIP(host) ? [{ address: host, family: net.isIP(host) }] : await lookup(host, { all: true, verbatim: true });
+  if(isMockUrl(url,config)&&addresses.some(({address})=>!privateAddress(address)))throw new Error('MOCK_DESTINATION_MUST_BE_LOCAL');
   if (!addresses.length || (!isMockUrl(url, config) && addresses.some(({ address }) => privateAddress(address)))) throw new Error('PRIVATE_DESTINATION_BLOCKED');
   return { url, address: addresses[0].address, family: addresses[0].family, mock: isMockUrl(url, config) };
 }

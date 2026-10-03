@@ -12,7 +12,8 @@ export function n8nEnvironment(extra = {}) {
     DB_POSTGRESDB_SCHEMA: 'n8n', N8N_USER_FOLDER: resolve('data/n8n'), N8N_HOST: '127.0.0.1',
     N8N_LISTEN_ADDRESS: '127.0.0.1', N8N_PORT: '5678', N8N_PROTOCOL: 'http', N8N_SECURE_COOKIE: 'false',
     GENERIC_TIMEZONE: 'Europe/Warsaw', N8N_DIAGNOSTICS_ENABLED: 'false', N8N_VERSION_NOTIFICATIONS_ENABLED: 'false',
-    N8N_PERSONALIZATION_ENABLED: 'false', N8N_LOG_LEVEL: 'warn', EXECUTIONS_MODE: 'regular', ...extra };
+    N8N_PERSONALIZATION_ENABLED: 'false', N8N_COMMUNITY_PACKAGES_ENABLED:'false', N8N_PUBLIC_API_DISABLED:'true',
+    N8N_TEMPLATES_ENABLED:'false', N8N_LOG_LEVEL: 'warn', EXECUTIONS_MODE: 'regular', ...extra };
 }
 
 export async function n8nCli(args, { timeoutMs = 300_000, env = {} } = {}) {
