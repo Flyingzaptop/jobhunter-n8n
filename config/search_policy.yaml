@@ -1,0 +1,51 @@
+policy_version: search-v2.1
+thresholds: {auto_apply: 78, review: 60, stretch: 45}
+qualification_weights:
+  TECHNICAL: 40
+  PROFESSIONAL_EXPERIENCE: 30
+  EDUCATION: 20
+  LANGUAGE: 10
+  OTHER: 5
+excluded_companies: []
+excluded_countries: []
+role_families:
+  - mechanical_engineering
+  - simulation_cae
+  - research_and_development
+  - software_engineering
+  - technical_software
+  - data_science
+  - machine_learning
+  - embedded
+  - automation
+  - gamedev_technical
+  - it_support
+  - technical_support
+work_location_policy:
+  candidate_base: {city: Wroclaw, country: Poland}
+  discovery:
+    worldwide_remote: true
+    europe_remote: true
+    poland_remote: true
+    wroclaw_local: true
+    europe_hybrid: true
+    europe_onsite: true
+  remote:
+    worldwide_from_poland: true
+    europe_from_poland: true
+    eu_from_poland: true
+    emea_from_poland: true
+    poland: true
+  local:
+    radius_km: 30
+    hybrid_enabled: true
+    onsite_discover: true
+    onsite_auto_apply: false
+  poland_nonlocal:
+    rare_travel_enabled: true
+    max_onsite_days_per_month_for_auto_apply: 1
+    regular_hybrid_action: REVIEW
+  europe_nonlocal: {discover: true, hybrid_action: REVIEW, onsite_action: REVIEW}
+  relocation: {assume_willing: false, allowed_countries: [], allowed_cities: []}
+  unknown_work_format: {action: REVIEW}
+application_domains: {allow: [], deny: []}

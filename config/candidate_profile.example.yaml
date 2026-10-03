@@ -1,0 +1,25 @@
+profile_id: example-only
+profile_version: example-v1
+candidate:
+  base_location: {city: Wroclaw, country: Poland}
+  citizenship: [Poland]
+  eu_citizen: true
+  availability: {full_time: true}
+  preferred_cv_languages: [English, Polish]
+onboarding:
+  legal_name: UNKNOWN
+  email: UNKNOWN
+  phone: UNKNOWN
+  b2b_willing: UNKNOWN
+  contractor_willing: UNKNOWN
+  eor_willing: UNKNOWN
+  relocation_willing: UNKNOWN
+experience: []
+projects: []
+education: []
+training: []
+languages: []
+skills: {}
+facts: []
+# Copy this file and supply verified facts with stable IDs and provenance.
+# Examples deliberately contain no identity or unsupported career facts.

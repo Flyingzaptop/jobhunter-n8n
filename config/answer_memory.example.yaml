@@ -1,0 +1,4 @@
+answers: []
+# Add only user-confirmed answers. Scope salary/contract answers by country and role.
+# Fields: key, value, source: USER, reusable, reuse_approved, scope,
+#         question_text, answered_at, application_id.

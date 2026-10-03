@@ -1,0 +1,60 @@
+profile_id: fictional-stage7
+profile_version: fixture-v1
+candidate:
+  base_location: {city: Wroclaw, country: Poland}
+  citizenship: [Poland]
+  eu_citizen: true
+  availability: {full_time: true}
+  preferred_cv_languages: [English, Polish]
+onboarding:
+  legal_name: Alex Example
+  email: alex@example.invalid
+  phone: '+48000000000'
+  github_url: https://example.invalid/portfolio
+  linkedin_url: UNKNOWN
+  portfolio_url: https://example.invalid/portfolio
+  notice_period: 0
+  earliest_start_date: '2026-11-01'
+  eor_willing: true
+  b2b_willing: true
+  contractor_willing: true
+  relocation_willing: false
+languages:
+  - {id: lang_en, language: English, level: B2}
+  - {id: lang_pl, language: Polish, level: fluent}
+education:
+  - id: edu_mech
+    provenance: EDUCATION
+    institution: Fictional Technical University
+    field: Mechanical Engineering
+    status: completed
+    degree: Bachelor
+experience:
+  - id: exp_design
+    provenance: PROFESSIONAL
+    role: Junior Mechanical Design Engineer
+    employer: Fictional Manufacturing Ltd
+    duration_approx_years: 2
+    exact_start_date: '2024-01-01'
+    exact_end_date: '2025-12-31'
+    skills: [CAD, Fusion 360, mechanical_design, prototyping]
+    statements:
+      - Designed mechanical assemblies in Fusion 360 and CAD.
+      - Built and tested prototypes for manufacturability.
+      - Collaborated on engineering documentation and quality checks.
+projects:
+  - id: project_mech
+    provenance: ACADEMIC
+    title: Fixture engineering prototype
+    skills: [CAD, FEA, mechanical_design, prototyping]
+    statements:
+      - Designed a gearbox prototype and performed finite-element analysis.
+  - id: rnd_python
+    provenance: INDEPENDENT_R_AND_D
+    title: Fixture Python research
+    skills: [Python, machine_learning]
+    statements: [Built Python data pipelines for independent research.]
+training: []
+skills:
+  mechanical: [CAD, Fusion 360, FEA, mechanical_design, prototyping]
+  software: [Python]

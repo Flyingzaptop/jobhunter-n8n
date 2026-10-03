@@ -1,0 +1,25 @@
+name: JobHunter checks
+on: [push, pull_request]
+jobs:
+  unit-and-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: jobhunter
+          POSTGRES_PASSWORD: ci-fixture-password
+          POSTGRES_DB: jobhunter
+        ports: [5432:5432]
+        options: --health-cmd "pg_isready -U jobhunter" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://jobhunter:ci-fixture-password@127.0.0.1:5432/jobhunter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '24', cache: npm}
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - run: npm run workflows
+      - run: git diff --exit-code n8n/workflows
