@@ -1,3 +1,4 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {assertTransition,STATUSES} from '../services/core/state.mjs';import {summarize} from '../services/core/reporting.mjs';
 test('uncertain submit cannot be automatically replayed',()=>{assertTransition('SUBMITTING','SUBMISSION_UNKNOWN');assert.throws(()=>assertTransition('SUBMISSION_UNKNOWN','SUBMITTING'));assert.throws(()=>assertTransition('SUBMITTED','FILLING'));assertTransition('SUBMISSION_UNKNOWN','SUBMITTED');assert(!STATUSES.includes('SKIPPED_CLOSED'));});
-test('report counts submission separately from question waits',()=>{assert.deepEqual(summarize([{status:'SUBMITTED'},{status:'NEEDS_USER'},{status:'CAPTCHA_WAIT'},{status:'FAILED'}]),{total:4,statuses:{SUBMITTED:1,NEEDS_USER:1,CAPTCHA_WAIT:1,FAILED:1},submitted:1,awaiting_user:2,failed:1});});
+test('report counts submission separately from question waits',()=>{assert.deepEqual(summarize([{status:'SUBMITTED'},{status:'NEEDS_USER'},{status:'CAPTCHA_WAIT'},{status:'FAILED'}]),{total:4,statuses:{SUBMITTED:1,NEEDS_USER:1,CAPTCHA_WAIT:1,FAILED:1},submitted:1,awaiting_user:2,manual_takeover:0,failed:1});});
+

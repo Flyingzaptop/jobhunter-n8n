@@ -11,7 +11,7 @@ import { Repository } from '../services/core/repository.mjs';
 import { createCore } from '../services/core/server.mjs';
 import { Telegram } from '../services/core/telegram.mjs';
 import { BrowserClient } from '../services/core/application.mjs';
-import { factIndex } from '../services/core/fit.mjs';
+import { factIndex, PROMPT_VERSION } from '../services/core/fit.mjs';
 import { browserConfig, createBrowserService } from '../services/browser-service/server.mjs';
 import { createMockBoard } from '../services/mock-job-board/server.mjs';
 import { fixtureHumanCaptcha } from '../services/mock-job-board/test-human-adapter.mjs';
@@ -69,13 +69,17 @@ const telegram = new Telegram({ token: 'stage7-fixture-transport', chatId: '7000
     photo_is_png: photoBytes?.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ?? false });
   return { ok: true, json: async () => ({ ok: true, result: { message_id } }) };
 } });
-let repository = new Repository(connection.href), core, browserClient, report, selectedJob, currentStage;
+let repository = new Repository(connection.href), core, browserClient, report, selectedJob, currentStage, analysisEvidence, unitEvidence;
 const executions = [];
+// The gateway allows two semantic attempts, each optionally preceded by a
+// bounded native context probe. Let those attempts return their own evidence
+// rather than timing out n8n first and leaving inference running in the core.
+const matchingTimeoutMs = 4 * Number(process.env.LLM_TIMEOUT_MS || 240_000) + 60_000;
 const run = async (stage, body = {}) => {
   currentStage = stage;
   const began = Date.now();
   process.stdout.write(`${JSON.stringify({ event: 'stage7_stage_start', stage, analyzed_job_batch: stage === 3 ? executions.filter(e => e.stage === 3).length + 1 : undefined })}\n`);
-  const execution = await executeFixtureStage(stage, { body, port: 3007, timeoutMs: stage === 3 ? 420_000 : 300_000 });
+  const execution = await executeFixtureStage(stage, { body, port: 3007, timeoutMs: stage === 3 ? matchingTimeoutMs : 300_000 });
   executions.push({ stage, duration_ms: Date.now() - began, ...execution });
   process.stdout.write(`${JSON.stringify({ event: 'stage7_stage_done', stage, execution_id: execution.execution_id })}\n`);
   return execution.stage_result;
@@ -110,12 +114,14 @@ try {
   const n8nVersion = JSON.parse(await readFile('.tools/n8n/node_modules/n8n/package.json', 'utf8')).version;
   const ollamaVersion = await fetch(`${process.env.OLLAMA_BASE_URL}/api/version`).then(response => response.json());
   const postgresVersion = (await admin.query('SHOW server_version')).rows[0].server_version;
+  try { unitEvidence = JSON.parse(await readFile('tests/results/stage3-unit.json', 'utf8')); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   const sourceHashes = {};
   for (const file of ['services/core/discovery.mjs', 'services/core/normalization.mjs', 'services/core/repository.mjs',
     'services/core/fit.mjs', 'services/core/llm.mjs', 'services/core/application.mjs', 'services/core/cv.mjs',
     'services/core/server.mjs', 'services/core/telegram.mjs', 'services/core/reporting.mjs', 'services/core/reconciliation.mjs',
     'services/browser-service/server.mjs', 'services/browser-service/policy.mjs', 'services/mock-job-board/server.mjs',
-    'scripts/test-stage-7.mjs', 'prompts/fit_analysis_compact.md',
+    'scripts/test-stage-7.mjs', 'prompts/fit_analysis_compact.md', 'tests/stage3.test.mjs',
     ...(await readdir('n8n/workflows')).filter(name => /^WF-\d\d-.*\.json$/.test(name)).sort().map(name => `n8n/workflows/${name}`)]) {
     sourceHashes[file] = digest(await readFile(file));
   }
@@ -139,8 +145,11 @@ try {
       `Real Ollama analysis must succeed for ${job.title}; no fallback is permitted: ${JSON.stringify(result.results[0])}`);
   }
   const analyses = (await repository.pool.query(`SELECT DISTINCT ON(job_id) * FROM job_analysis ORDER BY job_id,created_at DESC`)).rows;
+  analysisEvidence = analyses.map(row => ({ job_id: row.job_id, title: jobs.find(job => job.job_id === row.job_id)?.title,
+    decision: row.decision, fit: Number(row.overall_fit), prompt_version: row.prompt_version, reasons: row.analysis_json.reasons }));
   assert.equal(analyses.length, 10);
   assert.ok(analyses.every(row => row.model === process.env.LLM_FAST_MODEL), 'All fit analyses must use the configured real model');
+  assert.ok(analyses.every(row => row.prompt_version === PROMPT_VERSION), 'All analyses must use this run\'s semantic prompt version');
   const factIds = new Set(factIndex(profile).keys());
   for (const row of analyses) for (const id of [...row.analysis_json.matched_fact_ids, ...row.analysis_json.cv_focus_fact_ids,
     ...row.analysis_json.requirements.flatMap(requirement => requirement.candidate_evidence_fact_ids)]) {
@@ -162,6 +171,17 @@ try {
   assert.ok(parsed.text.includes(profile.onboarding.legal_name));
   assert.ok(!/UNKNOWN|TODO|PLACEHOLDER|Senior CATIA/.test(parsed.text));
   const document = JSON.parse(await readFile(path.join(path.dirname(cv.pdf_path), 'cv.json'), 'utf8'));
+  const html = await readFile(cv.html_path, 'utf8');
+  const expectedContacts = {
+    email: profile.onboarding.email, phone: profile.onboarding.phone,
+    portfolio: profile.onboarding.portfolio_url, github: profile.onboarding.github_url,
+    location: `${profile.candidate.base_location.city}, ${profile.candidate.base_location.country}`,
+  };
+  for (const [key, value] of Object.entries(expectedContacts)) {
+    assert.equal(document.contacts[key], value, `CV JSON must retain verified ${key}`);
+    assert.ok(parsed.text.includes(value), `PDF must render verified ${key}`);
+    assert.ok(html.includes(value), `HTML must render verified ${key}`);
+  }
   assert.equal(document.target_job_id, selectedJob.job_id);
   assert.equal(document.headline, selectedJob.title);
   assert.ok(document.bullets.length > 0);
@@ -219,6 +239,11 @@ try {
   assert.equal(duplicate.status, 'SUBMITTED');
   assert.equal(board.submissions.size, 1);
   assert.equal(submitRequests, 1);
+  const submissionMessages = sent.filter(message => message.text?.includes('Application submitted'));
+  assert.equal(submissionMessages.length, 1, 'Successful submission notification must be sent exactly once despite duplicate workflow execution');
+  for (const value of [applicationId, application.confirmation_id, selectedJob.title, selectedJob.company, selectedJob.canonical_url]) {
+    assert.ok(submissionMessages[0].text.includes(value), 'Submission notification must identify the confirmed application');
+  }
   const summary = await run(6);
   assert.deepEqual({ discovered: summary.discovered, unique: summary.unique, analyzed: summary.analyzed,
     submitted: summary.submitted, awaiting_user: summary.awaiting_user, failed: summary.failed, skipped: summary.skipped },
@@ -239,6 +264,8 @@ try {
   assert.ok(audit.some(event => event.event_type === 'TELEGRAM_ANSWERED'));
   assert.ok(audit.some(event => event.event_type === 'ANSWER_CONSUMED'));
   assert.ok(!audit.some(event => event.event_type === 'HITL_NOTIFICATION_FAILED'));
+  assert.equal(audit.filter(event => event.event_type === 'SUBMISSION_NOTIFICATION_SENT').length, 1);
+  assert.ok(!audit.some(event => event.event_type === 'SUBMISSION_NOTIFICATION_FAILED'));
   assert.equal((await repository.pool.query('SELECT COUNT(*)::int count FROM application_questions WHERE answered_at IS NULL')).rows[0].count, 0);
   const consentRows = (await repository.pool.query('SELECT * FROM consents')).rows;
   assert.equal(consentRows.length, 1);
@@ -248,28 +275,39 @@ try {
   const ledger = await readFile(ledgerPath, 'utf8');
   assert.equal(ledger.split(application.confirmation_id).length - 1, 1);
   const repeatedSummary = await run(6);
-  assert.deepEqual(repeatedSummary, summary);
+  const stableSummary = value => {
+    const result = structuredClone(value);
+    // A fresh reconciliation inspection has a fresh timestamp; its business
+    // counts and actions must remain unchanged on an idempotent report rerun.
+    delete result.reconciliation?.checked_at;
+    return result;
+  };
+  assert.deepEqual(stableSummary(repeatedSummary), stableSummary(summary));
   assert.equal(await readFile(ledgerPath, 'utf8'), ledger);
   report = { stage: 7, status: 'PASS', started_at: started, completed_at: new Date().toISOString(), schema,
     execution_engine: 'real_n8n_cli', semantic_gateway: 'real_local_Ollama', model: process.env.LLM_FAST_MODEL,
+    semantic_prompt_version: PROMPT_VERSION, separate_matching_unit_evidence: unitEvidence ?? null,
     environment: 'Windows native Node/PostgreSQL/n8n CLI; container runtime not exercised by this acceptance run',
     versions: { node: process.version, n8n: n8nVersion, ollama: ollamaVersion.version, postgres: postgresVersion, git_sha: gitSha }, source_hashes: sourceHashes,
     config_profile_hash: digest(await readFile(profilePath)), discovery_routes: ['mock_json', 'rss'], summary,
     selected_job: { job_id: selectedJob.job_id, title: selectedJob.title, canonical_url: selectedJob.canonical_url,
       decision: selected.decision, fit: Number(selected.overall_fit), application_priority: Number(selected.application_priority) },
-    analysis_decisions: analyses.map(row => ({ job_id: row.job_id, decision: row.decision, fit: Number(row.overall_fit) })),
-    cv: { pdf_path: cv.pdf_path, sha256: cv.sha256, qa: cv.qa, preview_path: `${preview}.png`, source_fact_ids: document.bullets.flatMap(bullet => bullet.source_fact_ids) },
+    analysis_decisions: analysisEvidence,
+    cv: { pdf_path: cv.pdf_path, sha256: cv.sha256, qa: cv.qa, preview_path: `${preview}.png`,
+      known_contacts_verified: true, contacts: document.contacts, source_fact_ids: document.bullets.flatMap(bullet => bullet.source_fact_ids) },
     visual_review_status: 'RENDERED_AWAITING_REVIEW', application_id: applicationId, confirmation_id: application.confirmation_id,
     backend_submissions: 1, backend_submit_requests: submitRequests, duplicate_gate: true, core_restart_resume: true, unknown_fact_human_reply: true,
     captcha_image_relay: true, captcha_solver: 'isolated_fixture_human_no_OCR', validation_correction: true,
     checkpoint_cv_hash_verified: true, consent_audit_verified: true, optional_marketing_unchecked: true,
     global_dry_run: true, allow_real_submit: false, allow_mock_submit: true,
-    telegram_transport: 'injected_capture', telegram_messages: sent, real_telegram_delivery_verified: false,
+    telegram_transport: 'injected_capture', telegram_messages: sent, submission_notification_once: true,
+    real_telegram_delivery_verified: false,
     application_audit_events: audit.map(event => event.event_type), output_root: outputRoot, executions };
 } catch (error) {
   report = { stage: 7, status: 'FAIL', started_at: started, completed_at: new Date().toISOString(), schema,
-    semantic_gateway: 'real_local_Ollama', failed_stage: currentStage, error: error.message,
-    selected_job: selectedJob ?? null, executions, output_root: outputRoot,
+    semantic_gateway: 'real_local_Ollama', semantic_prompt_version: PROMPT_VERSION,
+    separate_matching_unit_evidence: unitEvidence ?? null, failed_stage: currentStage, error: error.message,
+    selected_job: selectedJob ?? null, analysis_decisions: analysisEvidence, executions, output_root: outputRoot,
     backend_submissions: board.submissions.size, backend_submit_requests: submitRequests,
     allow_real_submit: false, no_mock_semantic_fallback: true };
   process.exitCode = 1;
@@ -278,6 +316,7 @@ try {
   report.duration_ms = Date.parse(report.completed_at) - Date.parse(report.started_at);
   await mkdir('tests/results', { recursive: true });
   await writeFile('tests/results/stage7.json', JSON.stringify(report, null, 2) + '\n');
+  await writeFile(path.join(outputRoot, 'stage7.json'), JSON.stringify(report, null, 2) + '\n');
   if (core?.server.listening) await core.stop(); else await repository.close();
   if (browserService.server.listening) await browserService.close();
   if (board.server.listening) await board.close();

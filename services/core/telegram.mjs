@@ -56,7 +56,7 @@ export class Telegram {
       );
       return { command: text };
     }
-    if (["/summary", "/status"].includes(text)) return { command: text };
+    if (["/summary", "/weekly", "/status"].includes(text)) return { command: text };
     if (text.startsWith("/outcome ")) {
       const [, id, status] = text.split(/\s+/);
       const allowed = [

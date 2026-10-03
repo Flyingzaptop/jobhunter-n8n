@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
-export const PROMPT_VERSION = 'fit-analysis-v2.3-compact';
+export const PROMPT_VERSION = 'fit-analysis-v2.6-compact';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -17,6 +17,8 @@ const qualificationBlocker = req => req.strict && req.importance === 'MANDATORY'
   && req.match === 'NO' && req.category !== 'LOCATION';
 const authorizationCondition = /\b(?:work\s+(?:authorization|permit)|right\s+to\s+work|citizen(?:ship)?|visa|immigration|sponsorship|security\s+clearance|export\s+control)\b/i;
 const hiringCondition = /\b(?:hire|hiring|employ|employment|contract|contractor|b2b|eor|employer of record)\b/i;
+const explicitPolishRemoteEmployment = /\b(?:remotely|remote)\s+from\s+Poland\b.*\bPolish\s+employment\s+contract\b/i;
+const polishHiringEvidence = /\bPolish\s+employment\s+contract\b|\b(?:hire|hiring|employ|employment|contractor|b2b|eor)\b[^.!?;]*\b(?:Poland|worldwide|globally)\b|\bPoland\b[^.!?;]*\b(?:hire|employ|employment|contractor|b2b|eor)\b/i;
 
 export const FIT_SCHEMA = object({
   role_family: string, role_level: string,
@@ -57,7 +59,7 @@ compactWorkProperties.evidence_fragment_ids = {type: 'array', maxItems: 8, uniqu
   items: {type: 'integer', minimum: 0}};
 export const COMPACT_FIT_SCHEMA = object({
   role_family: string, role_level: string, career_alignment: {enum: ['HIGH','MEDIUM','LOW']},
-  requirements: {type: 'array', maxItems: 20, items: object({
+  requirements: {type: 'array', maxItems: 100, items: object({
     source_fragment_id: {type: 'integer', minimum: 0},
     importance: {enum: Object.keys(importanceWeights)}, category: {enum: categories},
     candidate_evidence_fact_ids: {type: 'array', maxItems: 4, uniqueItems: true, items: string},
@@ -65,15 +67,42 @@ export const COMPACT_FIT_SCHEMA = object({
     skill: nullableString, strict: {type: 'boolean'}
   })}, work_format: object(compactWorkProperties)
 });
+const explicitRequirementSchema = structuredClone(COMPACT_FIT_SCHEMA.properties.requirements.items);
+delete explicitRequirementSchema.properties.source_fragment_id;
+explicitRequirementSchema.required = explicitRequirementSchema.required.filter(key => key !== 'source_fragment_id');
+// The production grammar requires each explicit source ID as an object key.
+// Legacy explicitly injected unit gateways may still supply the flat array.
+COMPACT_FIT_SCHEMA.properties.explicit_requirements = {type: 'object', maxProperties: 100,
+  propertyNames: {pattern: '^(0|[1-9][0-9]*)$'}, additionalProperties: explicitRequirementSchema};
 const validateCompactSchema = new Ajv({strict: true, allErrors: true}).compile(COMPACT_FIT_SCHEMA);
 
 export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalog(job)) {
   const schema = structuredClone(COMPACT_FIT_SCHEMA);
   const ids = [...factIndex(profile).keys()];
-  const requirementIds = catalog.filter(f => !f.list_container).map(f => f.id);
-  schema.properties.requirements.maxItems = Math.min(20, requirementIds.length || 20);
-  schema.properties.requirements.items.properties.source_fragment_id = requirementIds.length ? {enum: requirementIds} : {type: 'integer', minimum: 0};
+  const requirementIds = catalog.filter(f => !f.list_container && !f.work_format_only && !f.context_only).map(f => f.id);
+  const explicitIds = catalog.filter(f => f.importance_hint && !f.list_container && !f.work_format_only).map(f => f.id);
+  const additionalIds = requirementIds.filter(id => !explicitIds.includes(id));
+  const totalLimit = Math.min(100, requirementIds.length || 100, Math.max(20, explicitIds.length + 10));
+  schema.properties.requirements.maxItems = Math.max(0, totalLimit - explicitIds.length);
+  schema.properties.requirements.items.properties.source_fragment_id = additionalIds.length ? {enum: additionalIds} : {type: 'integer', minimum: 0};
+  if (!additionalIds.length) schema.properties.requirements.maxItems = 0;
   schema.properties.requirements.items.properties.candidate_evidence_fact_ids.items = ids.length ? {enum: ids} : {type: 'string', maxLength: 0};
+  const keyedItem = structuredClone(schema.properties.requirements.items);
+  delete keyedItem.properties.source_fragment_id;
+  keyedItem.required = keyedItem.required.filter(key => key !== 'source_fragment_id');
+  schema.$defs = {explicit_requirement: keyedItem};
+  schema.properties.requirements = {type: 'object', additionalProperties: false,
+    maxProperties: schema.properties.requirements.maxItems,
+    properties: Object.fromEntries(additionalIds.map(id => [String(id), {$ref: '#/$defs/explicit_requirement'}]))};
+  schema.properties.explicit_requirements = {type: 'object', additionalProperties: false,
+    required: explicitIds.map(String), properties: Object.fromEntries(explicitIds.map(id => [String(id), {$ref: '#/$defs/explicit_requirement'}]))};
+  // Decode the mandatory/preferred map first. Optional source keys are merely
+  // permitted references, not a second list of requirements to manufacture.
+  schema.properties = {role_family:schema.properties.role_family, role_level:schema.properties.role_level,
+    career_alignment:schema.properties.career_alignment,
+    explicit_requirements:schema.properties.explicit_requirements, requirements:schema.properties.requirements,
+    work_format:schema.properties.work_format};
+  schema.required.push('explicit_requirements');
   schema.properties.work_format.properties.evidence_fragment_ids.items = catalog.length ? {enum: catalog.map(f => f.id)} : {type: 'integer', minimum: 0};
   if (!authorizationCondition.test(job.description_text || ''))
     schema.properties.work_format.properties.authorization_known_impossible = {enum: [false]};
@@ -81,50 +110,123 @@ export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalo
     schema.properties.work_format.properties.can_hire_in_poland = {enum: [null, false]};
     schema.properties.work_format.properties.employment_route = {enum: ['UNKNOWN', 'RELOCATION']};
   }
+  if (!polishHiringEvidence.test(job.description_text || ''))
+    schema.properties.work_format.properties.can_hire_in_poland = {const:null};
+  if (catalog.some(fragment => explicitPolishRemoteEmployment.test(fragment.text))) {
+    for (const [field, value] of Object.entries({remote_allowed:true, remote_region:'Poland',
+      work_from_poland_allowed:true, can_hire_in_poland:true, employment_route:'PL_EMPLOYEE'}))
+      schema.properties.work_format.properties[field] = {const: value};
+  }
   return schema;
 }
 
 /** IDs refer to original contiguous text, avoiding generated quotations entirely. */
+function workFormatStatement(text) {
+  // Employer capabilities and descriptions of the offered arrangement do not
+  // assert a qualification possessed by the candidate. Explicit candidate
+  // legal/location conditions remain available for requirement mapping.
+  if (/\b(?:must|required|requirement|essential|willingness|authorization|authorized|permit|visa|clearance|citizen(?:ship)?|residen(?:t|cy))\b/i.test(text)) return false;
+  return /^(?:the (?:employer|company)|we)\b.*\b(?:can|will|are able to)\s+(?:hire|employ)\b/i.test(text)
+    || /^work(?:ing)?\b.*\bremot(?:e|ely)\b/i.test(text)
+    || /^(?:(?:this|the)\s+)?(?:role|position|job)\b.*\b(?:remote|hybrid|on[- ]?site)\b/i.test(text)
+    || /^(?:remote|hybrid|on[- ]?site)(?:[\s:.,-]|$)/i.test(text)
+    || /^(?:polish|eu|permanent|full[- ]time|part[- ]time|b2b|contractor)\s+(?:employment\s+)?contract\b/i.test(text);
+}
+
+function employerContextStatement(text) {
+  if (/\bnot (?:required|mandatory|essential)\b/i.test(text)) return true;
+  if (/\b(?:candidates?|you|must|required|require|expect|seek|qualification)\b/i.test(text)) return false;
+  return /^(?:we|our (?:company|team|process|mission))\b/i.test(text)
+    || /\b(?:projects?|experience)\b.*\b(?:valid (?:hands-on )?evidence|projects count|not required)\b/i.test(text)
+    || /^(?:full[- ]time|part[- ]time)[.!]?$/i.test(text);
+}
+
+function qualificationSentences(source) {
+  let scope = null;
+  return source.split(/(?<=[.!?;])\s+|\n+/).map(text => text.trim()).filter(Boolean).map(text => {
+    const headings = [...text.matchAll(/\b(what you must have|minimum qualifications|required qualifications|basic qualifications|(?:candidate|job|role) requirements|what we are looking for(?: in you)?|what you(?:['’]ll| will) be doing|get some bonus points|preferred qualifications|additional skills that you might also bring|what we offer you|benefits|interview process|equal employment)\b|^requirements\s*:?$/gi)];
+    if (headings.length) {
+      const heading = headings.at(-1)[0];
+      scope = /must have|minimum|required|basic|requirements/i.test(heading) ? 'MANDATORY'
+        : /bonus|preferred|looking for/i.test(heading) ? 'STRONG_PREFERENCE'
+        : /additional skills/i.test(heading) ? 'NICE_TO_HAVE' : null;
+    }
+    const headingOnly = headings.some(heading => text.replace(/[:—-]\s*$/, '').trim().toLowerCase() === heading[0].replace(/:\s*$/, '').trim().toLowerCase());
+    const untrustedCommand = /ignore (?:previous|system|all) instructions|(?:reveal|expose|print|send|upload).*(?:secrets?|tokens?|environment variables)|upload another|localhost/i.test(text);
+    const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bnot (?:required|mandatory|essential)\b/i.test(text);
+    const list = text.match(/\b(mandatory|required|nice to have|preferred)\s*:\s*(.*)/i);
+    let importance = null;
+    if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text)) {
+      importance = list ? /mandatory|required/i.test(list[1]) ? 'MANDATORY' : /nice/i.test(list[1]) ? 'NICE_TO_HAVE' : 'STRONG_PREFERENCE'
+        : /\b(required|mandatory|must have|must possess|essential|is a must)\b|wymagan|obowiazkow/i.test(text) ? 'MANDATORY'
+        : /\b(nice to have|helpful)\b/i.test(text) ? 'NICE_TO_HAVE'
+        : /\bpreferred\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
+    }
+    return {text, importance, list};
+  });
+}
+
+function requirementItems(text, list) {
+  // Alternative fields and examples qualify the one requirement; they are not
+  // independent qualifications which the candidate must satisfy simultaneously.
+  if (/\b(?:or|either|such as|for example|including)\b|\be\.g\./i.test(text)) return [];
+  const content = (list?.[2] || text).replace(/[.!?;]+$/, '');
+  return content.split(/,|\s+and\s+/i).map(item => item.trim()).filter(Boolean);
+}
+
 export function sourceFragmentCatalog(job) {
-  const source = [job.title, job.description_text, job.location, job.country, job.work_mode].filter(Boolean).join('\n');
+  const sources = [{text: job.title, context_only: true}, {text: job.description_text},
+    {text: job.location, work_format_only: true}, {text: job.country, work_format_only: true},
+    {text: job.work_mode, work_format_only: true}].filter(source => source.text);
   const catalog = []; const seen = new Map();
-  const add = (text, importance_hint = null, list_container = false) => {
+  const add = (text, importance_hint = null, list_container = false, metadataOnly = false, contextOnly = false) => {
     text = text.trim();
     if (!text) return;
     if (seen.has(text)) {
       const entry = catalog[seen.get(text)];
       if (importance_hint) entry.importance_hint = importance_hint;
+      if (metadataOnly && !entry.importance_hint) entry.work_format_only = true;
+      if (contextOnly && !entry.importance_hint) entry.context_only = true;
       return;
     }
-    const entry = {id: catalog.length, text, importance_hint, list_container};
+    const entry = {id: catalog.length, text, importance_hint, list_container,
+      work_format_only: metadataOnly || workFormatStatement(text),
+      context_only: !importance_hint && (contextOnly || employerContextStatement(text))};
     seen.set(text, entry.id); catalog.push(entry);
   };
-  for (const sentence of source.split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean)) {
-    const list = sentence.match(/\b(mandatory|nice to have|preferred)\s*:\s*(.*)/i);
-    const hint = list ? /mandatory/i.test(list[1]) ? 'MANDATORY' : /nice/i.test(list[1]) ? 'NICE_TO_HAVE' : 'STRONG_PREFERENCE'
-      : /\b(required|mandatory|must have|essential)\b/i.test(sentence) && !/not required|not mandatory/i.test(sentence) ? 'MANDATORY'
-      : /\b(nice to have|helpful)\b/i.test(sentence) ? 'NICE_TO_HAVE'
-      : /\bpreferred\b/i.test(sentence) ? 'STRONG_PREFERENCE' : null;
-    const compound = !list && /,|\s+and\s+/i.test(sentence);
-    const items = list ? list[2].replace(/[.!?;]+$/, '').split(/,|\s+and\s+/).map(s => s.trim()).filter(Boolean)
-      : compound ? sentence.replace(/[.!?;]+$/, '').split(/,|\s+and\s+/).map(s => s.trim()).filter(Boolean) : [];
-    add(sentence, hint, items.length > 0);
-    for (const item of items) add(item, hint);
+  for (const {text: sentence, importance: hint, list, metadataOnly, contextOnly} of sources.flatMap(source =>
+    qualificationSentences(source.text).map(sentence => ({...sentence, metadataOnly: source.work_format_only, contextOnly: source.context_only})))) {
+    const compound = hint && !list && /,|\s+and\s+/i.test(sentence);
+    const items = list || compound ? requirementItems(sentence, list) : [];
+    add(sentence, hint, items.length > 0, metadataOnly, contextOnly);
+    for (const item of items) add(item, hint, metadataOnly, contextOnly);
   }
   return catalog;
 }
 
 export function expandCompactAnalysis(wire, {job, profile, catalog = sourceFragmentCatalog(job)}) {
-  if (!validateCompactSchema(wire)) throw new StructuredOutputError('Compact fit JSON schema mismatch');
+  const decode = map => {
+    if (!map || typeof map !== 'object' || Array.isArray(map)) throw new StructuredOutputError('Compact source mapping must be an object');
+    return Object.entries(map).map(([id, req]) => {
+      if (!/^(0|[1-9][0-9]*)$/.test(id) || Object.hasOwn(req || {}, 'source_fragment_id'))
+        throw new StructuredOutputError('Compact source mapping must use exact integer IDs as keys');
+      return {...req, source_fragment_id: Number(id)};
+    });
+  };
+  const additional = Array.isArray(wire.requirements) ? wire.requirements : decode(wire.requirements);
+  if (!validateCompactSchema({...wire, requirements: additional})) throw new StructuredOutputError('Compact fit JSON schema mismatch');
   const facts = factIndex(profile);
   const fragment = id => {
     const value = catalog[id];
     if (!value || value.id !== id) throw new StructuredOutputError('Unknown source fragment ID');
     return value;
   };
-  const requirements = wire.requirements.map(req => {
+  const mappedRequirements = [...decode(wire.explicit_requirements || {}), ...additional];
+  const requirements = mappedRequirements.map(req => {
     const source = fragment(req.source_fragment_id);
     if (source.list_container) throw new StructuredOutputError('Mandatory or preferred list must map each item separately');
+    if (source.work_format_only) throw new StructuredOutputError('Work-format statement is employer evidence, not a candidate qualification');
+    if (source.context_only) throw new StructuredOutputError('Employer or role context is not a candidate qualification');
     const factIds = req.candidate_evidence_fact_ids;
     for (const id of factIds) if (!facts.has(id)) throw new StructuredOutputError('Unknown candidate evidence ID');
     const years = source.text.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\b/i)?.[1];
@@ -140,9 +242,11 @@ export function expandCompactAnalysis(wire, {job, profile, catalog = sourceFragm
       professional_only: professionalOnly,
       skill: explicitDomain || req.skill, strict: req.strict};
   });
-  const usedFragmentIds = wire.requirements.map(req => req.source_fragment_id);
-  if (new Set(usedFragmentIds).size !== usedFragmentIds.length)
-    throw new StructuredOutputError('Duplicate requirement source fragment; use each source_fragment_id at most once, combine related classification into that one row');
+  const usedFragmentIds = mappedRequirements.map(req => req.source_fragment_id);
+  if (new Set(usedFragmentIds).size !== usedFragmentIds.length) {
+    const duplicate = usedFragmentIds.find((id, index) => usedFragmentIds.indexOf(id) !== index);
+    throw new StructuredOutputError(`Duplicate requirement source fragment ${duplicate}: ${fragment(duplicate).text}. Use each source_fragment_id once; classify that entire clause in one row`);
+  }
   const missingIds = catalog.filter(source => source.importance_hint
     && !source.list_container && !usedFragmentIds.includes(source.id));
   if (missingIds.length) throw new StructuredOutputError(`Explicit ${missingIds.some(source => source.importance_hint === 'MANDATORY') ? 'mandatory ' : ''}requirement omitted: source_fragment_id ${missingIds.map(source => source.id).join(', ')}`);
@@ -191,11 +295,7 @@ const hasSkill = (fact, skill) => !skill || (fact.skills || []).some(s => normal
 
 /** A narrow completeness guard: explicit mandatory sentences cannot disappear. */
 export function mandatoryRequirementAnchors(job) {
-  return (job.description_text || '').split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim())
-    .filter(s => /\b(required|requirements?|mandatory|must have|must possess|essential)\b|wymagan|obowiazkow/i.test(normalize(s)))
-    .filter(s => !/\b(not required|not mandatory|not essential)\b/i.test(s))
-    // Embedded commands are untrusted data, not genuine job qualifications.
-    .filter(s => !/ignore previous|reveal|environment variables|upload another|instructions|secret|token|localhost/i.test(s));
+  return qualificationSentences(job.description_text || '').filter(sentence => sentence.importance === 'MANDATORY').map(sentence => sentence.text);
 }
 
 export function missingMandatoryListItems(analysis, job) {
@@ -204,7 +304,7 @@ export function missingMandatoryListItems(analysis, job) {
   for (const sentence of mandatoryRequirementAnchors(job)) {
     const list = sentence.match(/\bmandatory\s*:\s*(.*)/i)?.[1];
     if (!list) continue;
-    for (const item of list.replace(/[.!?;]+$/, '').split(/,|\s+and\s+/).map(s => s.trim()).filter(Boolean)) {
+    for (const item of requirementItems(sentence, [null, 'mandatory', list])) {
       const wanted = tokens(item);
       if (!analysis.requirements.some(req => {
         const actual = new Set(tokens(`${req.requirement} ${req.skill || ''}`));
@@ -240,6 +340,8 @@ export function validateFactIntegrity(analysis, profile, job) {
   for (const req of analysis.requirements) {
     allIds.push(...req.candidate_evidence_fact_ids);
     if (!quoted(req.source_quote, source)) throw new StructuredOutputError('Requirement quote missing from vacancy');
+    if (workFormatStatement(req.source_quote) && req.importance !== 'DESCRIPTION_ONLY')
+      throw new StructuredOutputError('Work-format statement is employer evidence, not a candidate qualification');
     const expectedProvenance = new Set();
     req.candidate_evidence_fact_ids.forEach(id => {
       const fact = facts.get(id);
@@ -271,10 +373,14 @@ export function validateFactIntegrity(analysis, profile, job) {
     && !analysis.work_format.evidence.length)
     throw new StructuredOutputError('Confirmed hiring eligibility requires vacancy evidence');
   const hiringEvidence = analysis.work_format.evidence.join(' ');
-  const explicitPolishEmployment = /\b(?:remotely|remote)\s+from\s+Poland\b.*\bPolish\s+employment\s+contract\b/i.test(hiringEvidence);
+  const explicitPolishEmployment = explicitPolishRemoteEmployment.test(hiringEvidence);
   if (explicitPolishEmployment && (analysis.work_format.can_hire_in_poland !== true
     || analysis.work_format.employment_route !== 'PL_EMPLOYEE'))
     throw new StructuredOutputError('Explicit remote-from-Poland employment contract requires can_hire_in_poland=true and employment_route=PL_EMPLOYEE');
+  if (explicitPolishEmployment && (analysis.work_format.remote_allowed !== true
+    || normalize(analysis.work_format.remote_region) !== 'poland'
+    || analysis.work_format.work_from_poland_allowed !== true))
+    throw new StructuredOutputError('Explicit remote-from-Poland employment statement requires remote_allowed=true, remote_region=Poland and work_from_poland_allowed=true');
   if (analysis.work_format.can_hire_in_poland === true && !explicitPolishEmployment
     && !/\b(?:hire|hiring|employ|employment|contract|contractor|b2b|eor|employer of record)\b/i.test(hiringEvidence))
     throw new StructuredOutputError('can_hire_in_poland=true needs hiring-route evidence; remote location alone is insufficient');
@@ -457,17 +563,30 @@ export async function analyzeJob({job, profile, policy = {}, llm = new OllamaCli
   const compact = llm instanceof OllamaClient || llm.wireFormat === 'compact';
   const system = await readFile(new URL(compact ? '../../prompts/fit_analysis_compact.md' : '../../prompts/fit_analysis.md', import.meta.url), 'utf8');
   const catalog = compact ? sourceFragmentCatalog(job) : null;
+  const sourceOrder = compact ? qualificationSentences(job.description_text || '').map(sentence =>
+    catalog.find(fragment => fragment.text === sentence.text)?.id) : null;
+  const completeCatalog = compact && sourceOrder.every(Number.isInteger);
+  const compactCatalog = compact ? catalog.map(fragment => ({id:fragment.id, text:fragment.text,
+    ...(fragment.importance_hint ? {importance_hint:fragment.importance_hint} : {}),
+    ...(fragment.list_container ? {list_container:true} : {}),
+    ...(fragment.work_format_only ? {work_format_only:true} : {}),
+    ...(fragment.context_only ? {context_only:true} : {})})) : null;
+  const schema = compact ? compactSchemaForJob(job, profile, catalog) : schemaForJob(job, profile);
   const prompt = JSON.stringify({candidate_facts: [...factIndex(profile).values()],
     candidate: profile.candidate, onboarding: profile.onboarding, search_policy: policy,
     explicit_requirement_sentences_to_cover: mandatoryRequirementAnchors(job),
     ...(compact ? {explicit_source_fragment_ids_to_cover: catalog.filter(fragment =>
-      fragment.importance_hint && !fragment.list_container).map(fragment => fragment.id)} : {}),
-    ...(compact ? {source_fragments_untrusted_data: catalog} : {}),
-    untrusted_quoted_vacancy_data: {title: job.title, description_text: job.description_text?.slice(0, 40000),
+      fragment.importance_hint && !fragment.list_container).map(fragment => fragment.id),
+      maximum_additional_requirement_rows:schema.properties.requirements.maxProperties} : {}),
+    ...(compact ? {source_fragments_untrusted_data: compactCatalog, vacancy_source_sentence_order:sourceOrder} : {}),
+    untrusted_quoted_vacancy_data: {title: job.title,
+      ...(!completeCatalog ? {description_text:job.description_text} : {}),
       location: job.location, country: job.country, work_mode: job.work_mode}});
-  const request = {system, prompt, schema: compact ? compactSchemaForJob(job, profile, catalog) : schemaForJob(job, profile),
-    numCtx: compact && prompt.length < 20000 ? 8192 : 16384, numPredict: compact ? 2200 : undefined,
-    repairInstruction: compact ? 'Use only existing integer source_fragment_id and candidate fact IDs. Map every mandatory list item separately. Never generate source quotes or provenance.' : undefined,
+  const outputRows = compact ? schema.properties.requirements.maxProperties + schema.properties.explicit_requirements.required.length : 0;
+  const request = {system, prompt, schema,
+    numCtx: compact && prompt.length < 20000 ? 8192 : 16384,
+    numPredict: compact ? Math.max(2200, Math.min(16000, 600 + outputRows * 180)) : undefined,
+    repairInstruction: compact ? 'Fill EVERY required explicit_requirements key with a factual match, UNKNOWN if evidence is missing. The requirements object is ONLY for additional IDs, never duplicate an explicit key. Never generate source quotes or provenance.' : undefined,
     validate: output => compact ? expandCompactAnalysis(output, {job, profile, catalog}) : validateFactIntegrity(output, profile, job)};
   const output = typeof llm === 'function' ? await llm(request) : await llm.json(request);
   const raw = compact ? expandCompactAnalysis(output, {job, profile, catalog}) : output;

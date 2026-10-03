@@ -53,6 +53,7 @@ export async function createCv({
   // Exact supplied fact statements are the conservative rewriting baseline.
   // Do not introduce LLM paraphrases that cannot be checked against source facts.
   const document = {
+    contacts: Object.fromEntries(Object.entries({email:profile.onboarding?.email,phone:profile.onboarding?.phone,portfolio:profile.onboarding?.portfolio_url,github:profile.onboarding?.github_url,location:[profile.candidate?.base_location?.city,profile.candidate?.base_location?.country].filter(Boolean).join(', ')}).filter(([,value])=>value&&value!=='UNKNOWN')),
     target_job_id: job.job_id,
     language,
     name,
@@ -137,7 +138,8 @@ export async function createCv({
           })
           .join("")}`
       : "";
-  const html = `<!doctype html><html lang="${language === "Polish" ? "pl" : "en"}"><meta charset="UTF-8"><style>@page{size:A4;margin:16mm}body{font:10pt Arial,sans-serif;color:#18232b;line-height:1.35}h1{font-size:23pt;margin:0}h2{font-size:13pt;border-bottom:1px solid #aab8c2;margin-top:15px}h3{font-size:11pt;margin-bottom:2px}p{margin:3px 0}ul{padding-left:18px;margin-top:4px}li{margin:3px 0}h2,h3{break-after:avoid}</style><body><h1>${escape(name)}</h1><p>${escape(job.title)}</p>${section(labels.experience, document.experience)}${section(labels.projects, document.projects)}${section(labels.education, document.education)}<h2>${labels.languages}</h2><p>${document.languages.map((l) => escape(l.language) + " — " + escape(l.level)).join("; ")}</p></body></html>`;
+  const contactLine=[...new Set(Object.values(document.contacts))].map(escape).join(' · ');
+  const html = `<!doctype html><html lang="${language === "Polish" ? "pl" : "en"}"><meta charset="UTF-8"><style>@page{size:A4;margin:16mm}body{font:10pt Arial,sans-serif;color:#18232b;line-height:1.35}h1{font-size:23pt;margin:0}h2{font-size:13pt;border-bottom:1px solid #aab8c2;margin-top:15px}h3{font-size:11pt;margin-bottom:2px}p{margin:3px 0}ul{padding-left:18px;margin-top:4px}li{margin:3px 0}h2,h3{break-after:avoid}.contacts{overflow-wrap:anywhere;color:#405363}</style><body><h1>${escape(name)}</h1><p>${escape(job.title)}</p>${contactLine?`<p class="contacts">${contactLine}</p>`:''}${section(labels.experience, document.experience)}${section(labels.projects, document.projects)}${section(labels.education, document.education)}<h2>${labels.languages}</h2><p>${document.languages.map((l) => escape(l.language) + " — " + escape(l.level)).join("; ")}</p></body></html>`;
   await writeFile(path.join(dir, "cv.html"), html);
   await writeFile(path.join(dir, "cv.json"), JSON.stringify(document, null, 2));
   const browser = await browserFactory();

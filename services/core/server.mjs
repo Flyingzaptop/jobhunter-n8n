@@ -195,6 +195,7 @@ export function createCore({
       const reconciliation = await reconcile(repository);
       const summary = await report(repository, {
         outputDir: reportOutputDir,
+        weekly:body.weekly===true || (!testMode && process.env.WEEKLY_FUNNEL_ENABLED!=='false' && new Intl.DateTimeFormat('en-US',{timeZone:'Europe/Warsaw',weekday:'short'}).format(new Date())==='Mon'),
         telegram:
           telegramAdapter ??
           (!testMode && process.env.TELEGRAM_BOT_TOKEN ? telegram : undefined),
@@ -248,6 +249,16 @@ export function createCore({
         }
         if (accepted.command === "/summary")
           return send(200, { ok: true, result: await stage(6) });
+        if (accepted.command === "/weekly")
+          return send(200, { ok: true, result: await stage(6,{weekly:true}) });
+        if(accepted.command==='/status'){
+          const rows=(await repository.pool.query('SELECT status,count(*)::int AS count FROM applications GROUP BY status')).rows;
+          const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
+          await (telegramAdapter??telegram).send(`JobHunter status\nPaused: ${Boolean(paused)}\n${rows.map(r=>`${r.status}: ${r.count}`).join('\n')}`);
+          return send(200,{ok:true,result:{paused:Boolean(paused),statuses:rows}});
+        }
+        if(['/pause','/resume'].includes(accepted.command))
+          await (telegramAdapter??telegram).send(accepted.command==='/pause'?'JobHunter paused. Saved application state is retained.':'JobHunter resumed. Queue processing is enabled.');
         return send(200, { ok: true, result: accepted });
       }
       return send(404, { error: "Not found" });

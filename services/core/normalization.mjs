@@ -15,6 +15,18 @@ export function textContent(input = '') {
     .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// Descriptions retain semantic boundaries: a bullet is a separate requirement,
+// and a heading establishes importance for the following section.
+export function descriptionContent(input = '') {
+  return decodeEntities(input)
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\b[^>]*\/?\s*>/gi,'\n')
+    .replace(/<\/?(?:p|li|h[1-6]|div|section|article|tr|ul|ol|table|blockquote|pre)\b[^>]*>/gi,'\n')
+    .replace(/<[^>]*>/g,' ')
+    .replace(/\r\n?/g,'\n')
+    .split('\n').map(line=>line.replace(/[^\S\n]+/g,' ').trim()).filter(Boolean).join('\n');
+}
+
 export function canonicalizeUrl(input) {
   const url = new URL(input);
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('INVALID_CANONICAL_URL');
@@ -55,8 +67,8 @@ export function normalizeRaw(raw, { now = new Date() } = {}) {
   const title = textContent(item.title ?? item.text ?? raw.title_hint);
   const location = textContent(typeof item.location === 'string' ? item.location : item.location?.name ?? item.categories?.location
     ?? raw.location_hint ?? [address?.addressLocality, countryName(address?.addressCountry)].filter(Boolean).join(', '));
-  const description = textContent(item.descriptionPlain ?? item.description_text ?? item.descriptionHtml ?? item.description ?? item.content ?? '')
-    + (item.lists?.length ? ' ' + item.lists.map(list => textContent(`${list.text ?? ''} ${list.content ?? ''}`)).join(' ') : '');
+  const description = [descriptionContent(item.descriptionPlain ?? item.description_text ?? item.descriptionHtml ?? item.description ?? item.content ?? ''),
+    ...(item.lists??[]).map(list=>[descriptionContent(list.text??''),descriptionContent(list.content??'')].filter(Boolean).join('\n'))].filter(Boolean).join('\n');
   if (!company || !title) throw new Error('INSUFFICIENT_CANONICAL_IDENTITY');
   const modeValue = item.workplaceType ?? item.work_mode ?? item.jobLocationType ?? (item.isRemote === true ? 'remote' : '');
   let workMode = 'UNKNOWN';

@@ -13,7 +13,7 @@ Fit analysis uses schema-validated local Ollama with deterministic scores and
 fact IDs. The browser service has a complex local mock site and isolated human
 CAPTCHA test adapter. PDF generation currently uses exact factual statements.
 
-Full application orchestration and Stage 7 acceptance are not yet complete.
+All six workflows and the complete mock Stage 7 have passed with real n8n, PostgreSQL, local Ollama and Chromium. See docs/STAGE_7_E2E_REPORT.md for exact source fingerprints and tests. Production readiness remains partial: real candidate onboarding, Telegram delivery and Docker deployment are not verified.
 Do not enable real submission. No successful unit test implies Stage 7 PASS.
 
 ## Requirements
@@ -131,7 +131,7 @@ Test-only fictional profiles must remain under `tests/fixtures/`.
 ## Verification and discovery
 
 ```powershell
-node --env-file=.env --test tests/*.test.mjs
+node --env-file=.env --test --test-concurrency=1 tests/*.test.mjs
 node --env-file=.env scripts/discovery-smoke.mjs
 ```
 
@@ -151,7 +151,7 @@ ignored. Application business state lives in PostgreSQL, not n8n history.
 CVs: `data/cv/YYYY-MM/company/job_id/` (PDF, HTML, JSON and manifest).
 Ledger: `data/exports/APPLICATIONS_LOG.md`, `applications_log.csv`.
 Browser checkpoints: `data/browser/`; screenshots in configured artifact root.
-Full retention cleanup/backup automation remains implementation work. Preserve
+Browser retention cleanup is implemented; encrypted backup automation remains implementation work. Preserve
 the database, `.env` and ignored profile together when making an encrypted backup.
 
 ## Safety and recovery
@@ -161,3 +161,4 @@ must never automatically retry. Human CAPTCHA replies do not transfer to new
 challenges. Optional marketing consent remains unchecked; ambiguous legal
 declarations require the user. Browser replay is limited to reversible actions
 after reading current DOM; attempts are bounded by MAX_BROWSER_RECOVERY_ATTEMPTS.
+

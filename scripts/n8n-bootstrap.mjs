@@ -28,7 +28,13 @@ export async function n8nCli(args, { timeoutMs = 300_000, env = {} } = {}) {
     child.once('error', error => { clearTimeout(timeout); reject(error); });
     child.once('close', code => {
       clearTimeout(timeout);
-      if (code !== 0) { reject(new Error(`n8n ${args[0]} failed (${code}): ${stderr || stdout}`)); return; }
+      if (code !== 0) {
+        // Raw execution JSON can contain resume tokens or supplied form values.
+        // Persist only a bounded exception message, never the execution dump.
+        const match=/"message"\s*:\s*"((?:\\.|[^"\\])+)"/.exec(stdout);
+        const diagnostic=(match?JSON.parse('"'+match[1]+'"'):stderr.split(/\r?\n/).find(line=>line.trim())??'See local n8n execution history').slice(0,300);
+        reject(new Error(`n8n ${args[0]} failed (${code}): ${diagnostic}`)); return;
+      }
       resolvePromise({ stdout, stderr, exit_code: code });
     });
   });
