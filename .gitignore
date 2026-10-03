@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+node_modules/
+config/candidate_profile.yaml
+config/answer_memory.yaml
+data/
+tests/results/
+*.log
+*.sqlite*
+*.clixml
+playwright-report/
+test-results/
+AGENTS.md
