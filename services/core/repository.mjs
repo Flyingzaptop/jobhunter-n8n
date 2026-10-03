@@ -9,7 +9,7 @@ export class Repository {
  async listCanonicalJobs(){return (await this.pool.query('SELECT * FROM jobs ORDER BY first_seen_at')).rows.map(row=>({...row.metadata,...row}));}
  async upsertCanonicalJob(job,{source}) {
   const client=await this.pool.connect(); try {await client.query('BEGIN');
-   const id=job.job_id??randomUUID(); const {rows}=await client.query(`INSERT INTO jobs(job_id,canonical_url,application_url,company,title,location,country,work_mode,description_text,content_hash,availability_status,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(canonical_url) DO UPDATE SET last_seen_at=now(),description_text=EXCLUDED.description_text,content_hash=EXCLUDED.content_hash,metadata=EXCLUDED.metadata RETURNING *, (xmax=0) AS is_new`,[id,job.canonical_url,job.application_url??job.canonical_url,job.company,job.title,job.location,job.country,job.work_mode,job.description_text??'',job.content_hash,job.availability_status??'UNKNOWN',job]);
+   const id=job.job_id??randomUUID(); const {rows}=await client.query(`INSERT INTO jobs(job_id,canonical_url,application_url,company,title,location,country,work_mode,description_text,content_hash,availability_status,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT(canonical_url) DO UPDATE SET last_seen_at=now(),description_text=EXCLUDED.description_text,content_hash=EXCLUDED.content_hash,metadata=EXCLUDED.metadata,availability_status=EXCLUDED.availability_status,application_url=EXCLUDED.application_url,work_mode=EXCLUDED.work_mode,country=EXCLUDED.country,title=EXCLUDED.title,company=EXCLUDED.company,location=EXCLUDED.location RETURNING *, (xmax=0) AS is_new`,[id,job.canonical_url,job.application_url??job.canonical_url,job.company,job.title,job.location,job.country,job.work_mode,job.description_text??'',job.content_hash,job.availability_status??'UNKNOWN',job]);
    const row=rows[0]; await client.query(`INSERT INTO job_sources(job_id,source_name,source_url,source_item_id) VALUES($1,$2,$3,$4) ON CONFLICT(job_id,source_name,source_url) DO UPDATE SET last_seen_at=now()`,[row.job_id,source.source_name,source.source_url,source.source_item_id]); await client.query('COMMIT'); return {job_id:row.job_id,is_new:row.is_new};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  }
@@ -17,3 +17,4 @@ export class Repository {
  async event(type,id,event,payload={}){await this.pool.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',[randomUUID(),type,id,event,payload]);}
  async close(){await this.pool.end();}
 }
+

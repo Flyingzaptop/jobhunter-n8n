@@ -26,6 +26,7 @@ export class OllamaClient {
 
   async json({system, prompt, schema, validate, strong = false}) {
     const check = ajv.compile(schema);
+    let previous = '', retryReason = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const response = await this.fetch(`${this.baseUrl}/api/chat`, {
@@ -35,17 +36,19 @@ export class OllamaClient {
             stream: false, think: false, format: schema,
             options: {temperature: 0, num_ctx: 16384},
             messages: [{role: 'system', content: system}, {role: 'user', content: prompt},
-              ...(attempt ? [{role: 'user', content: 'Previous output did not pass validation. Return valid schema JSON, supported IDs, exact quotes and honest provenance only.'}] : [])]})
+              ...(attempt ? [{role: 'assistant', content: previous}, {role: 'user', content: `Previous output did not pass validation: ${retryReason}. Correct it using the ORIGINAL vacancy and facts. source_quote must be copied EXACTLY from the vacancy, never paraphrased. Extract every mandatory requirement separately. Return valid schema JSON, supported IDs and honest provenance only.`}] : [])]})
         });
         if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
         const envelope = await response.json();
-        const result = JSON.parse(envelope.message?.content ?? envelope.response ?? '');
-        if (!check(result)) throw new StructuredOutputError('LLM JSON schema mismatch');
+        previous = envelope.message?.content ?? envelope.response ?? '';
+        const result = JSON.parse(previous);
+        if (!check(result)) throw new StructuredOutputError(`LLM JSON schema mismatch: ${check.errors.map(e => `${e.instancePath || '/'} ${e.keyword}`).join('; ')}`);
         if (validate) await validate(result);
         return result;
       } catch (error) {
+        retryReason = error instanceof StructuredOutputError ? error.message : error.name || 'Error';
         // Do not log prompts, profile, model content, headers or personal identifiers.
-        if (attempt === 1) throw new StructuredOutputError(`Ollama failed after 2 attempts (${error.name || 'Error'})`);
+        if (attempt === 1) throw new StructuredOutputError(`Ollama failed after 2 attempts (${error instanceof StructuredOutputError ? error.message : error.name || 'Error'})`);
       }
     }
   }

@@ -1,4 +1,5 @@
 import {readFile} from 'node:fs/promises';
+import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
 export const PROMPT_VERSION = 'fit-analysis-v2.1';
@@ -7,7 +8,7 @@ const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE'
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
 const defaultWeights = {TECHNICAL: 40, PROFESSIONAL_EXPERIENCE: 30, EDUCATION: 20, LANGUAGE: 10, OTHER: 5};
 const string = {type: 'string'};
-const strings = {type: 'array', items: string};
+const strings = {type: 'array', uniqueItems: true, items: string};
 const nullableBoolean = {type: ['boolean','null']};
 const nullableNumber = {type: ['number','null'], minimum: 0};
 const nullableString = {type: ['string','null']};
@@ -44,6 +45,7 @@ export const FIT_SCHEMA = object({
     export_control_requirement: nullableString, evidence: strings
   })
 });
+const validateSchema = new Ajv({strict: true, allErrors: true}).compile(FIT_SCHEMA);
 
 export function factIndex(profile) {
   const facts = new Map();
@@ -70,8 +72,34 @@ const quoted = (text, source) => normalize(source).includes(normalize(text)) && 
 const hasSkill = (fact, skill) => !skill || (fact.skills || []).some(s => normalize(s) === normalize(skill))
   || (fact.statements || []).some(s => quoted(skill, s));
 
+/** A narrow completeness guard: explicit mandatory sentences cannot disappear. */
+export function mandatoryRequirementAnchors(job) {
+  return (job.description_text || '').split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim())
+    .filter(s => /\b(required|requirements?|mandatory|must have|must possess|essential)\b|wymagan|obowiazkow/i.test(normalize(s)))
+    .filter(s => !/\b(not required|not mandatory|not essential)\b/i.test(s))
+    // Embedded commands are untrusted data, not genuine job qualifications.
+    .filter(s => !/ignore previous|reveal|environment variables|upload another|instructions|secret|token|localhost/i.test(s));
+}
+
+/** Constrain grammar to exact employer quotations and known candidate IDs. */
+export function schemaForJob(job, profile) {
+  const source = [job.title, job.description_text, job.location, job.country, job.work_mode].filter(Boolean).join('\n');
+  const sentences = source.split(/(?<=[.!?;])\s+|\n+/).map(s => s.trim()).filter(Boolean);
+  const fragments = sentences.flatMap(sentence => [sentence, sentence.replace(/[.!?;]+$/, ''),
+    ...sentence.split(/[,;:]|\s+and\s+/).map(s => s.trim()).filter(Boolean)]);
+  const quotes = [...new Set(fragments)].slice(0, 1000);
+  const ids = [...factIndex(profile).keys()];
+  const schema = structuredClone(FIT_SCHEMA);
+  schema.properties.requirements.items.properties.source_quote = quotes.length ? {enum: quotes} : {enum: ['UNKNOWN']};
+  schema.properties.work_format.properties.evidence.items = quotes.length ? {enum: quotes} : {enum: ['UNKNOWN']};
+  for (const field of ['matched_fact_ids','cv_focus_fact_ids']) schema.properties[field].items = ids.length ? {enum: ids} : {type: 'string', maxLength: 0};
+  schema.properties.requirements.items.properties.candidate_evidence_fact_ids.items = ids.length ? {enum: ids} : {type: 'string', maxLength: 0};
+  return schema;
+}
+
 /** Reject hallucinated IDs, false provenance and ungrounded employer evidence. */
 export function validateFactIntegrity(analysis, profile, job) {
+  if (!validateSchema(analysis)) throw new StructuredOutputError('Fit analysis JSON schema mismatch');
   const facts = factIndex(profile);
   const source = [job.title, job.description_text, job.location, job.country, job.work_mode].filter(Boolean).join('\n');
   const allIds = [...analysis.matched_fact_ids, ...analysis.cv_focus_fact_ids];
@@ -92,11 +120,19 @@ export function validateFactIntegrity(analysis, profile, job) {
       throw new StructuredOutputError('Professional years cannot use general experience');
   }
   for (const id of allIds) if (!facts.has(id)) throw new StructuredOutputError('Unknown candidate fact ID');
+  for (const anchor of mandatoryRequirementAnchors(job)) {
+    if (!analysis.requirements.some(req => quoted(req.source_quote, anchor)
+      || quoted(anchor.replace(/[.!?;]+$/, ''), req.source_quote)))
+      throw new StructuredOutputError('Explicit mandatory requirement omitted');
+  }
   for (const quote of analysis.work_format.evidence)
     if (!quoted(quote, source)) throw new StructuredOutputError('Work-format quote missing from vacancy');
-  if ((analysis.work_format.work_from_poland_allowed === true || analysis.work_format.can_hire_in_poland === true)
+  if ((analysis.work_format.work_from_poland_allowed !== null || analysis.work_format.can_hire_in_poland !== null)
     && !analysis.work_format.evidence.length)
     throw new StructuredOutputError('Confirmed hiring eligibility requires vacancy evidence');
+  if (analysis.work_format.authorization_known_impossible && !analysis.requirements.some(req =>
+    req.category === 'LEGAL' && req.importance === 'MANDATORY' && req.match === 'NO' && req.strict))
+    throw new StructuredOutputError('Impossible authorization requires a grounded mandatory legal blocker');
   for (const blocker of analysis.hard_blockers) {
     const requirement = analysis.requirements[blocker.requirement_index];
     if (!requirement || requirement.importance !== 'MANDATORY' || requirement.match !== 'NO' || !requirement.strict)
@@ -240,9 +276,10 @@ export async function analyzeJob({job, profile, policy = {}, llm = new OllamaCli
   const system = await readFile(new URL('../../prompts/fit_analysis.md', import.meta.url), 'utf8');
   const prompt = JSON.stringify({candidate_facts: [...factIndex(profile).values()],
     candidate: profile.candidate, onboarding: profile.onboarding, search_policy: policy,
+    explicit_requirement_sentences_to_cover: mandatoryRequirementAnchors(job),
     untrusted_quoted_vacancy_data: {title: job.title, description_text: job.description_text?.slice(0, 40000),
       location: job.location, country: job.country, work_mode: job.work_mode}});
-  const request = {system, prompt, schema: FIT_SCHEMA, validate: output => validateFactIntegrity(output, profile, job)};
+  const request = {system, prompt, schema: schemaForJob(job, profile), validate: output => validateFactIntegrity(output, profile, job)};
   const raw = typeof llm === 'function' ? await llm(request) : await llm.json(request);
   // An explicitly injected test gateway must satisfy exactly the same truth boundary.
   validateFactIntegrity(raw, profile, job);

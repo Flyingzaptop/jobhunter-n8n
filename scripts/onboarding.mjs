@@ -1,0 +1,3 @@
+import {readFile} from 'node:fs/promises';import YAML from 'yaml';import {factIndex} from '../services/core/fit.mjs';
+const profile=YAML.parse(await readFile('config/candidate_profile.yaml','utf8'));factIndex(profile);const unknown=[];function walk(value,prefix=''){for(const [key,item] of Object.entries(value??{})){const at=prefix?`${prefix}.${key}`:key;if(item==='UNKNOWN'||item===null)unknown.push(at);else if(typeof item==='object')walk(item,at);}}
+walk(profile);console.log(JSON.stringify({profile_valid:true,unknown_fields:unknown,discovery_blocked:false,submission_requires_required_form_facts:true},null,2));

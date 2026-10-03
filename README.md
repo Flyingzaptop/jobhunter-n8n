@@ -50,6 +50,39 @@ node --env-file=.env services/browser-service/server.mjs
 to 127.0.0.1:55432 and stores its cluster under `data/local-postgres/`.
 Core binds to 127.0.0.1:3000; browser to 127.0.0.1:3001.
 
+## Native n8n bootstrap and stage acceptance
+
+With PostgreSQL running and `.env` initialized:
+
+```powershell
+npm install --prefix .tools/n8n n8n@2.41.6
+node --env-file=.env scripts/n8n-bootstrap.mjs
+node --env-file=.env scripts/local-n8n.mjs
+```
+
+Native n8n uses the `n8n` PostgreSQL schema and `data/n8n/` user folder.
+Bootstrap imports the HTTP header credential from `.env` and removes its
+temporary plaintext file, then imports six inactive workflows with the local
+core URL. Start core separately with `npm start`. The n8n editor is at
+`http://127.0.0.1:5678`; health is `http://127.0.0.1:5678/healthz`.
+Scheduled execution requires activating the workflows in n8n after setup.
+
+For isolated Stage 1/2 acceptance, stop the local n8n server and core first:
+
+```powershell
+./scripts/test-stage-1.ps1
+./scripts/test-stage-2.ps1
+```
+
+Linux/macOS wrappers are `sh scripts/test-stage-1.sh` and
+`sh scripts/test-stage-2.sh`. After bootstrap, `-SkipBootstrap` on PowerShell
+or `--skip-bootstrap` on Node/sh skips repeated imports. Tests start an
+authenticated core on port 3000 and invoke real n8n CLI executions. Each run
+creates a dedicated PostgreSQL schema, retained for inspection, without touching
+production job tables. Results are `tests/results/stage1.json` and `stage2.json`;
+summaries are `docs/STAGE_1_REPORT.md` and `docs/STAGE_2_REPORT.md`.
+Fixtures are available only when core is constructed in explicit test mode.
+
 ## Docker configuration
 
 Create `.env` using the script above. Use URL-encoded values in DATABASE_URL.
@@ -71,7 +104,7 @@ by default. Import/bootstrap must create this credential; never commit it.
 ## Candidate onboarding
 
 Real candidate seed is in ignored `config/candidate_profile.yaml`; factual
-project provenance is retained. The example contains the same known technical
+project provenance is retained. The example is an empty template for verified
 facts without legal name/contact details. Unknown onboarding values must remain
 UNKNOWN. Discovery can run without contact information; CV generation requires
 the real legal name; submission requires all fields demanded by the form.

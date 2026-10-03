@@ -9,7 +9,7 @@ import {OllamaClient, StructuredOutputError} from '../services/core/llm.mjs';
 const profile = YAML.parse(await readFile(new URL('./fixtures/candidate_profile_test.yaml', import.meta.url), 'utf8'));
 const job = {title: 'Mechanical Engineer', company: 'Fixture Company', country: 'Poland',
   location: 'Wroclaw', work_mode: 'REMOTE', availability_status: 'OPEN',
-  description_text: 'CAD required. English B2 required. Remote Poland. Polish employment contract. 5 years professional Python required.'};
+  description_text: 'CAD required. English B2 required. Remote Poland. Polish employment contract.'};
 const requirement = (overrides = {}) => ({requirement: 'CAD required', source_quote: 'CAD required',
   importance: 'MANDATORY', category: 'TECHNICAL', candidate_evidence_fact_ids: ['exp_design'],
   candidate_evidence_provenance: ['PROFESSIONAL'], match: 'YES', reason: 'Verified CAD evidence',
@@ -23,7 +23,9 @@ const format = (overrides = {}) => ({remote_allowed: true, remote_region: 'Polan
   security_clearance_requirement: null, export_control_requirement: null,
   evidence: ['Remote Poland', 'Polish employment contract'], ...overrides});
 const analysis = (overrides = {}) => ({role_family: 'mechanical_engineering', role_level: 'junior',
-  hard_blockers: [], requirements: [requirement()], matched_fact_ids: ['exp_design'], gaps: [],
+  hard_blockers: [], requirements: [requirement(), requirement({requirement: 'English B2 required',
+    source_quote: 'English B2 required', category: 'LANGUAGE', candidate_evidence_fact_ids: ['lang_en'],
+    candidate_evidence_provenance: [null], skill: null})], matched_fact_ids: ['exp_design'], gaps: [],
   cv_focus_fact_ids: ['exp_design'], keywords_supported_by_profile: ['CAD'],
   keywords_not_supported_by_profile: [], career_alignment: 'HIGH', reasoning_summary: 'Fixture',
   work_format: format(), ...overrides});
@@ -133,9 +135,13 @@ test('real gateway retries malformed/schema/semantic output once; no opaque scor
   const llm = new OllamaClient({fetchImpl});
   const output = await llm.json({system: 'test', prompt: 'test', schema: FIT_SCHEMA,
     validate: a => validateFactIntegrity(a, profile, job)});
-  assert.equal(output.requirements.length, 1); assert.equal(calls, 2);
+  assert.equal(output.requirements.length, 2); assert.equal(calls, 2);
   const broken = new OllamaClient({fetchImpl: async () => ({ok: true, json: async () => ({message: {content: '{bad'}})})});
   await assert.rejects(broken.json({system: '', prompt: '', schema: FIT_SCHEMA}), /after 2 attempts/);
+});
+
+test('incomplete extraction cannot yield artificial high fit', async () => {
+  await assert.rejects(analyzeJob({job, profile, llm: async () => analysis({requirements: [requirement()]})}), /mandatory requirement omitted/);
 });
 
 test('injected semantic gateway receives vacancy as untrusted data and no hidden secrets', async () => {

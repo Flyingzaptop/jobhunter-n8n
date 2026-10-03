@@ -10,7 +10,7 @@ export function selectFacts(profile,analysis){
  return facts.filter(f=>ids.has(f.id));
 }
 export async function createCv({job,profile,analysis,repository,outputRoot='data/cv',browserFactory=()=>chromium.launch({headless:true})}){
- const name=profile.candidate?.legal_name??profile.candidate?.name??profile.identity?.legal_name;
+ const name=profile.onboarding?.legal_name??profile.candidate?.legal_name??profile.candidate?.name??profile.identity?.legal_name;
  if(!name||name==='UNKNOWN')throw new Error('Candidate legal name UNKNOWN; CV blocked until onboarding');
  if(job.availability_status!=='OPEN')throw new Error('Vacancy not verified OPEN');
  const facts=selectFacts(profile,analysis);if(!facts.length)throw new Error('No verified CV focus facts');

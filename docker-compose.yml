@@ -7,6 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 5s
@@ -32,7 +33,8 @@ services:
     command: [node, services/browser-service/server.mjs]
     env_file: .env
     environment:
-      HOST: 0.0.0.0
+      BIND_HOST: 0.0.0.0
+      ARTIFACT_DIR: /app/data/cv
     volumes: [./data:/app/data]
     restart: unless-stopped
   n8n:
@@ -61,7 +63,7 @@ services:
     command: [node, services/mock-job-board/server.mjs]
     profiles: [test]
     environment:
-      HOST: 0.0.0.0
+      BIND_HOST: 0.0.0.0
       MOCK_TEST_MODE: 'true'
       MOCK_TEST_TOKEN: ${MOCK_TEST_TOKEN:-}
     ports: [127.0.0.1:3002:3002]
