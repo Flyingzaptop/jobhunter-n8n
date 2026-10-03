@@ -1,0 +1,6 @@
+{
+  "jobs": [
+    {"id":101,"title":"Junior Mechanical Engineer","location":{"name":"Wrocław, Poland"},"absolute_url":"https://boards.greenhouse.io/fixture-engineering/jobs/101?utm_source=feed","content":"<p>Design mechanical assemblies and fixtures using CAD. Support prototype development, documented validation experiments, engineering drawings, finite element analysis and production quality reviews with the local engineering team.</p>"},
+    {"id":102,"title":"Robotics Research Engineer","location":{"name":"Munich, Germany"},"absolute_url":"https://boards.greenhouse.io/fixture-engineering/jobs/102","content":"<p>Develop robotic control simulations in Python, integrate sensors and test automation, document experiments and collaborate with mechanical and electrical engineers. This role is hybrid in Munich.</p>","work_mode":"hybrid"}
+  ]
+}

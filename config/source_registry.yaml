@@ -1,0 +1,51 @@
+version: 1
+schedule_minutes: 60
+defaults:
+  timeout_ms: 15000
+  rate_limit_ms: 1500
+  max_response_bytes: 5000000
+# Public employer ATS feeds; GET only. Boards are deliberately configurable.
+# Company catalog is a seed, not a statement that vacancies match the candidate.
+sources:
+  - name: greenhouse-canonical
+    adapter: greenhouse
+    board: canonical
+    company: Canonical
+    profile: real
+    enabled: true
+    permitted_access: true
+    allowed_hosts: [boards-api.greenhouse.io]
+    documentation: https://docs.greenhouse.io/job-board.html
+  - name: lever-rivr
+    adapter: lever
+    board: rivr
+    company: RIVR
+    profile: real
+    enabled: true
+    permitted_access: true
+    allowed_hosts: [api.lever.co]
+    documentation: https://github.com/lever/postings-api
+  - name: ashby-ashby
+    adapter: ashby
+    board: ashby
+    company: Ashby
+    profile: real
+    enabled: true
+    permitted_access: true
+    allowed_hosts: [api.ashbyhq.com]
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+  - name: mock-json
+    adapter: mock
+    profile: mock
+    enabled: false
+    url: http://mock-job-board:3002/api/jobs
+    allow_local_mock: true
+  - name: manual-seeds
+    adapter: manual
+    profile: real
+    enabled: false
+    permitted_access: true
+    items: []
+# RSS and official HTML sources are opt-in: adapter rss parses RSS 2.0 items;
+# adapter html extracts schema.org JobPosting JSON-LD only, without executing JS.
+# Add exact allowed_hosts and permitted_access after checking the source policy.
