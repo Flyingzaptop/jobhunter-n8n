@@ -66,7 +66,7 @@ async function ask({repository,telegram,application,browser,sessionId,field,snap
   return {application_id:application.application_id,status,pending_question:pending};
 }
 
-async function reverify({browser,job,applicationId}) {
+export async function reverify({browser,job,applicationId}) {
   const opened=await browser.call('/sessions',{application_id:applicationId,url:job.canonical_url});
   try {const view=opened.snapshot;if(/job (?:is )?(?:closed|expired)|no longer accepting applications|position (?:is )?filled/i.test(view.text))return false;return view.title && (view.buttons.some(b=>b.href===job.application_url&&/apply/i.test(b.text)) || /apply|application/i.test(view.title));}
   finally{await browser.call(`/sessions/${opened.session_id}`,undefined,'DELETE');}

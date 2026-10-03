@@ -37,11 +37,12 @@ experience:
     duration_approx_years: 2
     exact_start_date: '2024-01-01'
     exact_end_date: '2025-12-31'
-    skills: [CAD, Fusion 360, mechanical_design, prototyping]
+    skills: [CAD, Fusion 360, mechanical_design, prototyping, technical_drawings]
     statements:
       - Designed mechanical assemblies in Fusion 360 and CAD.
       - Built and tested prototypes for manufacturability.
       - Collaborated on engineering documentation and quality checks.
+      - Produced CAD technical drawings for mechanical assemblies.
 projects:
   - id: project_mech
     provenance: ACADEMIC

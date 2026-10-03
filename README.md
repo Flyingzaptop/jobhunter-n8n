@@ -83,6 +83,24 @@ production job tables. Results are `tests/results/stage1.json` and `stage2.json`
 summaries are `docs/STAGE_1_REPORT.md` and `docs/STAGE_2_REPORT.md`.
 Fixtures are available only when core is constructed in explicit test mode.
 
+Additional isolated module checks:
+
+```powershell
+./scripts/test-stage-4.ps1 -SkipBootstrap
+./scripts/test-stage-6.ps1 -SkipBootstrap
+```
+
+These execute real n8n workflows against dedicated PostgreSQL schemas, with
+fictional profile/seeded analysis and application statuses. Stage 4 uses core
+port 3004, Stage 6 uses 3006, and fixture task brokers use ports 5801–5806 so the
+native editor can remain running. Stage 4 requires Chromium and Poppler
+`pdftoppm` and produces three factual PDF variants; Stage 6 captures Telegram
+summary text with a test transport and writes to `data/report-fixtures/`.
+Machine reports are `tests/results/stage4.json` and `stage6.json`. Stage 4
+acceptance remains conditional on Stage 3; Stage 6 on Stage 5. These module
+checks do not establish real model decisions, browser submissions or Telegram
+bot delivery. See `docs/STAGE_4_REPORT.md` and `docs/STAGE_6_REPORT.md`.
+
 ## Docker configuration
 
 Create `.env` using the script above. Use URL-encoded values in DATABASE_URL.

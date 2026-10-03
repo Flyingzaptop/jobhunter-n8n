@@ -24,7 +24,7 @@ export class OllamaClient {
     this.strongModel = strongModel; this.timeoutMs = timeoutMs; this.fetch = fetchImpl;
   }
 
-  async json({system, prompt, schema, validate, strong = false}) {
+  async json({system, prompt, schema, validate, strong = false, numCtx = 16384, numPredict, repairInstruction}) {
     const check = ajv.compile(schema);
     let previous = '', retryReason = '';
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -34,9 +34,9 @@ export class OllamaClient {
           signal: AbortSignal.timeout(this.timeoutMs),
           body: JSON.stringify({model: strong ? this.strongModel : this.model,
             stream: false, think: false, format: schema,
-            options: {temperature: 0, num_ctx: 16384},
+            options: {temperature: 0, num_ctx: numCtx, ...(numPredict ? {num_predict: numPredict} : {})},
             messages: [{role: 'system', content: system}, {role: 'user', content: prompt},
-              ...(attempt ? [{role: 'assistant', content: previous}, {role: 'user', content: `Previous output did not pass validation: ${retryReason}. Correct it using the ORIGINAL vacancy and facts. source_quote must be copied EXACTLY from the vacancy, never paraphrased. Extract every mandatory requirement separately. Return valid schema JSON, supported IDs and honest provenance only.`}] : [])]})
+              ...(attempt ? [{role: 'assistant', content: previous}, {role: 'user', content: `Previous output did not pass validation: ${retryReason}. Correct it using the ORIGINAL vacancy and facts. ${repairInstruction || 'source_quote must be copied EXACTLY from the vacancy, never paraphrased. Extract every mandatory requirement separately. Return valid schema JSON, supported IDs and honest provenance only.'}`}] : [])]})
         });
         if (!response.ok) throw new Error(`Ollama HTTP ${response.status}`);
         const envelope = await response.json();

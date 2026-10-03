@@ -25,8 +25,10 @@ export function extractExecution(stdout) {
   throw new Error('No n8n execution result JSON found');
 }
 
-export async function executeFixtureStage(number) {
-  const filename = number === 1 ? 'WF-01-discovery.json' : 'WF-02-normalize-dedupe.json';
+export async function executeFixtureStage(number, { body = number === 1 ? { fixture: true } : {}, port = 3000, timeoutMs = 300_000 } = {}) {
+  const names = ['discovery', 'normalize-dedupe', 'fit-analysis', 'cv-factory', 'application-hitl', 'reporting-ledger'];
+  if (!names[number - 1]) throw new Error('Unsupported workflow stage');
+  const filename = `WF-${String(number).padStart(2, '0')}-${names[number - 1]}.json`;
   const workflow = JSON.parse(await readFile(`n8n/workflows/${filename}`, 'utf8'));
   workflow.id = `WF0${number}Fixture`;
   workflow.name = `Stage ${number} isolated fixture acceptance`;
@@ -34,10 +36,14 @@ export async function executeFixtureStage(number) {
   workflow.connections = { 'Manual Trigger': { main: [[{ node: `Execute Stage ${number}`, type: 'main', index: 0 }]] } };
   workflow.settings.saveDataSuccessExecution = 'all';
   const action = workflow.nodes.find(node => node.type === 'n8n-nodes-base.httpRequest');
-  action.parameters.url = `http://127.0.0.1:3000/stages/${number}`;
-  action.parameters.jsonBody = JSON.stringify(number === 1 ? { fixture: true } : {});
+  action.parameters.url = `http://127.0.0.1:${port}/stages/${number}`;
+  action.parameters.jsonBody = JSON.stringify(body);
+  action.parameters.options = { ...action.parameters.options, timeout: timeoutMs };
   await importWorkflow(workflow);
-  const output = await n8nCli(['execute', `--id=${workflow.id}`, '--rawOutput'], { env: { N8N_LOG_LEVEL: 'info' } });
+  const output = await n8nCli(['execute', `--id=${workflow.id}`, '--rawOutput'], {
+    timeoutMs,
+    env: { N8N_LOG_LEVEL: 'info', N8N_RUNNERS_BROKER_PORT: String(5800 + number) },
+  });
   const execution = extractExecution(output.stdout);
   assert.equal(execution.data.resultData.error, undefined, 'n8n workflow error');
   const result = execution.data.resultData.runData[`Execute Stage ${number}`][0].data.main[0][0].json;

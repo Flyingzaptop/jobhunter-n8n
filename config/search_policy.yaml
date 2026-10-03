@@ -9,18 +9,43 @@ qualification_weights:
 excluded_companies: []
 excluded_countries: []
 role_families:
-  - mechanical_engineering
-  - simulation_cae
-  - research_and_development
-  - software_engineering
-  - technical_software
-  - data_science
-  - machine_learning
-  - embedded
-  - automation
-  - gamedev_technical
-  - it_support
-  - technical_support
+  primary:
+    - mechanical_engineering
+    - mechanical_design
+    - r_and_d
+    - product_development
+    - simulation_cae
+    - test_validation
+    - automotive
+    - aerospace
+    - robotics
+    - automation
+  software_data:
+    - python
+    - machine_learning
+    - data_science
+    - research_engineering
+    - technical_software
+    - scientific_software
+    - embedded_software
+    - graphics_performance
+    - gamedev_technical
+  bridge:
+    - it_support
+    - systems_administration
+    - technical_support
+    - deployment_automation
+  cross_disciplinary:
+    - mechanical_plus_software
+    - simulation_plus_python
+    - robotics_plus_software
+    - test_plus_automation
+    - digital_engineering
+    - embedded_plus_mechanical
+seniority:
+  include: [internship, graduate, junior, entry_level, regular, mid]
+  selective_mid: true
+  reject_explicit_senior_when_materially_unqualified: true
 work_location_policy:
   candidate_base: {city: Wroclaw, country: Poland}
   discovery:

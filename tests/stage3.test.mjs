@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import YAML from 'yaml';
 import {analyzeJob, scoreRequirements, routeAnalysis, validateFactIntegrity, enforceProfessionalYears,
-  reusableAnswer, FIT_SCHEMA} from '../services/core/fit.mjs';
+  reusableAnswer, enforceEducation, enforceLanguageLevels, FIT_SCHEMA, schemaForJob, missingMandatoryListItems,
+  COMPACT_FIT_SCHEMA, sourceFragmentCatalog, expandCompactAnalysis} from '../services/core/fit.mjs';
 import {OllamaClient, StructuredOutputError} from '../services/core/llm.mjs';
 
 const profile = YAML.parse(await readFile(new URL('./fixtures/candidate_profile_test.yaml', import.meta.url), 'utf8'));
@@ -30,6 +31,57 @@ const analysis = (overrides = {}) => ({role_family: 'mechanical_engineering', ro
   keywords_not_supported_by_profile: [], career_alignment: 'HIGH', reasoning_summary: 'Fixture',
   work_format: format(), ...overrides});
 const route = (a, j = job, p = profile) => routeAnalysis({analysis: a, job: j, profile: p});
+const compactAnalysis = (a = analysis(), j = job) => {
+  const catalog = sourceFragmentCatalog(j);
+  const id = quote => catalog.find(f => f.text.replace(/[.!?;]+$/, '') === quote.replace(/[.!?;]+$/, ''))?.id ?? -1;
+  const {evidence, ...work_format} = a.work_format;
+  return {role_family: a.role_family, role_level: a.role_level, career_alignment: a.career_alignment,
+    requirements: a.requirements.map(req => ({source_fragment_id: id(req.source_quote), importance: req.importance,
+      category: req.category, candidate_evidence_fact_ids: req.candidate_evidence_fact_ids,
+      match: req.match, reason: req.reason, skill: req.skill, strict: req.strict})),
+    work_format: {...work_format, evidence_fragment_ids: evidence.map(id)}};
+};
+
+test('compact wire conversion restores exact source text and derived provenance', () => {
+  const converted = expandCompactAnalysis(compactAnalysis(), {job, profile});
+  assert.equal(converted.requirements[0].source_quote, 'CAD required.');
+  assert.deepEqual(converted.requirements[0].candidate_evidence_provenance, ['PROFESSIONAL']);
+  assert.deepEqual(converted.requirements[1].candidate_evidence_provenance, []);
+  assert.deepEqual(converted.matched_fact_ids, ['exp_design','lang_en']);
+  assert.ok(!Object.hasOwn(COMPACT_FIT_SCHEMA.properties.requirements.items.properties, 'source_quote'));
+});
+
+test('compact wire rejects unknown source IDs, fake candidate IDs and incomplete mapping', () => {
+  const wrongSource = compactAnalysis(); wrongSource.requirements[0].source_fragment_id = 999;
+  assert.throws(() => expandCompactAnalysis(wrongSource, {job, profile}), /Unknown source fragment/);
+  const wrongFact = compactAnalysis(); wrongFact.requirements[0].candidate_evidence_fact_ids = ['imaginary'];
+  assert.throws(() => expandCompactAnalysis(wrongFact, {job, profile}), /Unknown candidate evidence/);
+  const incomplete = compactAnalysis(); incomplete.requirements.pop();
+  assert.throws(() => expandCompactAnalysis(incomplete, {job, profile}), /mandatory requirement omitted/);
+});
+
+test('production Ollama path uses compact schema and normal truth checks', async () => {
+  const client = new OllamaClient({fetchImpl: async (_url, options) => {
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.options.num_ctx, 8192);
+    assert.equal(payload.options.num_predict, 2200);
+    assert.ok(payload.format.properties.requirements.items.properties.source_fragment_id.enum.every(Number.isInteger));
+    assert.ok(payload.format.properties.requirements.items.properties.candidate_evidence_fact_ids.items.enum.includes('exp_design'));
+    assert.ok(!payload.format.properties.requirements.items.properties.source_quote);
+    return {ok: true, json: async () => ({message: {content: JSON.stringify(compactAnalysis())}})};
+  }});
+  assert.equal((await analyzeJob({job, profile, llm: client})).decision, 'AUTO_APPLY');
+});
+
+test('compact fragment catalog splits mandatory lists with inherited importance', () => {
+  const j = {...job, description_text: 'Mandatory: CAD, FEA and Python.'};
+  const catalog = sourceFragmentCatalog(j);
+  assert.equal(catalog.find(f => f.text === 'CAD').importance_hint, 'MANDATORY');
+  assert.equal(catalog.find(f => f.text === j.description_text).list_container, true);
+  const wire = compactAnalysis();
+  wire.requirements = [{...wire.requirements[0], source_fragment_id: catalog.find(f => f.list_container).id}];
+  assert.throws(() => expandCompactAnalysis(wire, {job: j, profile, catalog}), /map each item separately/);
+});
 
 test('Stage3 seven synthetic jobs route independently of qualification score', () => {
   const cases = [
@@ -86,11 +138,42 @@ test('fake fact IDs and provenance are rejected before routing', async () => {
   assert.throws(() => validateFactIntegrity(analysis({requirements: [requirement({source_quote: 'Invented mandatory PhD'})]}), profile, job), StructuredOutputError);
 });
 
+test('provenance validates distinct real evidence types rather than duplicate positions', () => {
+  const a = analysis();
+  a.requirements[0].candidate_evidence_fact_ids = ['exp_design','project_mech','skill_mechanical_0'];
+  a.requirements[0].candidate_evidence_provenance = ['PROFESSIONAL','ACADEMIC'];
+  assert.equal(validateFactIntegrity(a, profile, job), true);
+});
+
 test('independent research never satisfies professional Python years', () => {
   const rows = enforceProfessionalYears([requirement({min_years: 5, professional_only: true, skill: 'Python',
     candidate_evidence_fact_ids: ['rnd_python','exp_design'], candidate_evidence_provenance: ['INDEPENDENT_R_AND_D','PROFESSIONAL']})], profile);
   assert.equal(rows[0].professional_years_verified, 0); assert.equal(rows[0].match, 'NO');
   assert.equal(enforceProfessionalYears([requirement({min_years: 2, professional_only: true, skill: 'CAD'})], profile)[0].match, 'YES');
+  assert.equal(enforceProfessionalYears([requirement({min_years: 5, professional_only: true, skill: 'CAD', strict: true})], profile)[0].match, 'NO');
+});
+
+test('unfinished education cannot satisfy completed degree requirements', () => {
+  const p = structuredClone(profile); p.education[0].status = 'degree_in_progress';
+  const req = requirement({category: 'EDUCATION', requirement: 'Completed bachelor degree required',
+    candidate_evidence_fact_ids: ['edu_mech'], candidate_evidence_provenance: ['EDUCATION'], strict: true});
+  assert.equal(enforceEducation([req], p)[0].match, 'NO');
+});
+
+test('declared CEFR level satisfies ordinary level requirement without claiming a certificate', () => {
+  const req = requirement({category: 'LANGUAGE', requirement: 'English B2', match: 'UNKNOWN',
+    candidate_evidence_fact_ids: [], candidate_evidence_provenance: [], strict: true});
+  assert.equal(enforceLanguageLevels([req], profile)[0].match, 'YES');
+  assert.deepEqual(enforceLanguageLevels([req], profile)[0].candidate_evidence_fact_ids, ['lang_en']);
+  assert.equal(enforceLanguageLevels([{...req, requirement: 'English C1'}], profile)[0].match, 'NO');
+  assert.equal(enforceLanguageLevels([{...req, requirement: 'English B2 certificate'}], profile)[0].match, 'UNKNOWN');
+});
+
+test('guided Ollama schema restricts output to exact quotes and existing facts', () => {
+  const schema = schemaForJob(job, profile);
+  assert.ok(schema.properties.requirements.items.properties.source_quote.enum.includes('CAD required.'));
+  assert.ok(schema.properties.matched_fact_ids.items.enum.includes('exp_design'));
+  assert.ok(!schema.properties.matched_fact_ids.items.enum.includes('imaginary'));
 });
 
 test('unknown work format, hiring route, onboarding arrangements and permits require review', () => {
@@ -107,6 +190,8 @@ test('rare travel in Poland is eligible, weekly nonlocal travel requires relocat
   assert.equal(route(analysis({work_format: rare})).work_format_class, 'HYBRID_POLAND_RARE_TRAVEL');
   assert.equal(route(analysis({work_format: rare})).decision, 'AUTO_APPLY');
   assert.equal(route(analysis({work_format: {...rare, onsite_days_per_week: 2}})).decision, 'REVIEW');
+  assert.equal(route(analysis({work_format: {...rare, office_country: 'PL'}})).decision, 'AUTO_APPLY');
+  assert.equal(route(analysis({work_format: format({employee_residency_requirement: 'Poland residents only'})})).decision, 'AUTO_APPLY');
 });
 
 test('unverified vacancies, duplicates, company-spam and closed postings are gated', () => {
@@ -142,6 +227,12 @@ test('real gateway retries malformed/schema/semantic output once; no opaque scor
 
 test('incomplete extraction cannot yield artificial high fit', async () => {
   await assert.rejects(analyzeJob({job, profile, llm: async () => analysis({requirements: [requirement()]})}), /mandatory requirement omitted/);
+});
+
+test('quoting an entire mandatory list cannot hide omitted requirements', () => {
+  const j = {...job, description_text: 'Mandatory: CAD, FEA and Python.'};
+  const a = analysis({requirements: [requirement({source_quote: j.description_text})]});
+  assert.deepEqual(missingMandatoryListItems(a, j), ['FEA','Python']);
 });
 
 test('injected semantic gateway receives vacancy as untrusted data and no hidden secrets', async () => {
