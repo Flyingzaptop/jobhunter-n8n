@@ -5,3 +5,4 @@ data
 tests/results
 config/candidate_profile.yaml
 config/answer_memory.yaml
+.tools
