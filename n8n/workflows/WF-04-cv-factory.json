@@ -1,0 +1,99 @@
+{
+  "id": "WF-04",
+  "name": "WF-04 cv-factory",
+  "nodes": [
+    {
+      "id": "manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": "webhook",
+      "name": "Stage Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "jobhunter/stage/4",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jobhunter-core",
+          "name": "JobHunter internal secret"
+        }
+      }
+    },
+    {
+      "id": "stage",
+      "name": "Execute Stage 4",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        300,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://core:3000/stages/4",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "jobhunter-core",
+          "name": "JobHunter internal secret"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute Stage 4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage Webhook": {
+      "main": [
+        [
+          {
+            "node": "Execute Stage 4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Warsaw",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none"
+  },
+  "pinData": {},
+  "tags": []
+}
