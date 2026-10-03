@@ -37,11 +37,12 @@ try {
       overall_fit: index < 7 ? 80 : 20, model: 'seeded-report-fixture' });
   }
   const statuses = ['SUBMITTED', 'SUBMITTED', 'SUBMITTED', 'SUBMITTED', 'NEEDS_USER', 'FAILED', 'SKIPPED'];
+  const fixtureSubmittedAt = new Date().toISOString();
   for (const [index, status] of statuses.entries()) {
     const id = randomUUID();
     await repository.pool.query(`INSERT INTO applications(application_id,candidate_profile_id,job_id,status,dry_run,confirmation_id,submitted_at,skip_reason,failure_reason) VALUES($1,$2,$3,$4,true,$5,$6,$7,$8)`,
       [id, 'fictional-stage6', jobIds[index], status, status === 'SUBMITTED' ? `FIXTURE-CONF-${index}` : null,
-        status === 'SUBMITTED' ? '2026-10-03T08:00:00Z' : null, status === 'SKIPPED' ? 'JOB_CLOSED' : null,
+        status === 'SUBMITTED' ? fixtureSubmittedAt : null, status === 'SKIPPED' ? 'JOB_CLOSED' : null,
         status === 'FAILED' ? 'FIXTURE_FAILURE' : null]);
     if (status === 'SUBMITTED') await repository.pool.query('INSERT INTO application_outcomes(outcome_id,application_id,outcome_status,source,notes) VALUES($1,$2,$3,$4,$5)',
       [randomUUID(), id, 'NO_RESPONSE', 'fixture', 'Artificial status; no browser submission occurred.']);
@@ -56,6 +57,14 @@ try {
   assert.equal(summary.suitable, 7);
   assert.equal(summary.skipped, 1);
   assert.equal(summary.total, 7);
+  assert.deepEqual({discovered:summary.daily.discovered,unique:summary.daily.unique,analyzed:summary.daily.analyzed,
+    suitable:summary.daily.suitable,submitted:summary.daily.submitted,awaiting_user:summary.daily.awaiting_user,
+    failed:summary.daily.failed,skipped:summary.daily.skipped},
+  {discovered:30,unique:24,analyzed:24,suitable:7,submitted:4,awaiting_user:1,failed:1,skipped:1});
+  assert.equal(summary.scope, 'cumulative');
+  assert.equal(summary.weekly.funnel.submitted, 4);
+  assert.equal(summary.weekly.funnel.no_response_still_pending, 4);
+  assert.equal(summary.weekly.breakdowns.fit_band[0].value, 'AUTO_APPLY');
   assert.equal(messages.length, 1);
   for (const text of ['Discovered: 30', 'Unique: 24', 'Analyzed: 24', 'Suitable: 7', 'AUTO_APPLY: 4', 'REVIEW: 2', 'STRETCH: 1', 'REJECT: 17', 'Submitted: 4', 'Awaiting user: 1', 'Failed: 1', 'Skipped: 1']) {
     assert.ok(messages[0].includes(text), `Missing Telegram summary metric ${text}`);
@@ -65,10 +74,17 @@ try {
   const csv = await readFile(csvPath, 'utf8');
   const ledger = await readFile(ledgerPath, 'utf8');
   assert.equal(csv.trim().split('\n').length, 8);
+  assert.ok(csv.includes('work_format_class,office_location,onsite_frequency,employment_route,work_from_poland_allowed,relocation_required'));
   assert.equal((ledger.match(/FIXTURE-CONF-/g) ?? []).length, 4);
   assert.equal(summary.outcomes.find(row => row.outcome_status === 'NO_RESPONSE').count, 4);
   const second = await executeFixtureStage(6, { port: 3006 });
-  assert.deepEqual(second.stage_result, summary);
+  const { reconciliation: firstReconciliation, ...firstMetrics } = summary;
+  const { reconciliation: secondReconciliation, ...secondMetrics } = second.stage_result;
+  assert.deepEqual(secondMetrics, firstMetrics);
+  assert.deepEqual(secondReconciliation.actions, firstReconciliation.actions);
+  assert.equal(firstReconciliation.automatic_submissions, 0);
+  assert.equal(secondReconciliation.automatic_submissions, 0);
+  assert.equal(secondReconciliation.new_events, 0, 'Reconciliation must not repeat unchanged evidence events');
   assert.equal(await readFile(csvPath, 'utf8'), csv);
   assert.equal(await readFile(ledgerPath, 'utf8'), ledger);
   assert.equal(messages.length, 2);
@@ -77,6 +93,8 @@ try {
   report = { stage: 6, module_test_status: 'PASS', acceptance_status: 'CONDITIONAL_PENDING_STAGE5',
     execution_engine: 'real_n8n_cli', persistence: 'PostgreSQL', schema, execution_id: first.execution_id, rerun_execution_id: second.execution_id,
     summary, suitable, ledger_rows: 4, csv_rows: 7, idempotent: true, output_dir: reportDir,
+    reconciliation_rerun_new_events: secondReconciliation.new_events,
+    daily_period: summary.daily.date, weekly_period: summary.weekly.period,
     telegram_summary_text: messages[0], telegram_transport: 'injected_capture_only', real_telegram_delivery_verified: false,
     application_status_origin: 'seeded_fixture', real_application_submissions: 0,
     limitations: ['Synthetic submitted statuses test reporting only; no upstream Stage 5 browser submission is proven.',

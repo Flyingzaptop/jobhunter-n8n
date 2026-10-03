@@ -81,6 +81,61 @@ test('compact fragment catalog splits mandatory lists with inherited importance'
   const wire = compactAnalysis();
   wire.requirements = [{...wire.requirements[0], source_fragment_id: catalog.find(f => f.list_container).id}];
   assert.throws(() => expandCompactAnalysis(wire, {job: j, profile, catalog}), /map each item separately/);
+  const compound = sourceFragmentCatalog({...job, description_text: 'Fusion 360 and prototyping required;'});
+  assert.equal(compound.find(f => f.text === 'Fusion 360').importance_hint, 'MANDATORY');
+  assert.equal(compound.find(f => f.text === 'prototyping required').importance_hint, 'MANDATORY');
+});
+
+test('compact extraction cannot omit compound mandatory items or explicit preferences', () => {
+  const j = {...job, description_text: 'CAD and FEA required. Preferred: Python.'};
+  const catalog = sourceFragmentCatalog(j);
+  const wire = compactAnalysis();
+  const row = wire.requirements[0];
+  wire.requirements = [{...row, source_fragment_id: catalog.find(f => f.text === 'CAD').id}];
+  assert.throws(() => expandCompactAnalysis(wire, {job: j, profile}), /mandatory requirement omitted/);
+  wire.requirements.push({...row, source_fragment_id: catalog.find(f => f.text === 'FEA required').id});
+  assert.throws(() => expandCompactAnalysis(wire, {job: j, profile}), /requirement omitted/);
+});
+
+test('a single-item requirement list has one atomic requirement and one unselectable container', () => {
+  const j = {...job, description_text: 'Preferred: 4 years professional CAD experience.'};
+  const catalog = sourceFragmentCatalog(j);
+  assert.equal(catalog.filter(f => f.importance_hint && !f.list_container).length, 1);
+  assert.equal(catalog.find(f => f.text === j.description_text).list_container, true);
+});
+
+test('confirmed Polish hiring requires explicit employment evidence', () => {
+  const a = analysis({work_format: format({evidence: ['Remote Poland']})});
+  assert.throws(() => validateFactIntegrity(a, profile, job), /hiring-route evidence/);
+  const j = {...job, description_text: `${job.description_text} Work fully remotely from Poland using a Polish employment contract.`};
+  const contract = 'Work fully remotely from Poland using a Polish employment contract.';
+  assert.throws(() => validateFactIntegrity(analysis({work_format: format({can_hire_in_poland: null, evidence: [contract]})}), profile, j), /requires can_hire/);
+  assert.equal(validateFactIntegrity(analysis({work_format: format({evidence: [contract]})}), profile, j), true);
+});
+
+test('a nursing licence failure cannot become an immigration blocker', () => {
+  const j = {...job, description_text: 'Registered nurse license mandatory.'};
+  const a = analysis({requirements: [requirement({requirement: j.description_text, source_quote: j.description_text,
+    category: 'LEGAL', match: 'NO', strict: true, candidate_evidence_fact_ids: [], candidate_evidence_provenance: []})],
+    work_format: format({authorization_known_impossible: true, can_hire_in_poland: null,
+      work_from_poland_allowed: null, evidence: []})});
+  assert.throws(() => validateFactIntegrity(a, profile, j), /Impossible authorization/);
+});
+
+test('unapproved relocation is a work-format review rather than a qualification rejection', async () => {
+  const j = {...job, description_text: 'CAD required. Willingness to relocate to Munich required.', location: 'Munich', country: 'DE'};
+  const raw = analysis({requirements: [requirement(), requirement({requirement: 'Willingness to relocate to Munich required.',
+    source_quote: 'Willingness to relocate to Munich required.', category: 'LOCATION', strict: true, match: 'NO',
+    candidate_evidence_fact_ids: [], candidate_evidence_provenance: []})],
+    work_format: format({remote_allowed: false, office_location: 'Munich', office_country: 'Germany',
+      employment_route: 'RELOCATION', can_hire_in_poland: null, work_from_poland_allowed: null, evidence: []})});
+  assert.equal((await analyzeJob({job: j, profile, llm: async () => raw})).decision, 'REVIEW');
+});
+
+test('Polish Wrocław spelling matches the configured local hybrid base', () => {
+  const local = format({office_location: 'Wrocław', office_country: 'PL', hybrid_required: true, onsite_days_per_week: 2});
+  assert.equal(route(analysis({work_format: local})).work_format_class, 'HYBRID_WROCLAW_LOCAL');
+  assert.equal(route(analysis({work_format: local})).decision, 'AUTO_APPLY');
 });
 
 test('Stage3 seven synthetic jobs route independently of qualification score', () => {
@@ -167,6 +222,16 @@ test('declared CEFR level satisfies ordinary level requirement without claiming 
   assert.deepEqual(enforceLanguageLevels([req], profile)[0].candidate_evidence_fact_ids, ['lang_en']);
   assert.equal(enforceLanguageLevels([{...req, requirement: 'English C1'}], profile)[0].match, 'NO');
   assert.equal(enforceLanguageLevels([{...req, requirement: 'English B2 certificate'}], profile)[0].match, 'UNKNOWN');
+});
+
+test('verified language correction removes obsolete model hard blocker', async () => {
+  const a = analysis();
+  a.requirements[1] = {...a.requirements[1], match: 'NO', strict: true};
+  a.hard_blockers = [{requirement_index: 1, reason: 'Model incorrectly demanded a language certificate'}];
+  const result = await analyzeJob({job, profile, llm: async () => a});
+  assert.equal(result.requirements[1].match, 'YES');
+  assert.deepEqual(result.hard_blockers, []);
+  assert.equal(result.decision, 'AUTO_APPLY');
 });
 
 test('guided Ollama schema restricts output to exact quotes and existing facts', () => {

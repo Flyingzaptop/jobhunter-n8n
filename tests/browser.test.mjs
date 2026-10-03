@@ -66,7 +66,7 @@ test('real Playwright: complex application, human CAPTCHA, recovery, validation,
   view=await snapshot();assert.equal(view.fields.some(f=>f.name==='timezone_overlap'),true);await select('work_arrangement','Remote');await fill('timezone_overlap','09:00-17:00 Europe/Warsaw');view=await next();assert.equal(view.current_step,7);
   assert.equal(view.fields.find(f=>f.name==='website_trap').visible,false);
   const trap=await fetch(base+'/sessions/'+id+'/fill',{method:'POST',headers:{authorization:'Bearer fixture-browser-token','content-type':'application/json'},body:JSON.stringify({selector:'#website_trap',value:'spam'})});assert.equal(trap.status,400);
-  await fill('salary_format','invalid');await call('/sessions/'+id+'/check',{selector:'#privacy'});view=await next();assert.equal(view.current_step,7);assert.ok(view.validation_errors.includes('INVALID_SALARY_FORMAT_OR_HONEYPOT'));
+  await fill('salary_format','invalid');await call('/sessions/'+id+'/check',{selector:'#privacy'});view=await next();assert.equal(view.current_step,7);assert.ok(view.fields.find(f=>f.name==='salary_format').validation_message);
   await fill('salary_format','10000-12000 PLN');
   const oldId=id;await call('/sessions/'+id,undefined,'DELETE');const recovered=await call('/sessions/'+oldId+'/recover',{});id=recovered.session_id;assert.equal(recovered.snapshot.current_step,7);assert.equal(recovered.replay_required,true);
   // Server draft preserved previous accepted step; reversible current input is reapplied after DOM inspection.

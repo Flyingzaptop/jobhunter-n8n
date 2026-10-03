@@ -6,6 +6,7 @@ import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { validateDestination, submitPermission, classifyConsent } from './policy.mjs';
+import { pruneBrowserState } from './retention.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -14,7 +15,7 @@ export function browserConfig(env = process.env) {
     allowMockNetwork: env.ALLOW_MOCK_NETWORK === 'true', mockHosts: (env.MOCK_ALLOWED_HOSTS || '127.0.0.1,localhost,mock-job-board').split(','),
     allowDomains: (env.APPLICATION_DOMAIN_ALLOWLIST || '').split(',').filter(Boolean), denyDomains: (env.APPLICATION_DOMAIN_DENYLIST || '').split(',').filter(Boolean),
     artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/cv'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
-    executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined };
+    sessionRetentionHours:Number(env.BROWSER_SESSION_RETENTION_HOURS||48),screenshotRetentionHours:Number(env.SCREENSHOT_RETENTION_HOURS||168),executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined };
 }
 
 // Every request is resolved once, checked, then connected to the checked address.
@@ -45,6 +46,8 @@ export async function createBrowserService(config = browserConfig()) {
   if (!config.token) throw new Error('BROWSER_SERVICE_TOKEN_REQUIRED');
   const sessions = new Map(); let browser;
   await fs.mkdir(config.stateRoot, { recursive: true }); await fs.mkdir(config.artifactRoot, { recursive: true });
+  await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
+  const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
   async function newSession(applicationId, saved) {
     browser ||= await chromium.launch({ headless: true, executablePath: config.executablePath, args: ['--disable-webrtc', '--disable-quic'] });
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state });
@@ -72,7 +75,7 @@ export async function createBrowserService(config = browserConfig()) {
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link', final_submit: e.dataset.finalSubmit === 'true', href: e.href || null }; });
       return { url: location.href, title: document.title, current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
-    return { ...result, browser_session_id: session.id, fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name, f.type, f.required]), step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
+    return { ...result, browser_session_id: session.id, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name, f.type, f.required]), step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
   async function checkpoint(session) {
     const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
@@ -159,7 +162,7 @@ export async function createBrowserService(config = browserConfig()) {
       send(404, { error: 'NOT_FOUND' });
     } catch (error) { send(400, { error: error.message }); }
   });
-  return { server, sessions, config, listen: () => new Promise(resolve => server.listen(config.port, config.host, resolve)), close: async () => { for (const s of sessions.values()) await s.context.close(); await browser?.close(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, sessions, config, listen: () => new Promise(resolve => server.listen(config.port, config.host, resolve)), close: async () => { clearInterval(retentionTimer);for (const s of sessions.values()) await s.context.close(); await browser?.close(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const service = await createBrowserService(); await service.listen(); console.log(JSON.stringify({ event: 'browser_started', port: service.config.port })); for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await service.close(); process.exit(0); }); }

@@ -15,6 +15,7 @@ const country = value => /^(pl|poland)$/i.test(value) ? 'PL' : String(value||'')
 
 export function professionalYears(profile) {
   if(known(profile.candidate?.professional_years))return profile.candidate.professional_years;
+  if((profile.experience||[]).some(f=>f.provenance==='PROFESSIONAL'&&(!f.exact_start_date||!f.exact_end_date)))return undefined;
   const intervals=(profile.experience||[]).filter(f=>f.provenance==='PROFESSIONAL' && f.exact_start_date && f.exact_end_date).map(f=>[Date.parse(f.exact_start_date),Date.parse(f.exact_end_date)+86400000]).filter(([a,b])=>Number.isFinite(a)&&Number.isFinite(b)&&b>=a).sort((a,b)=>a[0]-b[0]);
   if (!intervals.length) return undefined;
   const merged=[];for(const interval of intervals){const last=merged.at(-1);if(last&&interval[0]<=last[1])last[1]=Math.max(last[1],interval[1]);else merged.push([...interval]);}
@@ -25,7 +26,8 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(field.label), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
-  const direct={first_name:identity.first_name||(known(legal)&&String(legal).includes(' ')?String(legal).split(' ')[0]:undefined),last_name:identity.last_name||(known(legal)&&String(legal).includes(' ')?String(legal).split(' ').slice(1).join(' '):undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
+  const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
+  const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   value=direct[field.name];
   if(field.name==='years_experience' && /catia|solidworks|fusion|python|java|c\+\+|cad|specific|software|technology/.test(label))value=undefined;
   if(!known(value)) {
@@ -129,7 +131,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
         const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL',[application.application_id])).rows[0].n;
-        if(!known(legalName)||reviewFacts.some(value=>!known(value)||!view.text.includes(String(value)))||outstanding||view.fields.some(f=>f.visible&&f.required&&f.validation_message)||!cv.qa_json?.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
+        const uploaded=(view.uploaded_file_hashes||[]).some(file=>file.sha256===cv.sha256&&file.filename===path.basename(cv.pdf_path));
+        if(!known(legalName)||reviewFacts.some(value=>!known(value)||!view.text.includes(String(value)))||!uploaded||outstanding||view.fields.some(f=>f.visible&&f.required&&f.validation_message)||!cv.qa_json?.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
         if(application.status!=='READY_TO_SUBMIT'){await transition(repository,application.application_id,'READY_TO_SUBMIT',{browser_session_id:sessionId});application.status='READY_TO_SUBMIT';}
         const reason=submitPermission(view.url,config);if(reason){await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2,dry_run=$3 WHERE application_id=$1',[application.application_id,reason,config.dryRun]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
         await mutex.query("SELECT pg_advisory_lock(hashtextextended('jobhunter-submission-quota',0))");quotaLock=true;
@@ -139,7 +142,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
         await transition(repository,application.application_id,'SUBMITTING',{browser_session_id:sessionId});application.status='SUBMITTING';let result;
         try{result=await browser.call(`/sessions/${sessionId}/submit`,{selector:final.selector});}catch{result={status:'SUBMISSION_UNKNOWN'};}
         if(result.status!=='SUBMITTED'||!result.confirmation_id||result.confirmation_evidence!=='NETWORK_AND_PAGE')result={...result,status:'SUBMISSION_UNKNOWN'};
-        await transition(repository,application.application_id,result.status,{confirmation_id:result.confirmation_id});return {application_id:application.application_id,...result};
+        await transition(repository,application.application_id,result.status,{confirmation_id:result.confirmation_id});
+        if(telegram?.send){try{await telegram.send(result.status==='SUBMITTED'?`✅ Application submitted\nCompany: ${job.company}\nRole: ${job.title}\nLocation: ${job.location??''}\nApplication ID: ${application.application_id}\nCV: ${path.basename(cv.pdf_path)}\nConfirmation: ${result.confirmation_id}\nSource: ${job.canonical_url}`:`SUBMISSION STATUS UNKNOWN\nCompany: ${job.company}\nRole: ${job.title}\nApplication: ${application.application_id}\nManual review required. Submit will not be repeated.`);await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_SENT',{status:result.status});}catch{await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_FAILED',{status:result.status});}}
+        return {application_id:application.application_id,...result};
       }
       const next=view.buttons.find(b=>/^(next|continue)(\s+step)?$/i.test(b.text));if(!next){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_FORM'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
       const previous=view.current_step;view=await browser.call(`/sessions/${sessionId}/click`,{selector:next.selector});

@@ -11,6 +11,7 @@ import { createCv } from "./cv.mjs";
 import { report } from "./reporting.mjs";
 import { Telegram } from "./telegram.mjs";
 import { runApplication, reverify, BrowserClient } from "./application.mjs";
+import {reconcile} from './reconciliation.mjs';
 const load = async (p) => YAML.parse(await readFile(p, "utf8"));
 const secretEqual = (a, b) => {
   const x = Buffer.from(a ?? ""),
@@ -104,17 +105,31 @@ export function createCore({
           await repository.pool.query("UPDATE jobs SET status='ANALYSIS_FAILED' WHERE job_id=$1",[job.job_id]);
           await repository.event("job", job.job_id, "ANALYSIS_FAILED", {
             error: e.name,
+            ...(e.name === 'StructuredOutputError' ? {diagnostic:e.message.slice(0,240)} : {}),
           });
-          results.push({ job_id: job.job_id, error: e.name });
+          results.push({ job_id: job.job_id, error: e.name,
+            ...(e.name === 'StructuredOutputError' ? {diagnostic:e.message.slice(0,240)} : {}) });
         }
       }
       return { attempted: results.length, analyzed: results.filter(r=>!r.error).length, results };
     }
     if (number === 4) {
-      if (!body.job_id) throw new Error("job_id required for CV generation");
       const profile = await load(
         testProfilePath ?? `${configDir}/candidate_profile.yaml`,
       );
+      if (!body.job_id) {
+        if(!profile.onboarding?.legal_name || profile.onboarding.legal_name==='UNKNOWN')
+          return {generated:0,blocked_reason:'ONBOARDING_REQUIRED',pending_fields:['legal_name']};
+        const queued=(await repository.pool.query(`SELECT j.job_id FROM jobs j JOIN LATERAL
+          (SELECT decision FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1) a ON true
+          WHERE a.decision='AUTO_APPLY' AND j.availability_status='OPEN'
+          AND NOT EXISTS(SELECT 1 FROM cv_versions c WHERE c.job_id=j.job_id)
+          ORDER BY j.first_seen_at LIMIT 3`)).rows;
+        const results=[];
+        for(const item of queued){try{results.push({job_id:item.job_id,manifest:await stage(4,{job_id:item.job_id})});}
+          catch(error){await repository.event('job',item.job_id,'CV_GENERATION_FAILED',{error:error.name});results.push({job_id:item.job_id,error:error.message});}}
+        return {generated:results.filter(r=>!r.error).length,results};
+      }
       const job = (await repository.listCanonicalJobs()).find(
         (j) => j.job_id === body.job_id,
       );
@@ -139,7 +154,17 @@ export function createCore({
       });
     }
     if (number === 5) {
-      if (!body.job_id) throw new Error("job_id required");
+      if(!testMode && process.env.APPLICATION_FILL_ENABLED!=='true')
+        return {started:0,blocked_reason:'APPLICATION_FILL_DISABLED'};
+      if(!body.job_id){
+        const queued=(await repository.pool.query(`SELECT j.job_id FROM jobs j JOIN LATERAL
+          (SELECT decision FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1) a ON true
+          WHERE a.decision='AUTO_APPLY' AND EXISTS(SELECT 1 FROM cv_versions c WHERE c.job_id=j.job_id AND c.qa_json->>'pass'='true')
+          AND NOT EXISTS(SELECT 1 FROM applications app WHERE app.job_id=j.job_id)
+          ORDER BY j.first_seen_at LIMIT 3`)).rows;
+        const results=[];for(const row of queued)results.push(await stage(5,{job_id:row.job_id}));
+        return {started:results.length,results};
+      }
       const profile = await load(
         testProfilePath ?? `${configDir}/candidate_profile.yaml`,
       );
@@ -166,13 +191,16 @@ export function createCore({
       }
       return result;
     }
-    if (number === 6)
-      return report(repository, {
+    if (number === 6) {
+      const reconciliation = await reconcile(repository);
+      const summary = await report(repository, {
         outputDir: reportOutputDir,
         telegram:
           telegramAdapter ??
           (!testMode && process.env.TELEGRAM_BOT_TOKEN ? telegram : undefined),
       });
+      return {...summary,reconciliation};
+    }
     throw new Error("Unknown stage");
   }
   const server = http.createServer(async (req, res) => {

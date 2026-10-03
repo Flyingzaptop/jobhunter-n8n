@@ -20,6 +20,9 @@ test('form answers preserve professional provenance and country-scoped user memo
  assert.equal(resolveField(field,{profile,job,answerMemory}).source,'ANSWER_MEMORY');assert.equal(resolveField(field,{profile,job:{country:'DE'},answerMemory}),null);
  assert.equal(resolveField({name:'catia_professional_years',label:'Professional years of CATIA experience',type:'number'},{profile,job}),null);
  assert.equal(resolveField({name:'start_date',label:'Earliest available date',type:'date'},{profile,job}),null);
+ assert.equal(resolveField({name:'first_name',label:'Given name',type:'text'},{profile:{...profile,onboarding:{legal_name:'Maria Teresa Garcia'}},job}),null);
+ assert.equal(resolveField({name:'last_name',label:'Surname',type:'text'},{profile:{...profile,onboarding:{legal_name:'Maria Teresa Garcia'}},job}),null);
+ assert.equal(professionalYears({...profile,experience:[...profile.experience,{provenance:'PROFESSIONAL',duration_approx_years:3}]}),undefined);
 });
 
 test('PostgreSQL and Chromium application runner pauses for correlated human answers, handles CAPTCHA and submits once', {skip:!process.env.DATABASE_URL,timeout:120000},async t=>{

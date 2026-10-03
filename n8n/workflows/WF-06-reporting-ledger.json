@@ -13,13 +13,26 @@
       ]
     },
     {
+      "id": "subworkflow",
+      "name": "Stage Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "inputSource": "passthrough"
+      }
+    },
+    {
       "id": "webhook",
       "name": "Stage Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
         0,
-        200
+        400
       ],
       "parameters": {
         "httpMethod": "POST",
@@ -72,7 +85,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.body || {}) }}",
         "options": {
-          "timeout": 300000
+          "timeout": 420000
         }
       },
       "credentials": {
@@ -85,6 +98,17 @@
   ],
   "connections": {
     "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute Stage 6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stage Input": {
       "main": [
         [
           {
@@ -123,7 +147,8 @@
     "executionOrder": "v1",
     "timezone": "Europe/Warsaw",
     "saveDataErrorExecution": "all",
-    "saveDataSuccessExecution": "none"
+    "saveDataSuccessExecution": "none",
+    "callerPolicy": "workflowsFromSameOwner"
   },
   "pinData": {},
   "tags": []

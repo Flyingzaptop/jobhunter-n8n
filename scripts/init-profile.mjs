@@ -1,0 +1,13 @@
+import {existsSync} from 'node:fs';
+import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import YAML from 'yaml';
+const target='config/candidate_profile.yaml';
+if(existsSync(target))throw new Error('Real profile already exists; refusing overwrite');
+const master=await readFile('docs/MASTER_SPEC_v2.md','utf8');
+const section=master.slice(master.indexOf('### 1.4.1 Real candidate profile to seed'));
+const match=/```yaml\r?\n([\s\S]*?)```/.exec(section);
+if(!match)throw new Error('Candidate seed not found in master');
+const profile=YAML.parse(match[1]);
+profile.profile_id='real-candidate';profile.profile_version='seed-v2';
+profile.onboarding=Object.fromEntries(['legal_name','email','phone','linkedin_url','github_url','portfolio_url','notice_period','earliest_start_date','b2b_willing','contractor_willing','eor_willing','relocation_willing','drivers_licence','uk_work_authorization','switzerland_work_authorization'].map(key=>[key,'UNKNOWN']));
+await mkdir('config',{recursive:true});await writeFile(target,YAML.stringify(profile),{mode:0o600});console.log('Created ignored real profile from master; unknown fields preserved');
