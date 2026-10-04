@@ -158,8 +158,9 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
           results.push({job_id:row.job_id,status:'ANALYZED',decision:analysis.decision,overall_fit:analysis.overall_fit,fit_input_hash:key});
         }catch(error){const plan=retryPlan(error,claim.attempt_count);
-          await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.retryable?'RETRY':'DEAD_LETTER',error.name,plan.next_retry_at]);
+          await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.retryable?'RETRY':'DEAD_LETTER',error.code??error.name,plan.next_retry_at]);
           results.push({job_id:row.job_id,status:plan.retryable?'RETRY':'DEAD_LETTER',error:error.name,retry_at:plan.next_retry_at});
+          if(error.code==='HTTP_429')return {scope:'REAL_CLOUD_FIT',provider:llm.provider,model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,results,blocked_reason:'PROVIDER_RATE_LIMIT',retry_at:plan.next_retry_at};
         }
           await observer(repository,{event:'QUEUED_FIT_PROGRESS',message:`Actual ${llm.model??'model'} jobs ${inferenceAttempts}/${maxJobs}; queue processed ${results.length}`,processed_count:results.length,
           success_count:results.filter(x=>x.status==='ANALYZED').length,failure_count:results.filter(x=>x.error).length});

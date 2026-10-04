@@ -101,19 +101,20 @@ export async function runObserved(
         result?.errors?.length ?? results.filter((r) => r.error).length;
       const blocked =
         result?.blocked_reason ??
-        (result?.status?.startsWith("BLOCKED") ? result.status : null);
+        (result?.status?.startsWith("BLOCKED") ? result.status : null) ?? (result?.started===false&&result?.reason?result.reason:null);
       const status = blocked
         ? "BLOCKED"
         : errors && !(result?.analyzed ?? result?.discovered ?? results.length)
           ? "FAILED"
           : "SUCCEEDED";
-      const processed =
+      const processedValue =
         result?.attempted ??
         result?.discovered ??
         result?.raw_count ??
         result?.generated ??
         result?.started ??
         results.length;
+      const processed=typeof processedValue==='boolean'?Number(processedValue):Number.isInteger(processedValue)&&processedValue>=0?processedValue:0;
       await repo.pool.query(
         `UPDATE operation_runs SET status=$2,completed_at=now(),heartbeat_at=now(),processed_count=$3,success_count=$4,failure_count=$5,message=$6,metadata=metadata||$7::jsonb WHERE run_id=$1`,
         [

@@ -50,7 +50,7 @@ export async function createBrowserService(config = browserConfig()) {
   await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
   const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
   async function newSession(applicationId, saved) {
-    browser ||= await chromium.launch({ headless: true, executablePath: config.executablePath, args: ['--disable-webrtc', '--disable-quic'] });
+    browser ||= await chromium.launch({ headless: true, executablePath: config.executablePath, args: ['--disable-gpu','--disable-webrtc', '--disable-quic'] });
     const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state });
     const session = { id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {

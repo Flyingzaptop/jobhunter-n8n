@@ -19,7 +19,7 @@ export function retryPlan(
     status: retryable ? "ANALYSIS_RETRY" : "ANALYSIS_DEAD_LETTER",
     next_retry_at: retryable
       ? new Date(
-          now.getTime() + baseMs * 2 ** Math.max(0, attempt - 1),
+          now.getTime() + (error?.code==='HTTP_429'?Math.max(300000,Number(error.retry_after_seconds||0)*1000):baseMs * 2 ** Math.max(0, attempt - 1)),
         ).toISOString()
       : null,
   };
