@@ -1,4 +1,5 @@
 import Ajv from 'ajv';
+import {persistModelProgress} from './model-progress.mjs';
 
 const ajv = new Ajv({allErrors: true, strict: true});
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
@@ -366,6 +367,8 @@ export class OllamaClient {
     const signal = AbortSignal.timeout(this.timeoutMs);
     Object.assign(request,{stage:'awaiting_inference',started_at:new Date(started).toISOString(),
       prompt_processing_progress:0,generated_fragments:0});
+    const publish=()=>{if(this.fetch===globalThis.fetch&&!this.sdkPredict)persistModelProgress(model,request);};
+    publish();
     const options = {enableThinking:false,temperature:0,maxTokens:numPredict || 4096,
       contextOverflowPolicy:'stopAtLimit',
       ...(this.structuredFormat === 'json_schema' ? {structured:{type:'json',jsonSchema:schema}} : {}),
@@ -374,12 +377,13 @@ export class OllamaClient {
         request.stage='processing_prompt';
         if(typeof progress==='number' && Number.isFinite(progress) && progress>=0 && progress<=1)
           request.prompt_processing_progress=progress;
+        publish();
         request.prompt_processing={cached_tokens:tokenCount(details.cachedTokenCount),
           total_tokens:tokenCount(details.totalPromptTokenCount),processed_tokens:tokenCount(details.processedPromptTokenCount),
           unprocessed_tokens:tokenCount(details.unprocessedPromptTokenCount)};
       },
-      onFirstToken:()=>{request.stage='generating';request.time_to_first_token_ms=Date.now()-started;},
-      onPredictionFragment:()=>{request.generated_fragments++;request.last_progress_elapsed_ms=Date.now()-started;}};
+      onFirstToken:()=>{request.stage='generating';request.time_to_first_token_ms=Date.now()-started;publish();},
+      onPredictionFragment:()=>{request.generated_fragments++;request.last_progress_elapsed_ms=Date.now()-started;if(request.generated_fragments%50===0)publish();}};
     this.lastStats.transport = 'lmstudio-sdk';
     this.lastStats.enable_thinking = false;
     let result;
@@ -405,6 +409,7 @@ export class OllamaClient {
       const timedOut=signal.aborted || error?.code==='INFERENCE_TIMEOUT' || ['TimeoutError','AbortError'].includes(error?.name);
       request.stage=timedOut ? 'timeout' : 'failed';
       request.elapsed_ms=Date.now()-started;
+      publish();
       if(timedOut) {
         const failure=new StructuredOutputError('LM Studio inference timed out');
         failure.code='INFERENCE_TIMEOUT';
@@ -415,6 +420,7 @@ export class OllamaClient {
       clearTimeout(deadline);
     }
     request.stage='completed';request.elapsed_ms=Date.now()-started;
+    publish();
     const reason = result.stats?.stopReason;
     const finish = ['maxPredictedTokensReached','contextLengthReached'].includes(reason) ? 'length'
       : ['eosFound','stopStringFound'].includes(reason) ? 'stop' : 'incomplete';

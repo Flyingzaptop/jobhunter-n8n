@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 const ASHBY_PUBLIC_QUERIES=JSON.parse(readFileSync(new URL('../../config/ats_public_read_queries.json',import.meta.url),'utf8')).queries;
-export function atsAdapterFor(value){let host;try{host=new URL(value).hostname.toLowerCase();}catch{return 'generic';}for(const [id,domains] of Object.entries({greenhouse:['greenhouse.io'],lever:['lever.co'],ashby:['ashbyhq.com'],smartrecruiters:['smartrecruiters.com'],teamtailor:['teamtailor.com'],workday:['myworkdayjobs.com']}))if(domains.some(d=>host===d||host.endsWith('.'+d)))return id;return 'generic';}
+export function atsAdapterFor(value){let host;try{host=new URL(value).hostname.toLowerCase();}catch{return 'generic';}for(const [id,domains] of Object.entries({greenhouse:['greenhouse.io'],lever:['lever.co'],ashby:['ashbyhq.com'],smartrecruiters:['smartrecruiters.com'],teamtailor:['teamtailor.com'],workday:['myworkdayjobs.com'],erecruiter:['erecruiter.pl'],praca:['praca.pl'],pracuj:['pracuj.pl'],olx:['olx.pl'],linkedin:['linkedin.com']}))if(domains.some(d=>host===d||host.endsWith('.'+d)))return id;return 'generic';}
 export function reviewedReadPost({url,body,adapter}){
  const target=new URL(url);if(atsAdapterFor(url)!==adapter)return {allowed:false,reason:'ADAPTER_ORIGIN_MISMATCH'};
  let data;try{data=JSON.parse(body??'');}catch{return {allowed:false,reason:'UNREVIEWED_PAYLOAD'};}
@@ -23,6 +23,13 @@ export function reviewedReadPost({url,body,adapter}){
  return {allowed:false,reason:'NO_REVIEWED_READ_POST'};
 }
 export function safeNavigationButton({adapter,url,button,fields}){
+ if(['praca','pracuj','olx','linkedin'].includes(adapter)&&!fields.some(f=>f.type==='file')&&button.visible!==false&&!button.disabled&&button.type!=='submit'&&!button.final_submit){
+  const text=String(button.text??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  if(/^(?:aplikuj(?: teraz| szybko)?|apply(?: now| on company website)?|easy apply|latwe aplikowanie)$/.test(text)){
+   if(!button.href)return adapter==='linkedin'&&/easy apply|latwe aplikowanie/.test(text);
+   try{const target=new URL(button.href,url);return target.protocol==='https:'&&!target.username&&!target.password&&atsAdapterFor(target.href)!=='generic';}catch{return false;}
+  }
+ }
  if(adapter==='generic'||fields.some(f=>f.visible&&f.required)||button.type==='submit'||button.final_submit)return false;
  if(!/^apply(?: for (?:this|the) (?:job|position))?$/i.test(button.text??'')||!button.href)return false;
  const from=new URL(url),to=new URL(button.href,from);

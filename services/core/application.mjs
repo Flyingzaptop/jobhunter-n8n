@@ -13,6 +13,7 @@ import YAML from 'yaml';
 import {isModelAnswerable,enqueue as enqueueProse,getReady as readyProse,consume as consumeProse} from './application-prose.mjs';
 import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
 import {reusableQuestionAnswer} from './answer-memory.mjs';
+import {atsAdapterFor,safeNavigationButton} from '../browser-service/ats-adapters.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
@@ -22,7 +23,7 @@ export class BrowserClient {
   async call(endpoint, body, method = body ? 'POST' : 'GET') { if (!this.token) throw new Error('BROWSER_TOKEN_REQUIRED'); const response=await this.fetch(this.baseUrl+endpoint,{method,headers:{authorization:`Bearer ${this.token}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(45000)}); const result=await response.json();if(!response.ok)throw new Error(result.error||'BROWSER_ACTION_FAILED');return result; }
 }
 const known = value => value !== undefined && value !== null && value !== '' && value !== 'UNKNOWN';
-const norm = value => String(value??'').toLowerCase().replace(/[_\W]+/g,' ').trim();
+const norm = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[_\W]+/g,' ').trim();
 const country = value => /^(pl|poland)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
 export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const identity=profile.onboarding??{},name=identity.legal_name;
@@ -30,7 +31,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const haystack=`${view.text??''}\n${values.join('\n')}`;
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
-    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)),
+    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').includes(f.filename))),
     questions:outstanding===0,required_fields:!(view.fields??[]).some(f=>f.visible&&f.required&&(f.validation_message||(!f.value&&f.type!=='checkbox')||(f.type==='checkbox'&&!f.checked))),
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha};
   return {pass:Object.values(checks).every(Boolean),checks,observed_at:new Date().toISOString(),form_fingerprint:view.fingerprint,cv_sha256:cv.sha256};
@@ -57,11 +58,11 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   if(field.name==='location'&&field.type==='text'&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))value=`${candidate.base_location.city}, ${candidate.base_location.country}`;
   if(field.name==='years_experience' && /catia|solidworks|fusion|python|java|c\+\+|cad|specific|software|technology/.test(label))value=undefined;
   if(!known(value)) {
-    if(/^(?:full name|legal name|name)$/.test(label))value=legal;
-    else if(/first name|given name/.test(label))value=direct.first_name;
-    else if(/last name|surname|family name/.test(label))value=direct.last_name;
-    else if(/^(?:e mail|email)(?: address)?$/.test(label)&&['email','text'].includes(field.type))value=identity.email;
-    else if(/^(?:phone|phone number|telephone|mobile(?: phone)?(?: number)?)$/.test(label)&&['tel','text'].includes(field.type))value=identity.phone;
+    if(/^(?:full name|legal name|name|imie i nazwisko)$/.test(label))value=legal;
+    else if(/^(?:imie)$|first name|given name/.test(label))value=direct.first_name;
+    else if(/^(?:nazwisko)$|last name|surname|family name/.test(label))value=direct.last_name;
+    else if(/^(?:(?:e mail|email)(?: address)?|adres e mail)$/.test(label)&&['email','text'].includes(field.type))value=identity.email;
+    else if(/^(?:phone|phone number|telephone|mobile(?: phone)?(?: number)?|telefon|numer telefonu)$/.test(label)&&['tel','text'].includes(field.type))value=identity.phone;
     else if(/^(?:how many )?(?:professional years of experience|years of professional experience|years of commercial experience)$/.test(label))value=professionalYears(profile);
     else if(field.multiple && /skills/.test(label))value=(field.options||[]).filter(o=>skills.includes(norm(o.value))||skills.includes(norm(o.label))).map(o=>o.value);
     else if(/fusion.*project/.test(label)) { const fact=facts.find(f=>(f.skills||[]).some(s=>norm(s)==='fusion 360'));if(fact?.statements?.length){value=`${fact.provenance}: ${fact.statements.join(' ')}`;source='VERIFIED_FACT';} }
@@ -159,6 +160,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
     }
     if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
     for(let count=0;count<maxSteps;count++){
+      const entry=view.buttons?.find(button=>safeNavigationButton({adapter:atsAdapterFor(view.url),url:view.url,button,fields:view.fields??[]}));
+      if(entry&&!view.fields?.some(f=>f.type==='file')){view=await browser.call(`/sessions/${sessionId}/click`,{selector:entry.selector});view=await settleApplicationForm({browser,sessionId,initialView:view});continue;}
       const stepScope=scopeApplicationForm(view);
       if(!stepScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:stepScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:stepScope.reason};}
       view=stepScope.view;
@@ -218,7 +221,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         if(telegram?.send){try{await telegram.send(result.status==='SUBMITTED'?`✅ Application submitted\nCompany: ${job.company}\nRole: ${job.title}\nLocation: ${job.location??''}\nApplication ID: ${application.application_id}\nCV: ${path.basename(cv.pdf_path)}\nConfirmation: ${result.confirmation_id}\nSource: ${job.canonical_url}`:`SUBMISSION STATUS UNKNOWN\nCompany: ${job.company}\nRole: ${job.title}\nApplication: ${application.application_id}\nManual review required. Submit will not be repeated.`);await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_SENT',{status:result.status});}catch{await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_FAILED',{status:result.status});}}
         return {application_id:application.application_id,...result};
       }
-      const next=view.buttons.find(b=>/^(next|continue)(\s+step)?$/i.test(b.text));if(!next){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_FORM'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
+      const next=view.buttons.find(b=>/^(?:next|continue)(\s+step)?$|^(?:dalej|kontynuuj|nastepny krok)$/i.test(norm(b.text)));if(!next){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_FORM'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
       const previous=view.current_step;view=await browser.call(`/sessions/${sessionId}/click`,{selector:next.selector});
       if(view.current_step===previous){const invalid=view.fields.find(f=>f.visible&&f.validation_message);if(invalid)return ask({repository,telegram,application,browser,sessionId,field:{...invalid,label:invalid.label+' — '+invalid.validation_message},snapshot:view,type:'VALIDATION'});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'STEP_DID_NOT_ADVANCE',validation_errors:view.validation_errors});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
     }

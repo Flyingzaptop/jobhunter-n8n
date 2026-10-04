@@ -6,6 +6,9 @@ import { Repository } from "../core/repository.mjs";
 import { OllamaClient } from "../core/llm.mjs";
 import { BrowserClient } from "../core/application.mjs";
 import {productionGateStatus} from '../core/production-gate.mjs';
+import {executeConfirmedSubmit} from '../core/confirmed-submit.mjs';
+import {BOARD_PROFILES,boardProfileStatus} from '../core/board-profiles.mjs';
+import {spawn} from 'node:child_process';
 import { browserConfig } from "../browser-service/server.mjs";
 import { createAuth } from "./auth.mjs";
 import * as q from "./queries.mjs";
@@ -49,6 +52,8 @@ export function createDashboard({
   profileProvider = () => q.load('candidate_profile'),
 } = {}) {
   const auth = createAuth(repository, { password });
+  const boardLoginStates=new Map();
+  const boardLoginChildren=new Map();
   async function manualBrowserCall(endpoint,payload){
     try{return await browser.call(endpoint,payload);}catch(error){if(/^(?:CAPTCHA_[A-Z_]+|VISIBLE_TRUSTED_CAPTCHA_UNAVAILABLE|EXPLICIT_HUMAN_CAPTCHA_ACTION_REQUIRED)$/.test(error.message))throw hitlError(error.message,409);throw error;}
   }
@@ -213,6 +218,33 @@ export function createDashboard({
       return send({ logged_out: true });
     }
     if(p==='/api/production-gate')return send(await productionGateStatus({repository,profile:await profileProvider()}));
+    if(p==='/api/board-sessions'&&req.method==='GET')return send({sessions:await Promise.all(Object.keys(BOARD_PROFILES).map(async board=>({...await boardProfileStatus(board),manual_login:boardLoginStates.get(board)??null})))});
+    if(/^\/api\/board-sessions\/[^/]+\/connect$/.test(p)){
+      if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+      const board=p.split('/')[3],input=await body(req);
+      if(!Object.hasOwn(BOARD_PROFILES,board)||input.confirmed!==true||Object.keys(input).some(key=>key!=='confirmed'))throw hitlError('INVALID_BOARD_CONNECTION_REQUEST',400);
+      if(['STARTING','MANUAL_LOGIN_OPEN'].includes(boardLoginStates.get(board)?.state))return send({board,...boardLoginStates.get(board)});
+      const child=spawn(process.execPath,['--env-file=.env','scripts/connect-board.mjs',board],{cwd:process.cwd(),windowsHide:true,stdio:['ignore','pipe','ignore','ipc']});
+      boardLoginChildren.set(board,child);
+      boardLoginStates.set(board,{state:'STARTING'});
+      child.stdout.on('data',data=>{if(String(data).includes('BOARD_MANUAL_LOGIN_WINDOW'))boardLoginStates.set(board,{state:'MANUAL_LOGIN_OPEN'});});
+      child.on('error',()=>boardLoginStates.set(board,{state:'FAILED',error_code:'MANUAL_LOGIN_START_FAILED'}));
+      child.on('exit',code=>{boardLoginChildren.delete(board);boardLoginStates.set(board,{state:code===0?'CLOSED':'FAILED',authentication_verified:false});});
+      return send({board,state:'STARTING'});
+    }
+    if(/^\/api\/board-sessions\/[^/]+\/finish$/.test(p)){
+      if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+      const board=p.split('/')[3],input=await body(req),child=boardLoginChildren.get(board);
+      if(!child||input.confirmed!==true||Object.keys(input).some(key=>key!=='confirmed'))throw hitlError('MANUAL_LOGIN_WINDOW_NOT_ACTIVE');
+      child.send({command:'save_and_close'});boardLoginStates.set(board,{state:'SAVING'});return send({board,state:'SAVING'});
+    }
+    if(p==='/api/answer-memory'&&req.method==='GET'){
+      const profile=await profileProvider();
+      return send({answers:(await repository.pool.query('SELECT memory_id,semantic_key,scope_json,answer_json,source,version,updated_at FROM candidate_answer_memory WHERE candidate_profile_id=$1 AND active=true ORDER BY updated_at DESC',[profile.profile_id])).rows});
+    }
+    if(p==='/api/model-progress'&&req.method==='GET'){
+      try{return send(JSON.parse(await readFile('data/runtime/model-progress.json','utf8')));}catch{return send({stage:'UNOBSERVED',observed:false});}
+    }
     if(p==='/api/relevance-queue')return send({counts:(await repository.pool.query('SELECT status,count(*)::int count FROM relevance_queue GROUP BY status ORDER BY status')).rows,
       data:(await repository.pool.query(`SELECT q.job_id,q.relevance_score,q.status,q.role_hints,q.reasons,q.location_class,q.seniority_class,j.title,j.company,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.status NOT IN ('LOW_PRIORITY','CLOSED') ORDER BY q.relevance_score DESC,q.job_id LIMIT 50`)).rows,
       model_invocations:(await repository.pool.query('SELECT count(*)::int count FROM fit_batch_receipts')).rows[0].count});
@@ -350,6 +382,13 @@ export function createDashboard({
       if(action==='revoke')return send(await revokeApplicationReview(repository,applicationId,input.approval_id,profile));
       if(input.confirmed!==true || !/^[0-9a-f]{64}$/.test(input.binding_digest??''))throw hitlError('EXPLICIT_REVIEW_CONFIRMATION_REQUIRED',400);
       return send(await approveApplicationReview(repository,applicationId,input.approval_id,input.binding_digest,profile,browser));
+    }
+    if(/^\/api\/applications\/[^/]+\/submit$/.test(p)){
+      if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+      const input=await body(req),applicationId=p.split('/')[3];
+      if(input.confirmed!==true||Object.keys(input).some(key=>!['confirmed','approval_id','binding_digest','idempotency_key'].includes(key)))throw hitlError('EXPLICIT_SUBMIT_CONFIRMATION_REQUIRED',400);
+      const profile=await profileProvider();
+      return send(await executeConfirmedSubmit({repository,applicationId,approvalId:input.approval_id,bindingDigest:input.binding_digest,idempotencyKey:input.idempotency_key,profile,browser}));
     }
     if (p.startsWith("/api/applications/")) {
       const result = await q.applicationDetail(repository, p.split("/").at(-1));

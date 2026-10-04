@@ -10,6 +10,9 @@ import { pruneBrowserState } from './retention.mjs';
 import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from './ats-adapters.mjs';
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
+import {verifySubmitCapability} from './submit-capability.mjs';
+import {reviewedUploadRequest} from './preparation-network.mjs';
+import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -51,9 +54,9 @@ export async function createBrowserService(config = browserConfig()) {
   await fs.mkdir(config.stateRoot, { recursive: true }); await fs.mkdir(config.artifactRoot, { recursive: true });
   await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
   const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
-  async function newSession(applicationId, saved) {
+  async function newSession(applicationId, saved,board) {
     browser ||= await chromium.launch({ headless: true, executablePath: config.executablePath, args: ['--disable-gpu','--disable-webrtc', '--disable-quic'] });
-    const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state });
+    const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state??await exportedBoardState(board) });
     const session = { id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {
       try {
@@ -63,7 +66,8 @@ export async function createBrowserService(config = browserConfig()) {
           const adapter=atsAdapterFor(session.page?.url()??request.url());
           const reviewed=request.method()==='POST'&&reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed;
           const humanVerification=request.method()==='POST'&&reviewedHumanCaptchaPost(request.url(),session.humanCaptchaWindow,config);
-          if (!safeMockWrite && !reviewed && !humanVerification && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          const upload=reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow});
+          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
         await route.fulfill(await pinnedRequest(request, destination));
@@ -75,7 +79,14 @@ export async function createBrowserService(config = browserConfig()) {
       }
     });
     if (context.routeWebSocket) await context.routeWebSocket('**/*', socket => socket.close());
-    context.on('page', page => { if (session.page && page !== session.page) page.close().catch(() => {}); });
+    context.on('page', async page => {if(!session.page||page===session.page)return;
+      if(!session.readNavigationUntil||Date.now()>session.readNavigationUntil){await page.close().catch(()=>{});return;}
+      try{await page.waitForLoadState('domcontentloaded',{timeout:10000});
+        const target=await validateDestination(page.url(),config);
+        if(target.url.protocol!=='https:'||atsAdapterFor(target.url.href)==='generic')throw new Error('UNREVIEWED_APPLICATION_POPUP');
+        session.page=page;session.readNavigationUntil=null;
+      }catch{await page.close().catch(()=>{});}
+    });
     session.page = await context.newPage(); session.page.setDefaultTimeout(7000); sessions.set(session.id, session); return session;
   }
   async function snapshot(session) {
@@ -128,16 +139,34 @@ export async function createBrowserService(config = browserConfig()) {
         const root = await fs.realpath(config.artifactRoot), target = await fs.realpath(path.resolve(payload.path));
         const relative = path.relative(root, target); if (relative.startsWith('..') || path.isAbsolute(relative) || path.extname(target).toLowerCase() !== '.pdf') throw new Error('ARTIFACT_NOT_APPROVED');
         const bytes = await fs.readFile(target); if (bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-' || !payload.sha256 || hash(bytes) !== payload.sha256) throw new Error('ARTIFACT_HASH_OR_FORMAT_INVALID');
-        await locator.setInputFiles(target); session.uploads.push({ selector: payload.selector, sha256: payload.sha256, filename: path.basename(target) });
+        session.uploadWindow={url:before.url,sha256:payload.sha256,expires_at:Date.now()+30000};
+        const upload={selector:payload.selector,sha256:payload.sha256,filename:path.basename(target),evidence:'LOCAL_FILE_SELECTION'};
+        const receipt=async response=>{try{
+          const request=response.request();
+          if(!response.ok()||!reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow}))return;
+          const result=await response.json();const id=result.attachment_id??result.file_id??result.document_id??result.id;
+          if((typeof id==='string'||typeof id==='number')&&!result.error&&(!result.filename||result.filename===upload.filename)){
+            upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id=String(id).slice(0,200);
+          }
+        }catch{/* No receipt is inferred from an arbitrary successful response. */}};
+        session.page.on('response',receipt);const cleanup=setTimeout(()=>session.page.off('response',receipt),30000);cleanup.unref();
+        await locator.setInputFiles(target);session.uploads.push(upload);
       }
       else if (operation === 'click') {
-        if (field || !button || button.final_submit || /submit|send application|apply now|pay|confirm application/i.test(button.text)) throw new Error('USE_GATED_SUBMIT');
+        const safeEntry=button&&safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields});
+        if (field || !button || button.final_submit || !safeEntry&&/submit|send application|apply now|pay|confirm application/i.test(button.text)) throw new Error('USE_GATED_SUBMIT');
         if (button.type === 'submit') throw new Error('USE_GATED_SUBMIT');
-        if (!/^(next|continue|back|previous)(\s+step)?$/i.test(button.text)&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
+        if (!/^(next|continue|back|previous)(\s+step)?$|^(dalej|kontynuuj|wstecz|nastepny krok)$/i.test(button.text.normalize('NFD').replace(/[\u0300-\u036f]/g,''))&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
+        if(safeEntry)session.readNavigationUntil=Date.now()+15000;
         await locator.click();
       }
       else if (operation === 'submit') {
-        const reason = controlledSubmitPermission(before.url, config); if (reason) return { ...before, status: 'READY_TO_SUBMIT', dry_run: config.dryRun, submit_blocked_reason: reason };
+        const reason = controlledSubmitPermission(before.url, config);
+        if(payload.confirmation_capability){
+          if(!config.enabled)throw new Error('PAUSED');
+          if(config.denyDomains.includes(new URL(before.url).hostname))throw new Error('DOMAIN_NOT_ALLOWED');
+          verifySubmitCapability(payload.confirmation_capability,{secret:config.token,applicationId:session.application_id,snapshot:before});
+        }else if(reason) return { ...before, status: 'READY_TO_SUBMIT', dry_run: config.dryRun, submit_blocked_reason: reason };
         if (session.submit_attempted) return { ...before, status: before.confirmation_id ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN' };
         if (!button || (!button.final_submit && !/submit|send application/i.test(button.text))) throw new Error('FINAL_BUTTON_REQUIRED');
         if (before.captcha || before.fields.some(f => f.visible && f.required && f.validation_message)) throw new Error('FORM_NOT_READY');
@@ -163,7 +192,7 @@ export async function createBrowserService(config = browserConfig()) {
       if (!authorized(req, config.token)) return send(401, { error: 'UNAUTHORIZED' });
       const url = new URL(req.url, 'http://service'), payload = ['POST', 'PUT'].includes(req.method) ? await bodyJSON(req) : {};
       if(url.pathname==='/sessions'&&req.method==='GET')return send(200,{sessions:[...sessions.values()].map(session=>({browser_session_id:session.id,application_id:session.application_id,adapter:atsAdapterFor(session.page.url()),url:observerUrl(session.page.url())}))});
-      if (url.pathname === '/sessions' && req.method === 'POST') { if (typeof payload.application_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(payload.application_id)) throw new Error('INVALID_APPLICATION_ID'); const session = await newSession(payload.application_id); if (payload.url) await action(session, 'navigate', payload); return send(201, { session_id: session.id, snapshot: await snapshot(session) }); }
+      if (url.pathname === '/sessions' && req.method === 'POST') { if (typeof payload.application_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(payload.application_id)) throw new Error('INVALID_APPLICATION_ID'); const session = await newSession(payload.application_id,undefined,boardForUrl(payload.url)); if (payload.url) await action(session, 'navigate', payload); return send(201, { session_id: session.id, snapshot: await snapshot(session) }); }
       const [, id, operation] = /^\/sessions\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname) || [];
       if(id&&!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))throw new Error('INVALID_SESSION_ID');
       if (operation === 'recover' && req.method === 'POST') {

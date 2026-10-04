@@ -20,7 +20,8 @@ test('catalog covers real source classes without presenting unverified boards as
   assert.ok(sources.filter(source => source.source_class === 'employer_ats').length >= 100);
   for (const name of ['praca', 'pracuj', 'olx', 'justjoin', 'nofluff', 'rocketjobs', 'linkedin']) assert.ok(sources.some(source => source.name === name));
   assert.equal(sources.some(source => source.profile === 'mock'), false);
-  assert.equal(sources.find(source => source.name === 'linkedin').permitted_access, false);
+  assert.equal(sources.find(source => source.name === 'linkedin').adapter, 'public_listing_html');
+  assert.equal(sources.find(source => source.name === 'linkedin').permitted_access, true);
   assert.equal(sources.find(source => source.name === 'nofluff').permitted_access, false);
 });
 test('public board discovery uses unique current same-origin vacancy links without profile/API links',()=>{

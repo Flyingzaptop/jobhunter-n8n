@@ -2,7 +2,7 @@ import {chromium} from 'playwright';
 import {extractJobPostings} from './discovery.mjs';
 import {publishedNextPage} from './discovery-cursors.mjs';
 import {extractVisibleBoardJob} from './board-document.mjs';
-import {boardProfileStatus,openBoardProfile} from './board-profiles.mjs';
+import {boardProfileStatus,openBoardProfile,exportBoardState} from './board-profiles.mjs';
 
 export const BOARD_TARGETS = Object.freeze({
   pracuj:{url:'https://www.pracuj.pl/praca',hostname:'www.pracuj.pl',jobPath:/^\/praca\/.+,oferta,\d+\/?$/},
@@ -46,6 +46,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
       ||name==='pracuj'&&/^\/praca\/[^/]+$/.test(parsedListing.pathname);
     if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
     const profile=await boardProfileStatus(name);
+    if(profile.manual_login_active){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
     const context=profile.prepared?await openBoardProfile(name,{headless:profile.headless}):await browser.newContext();
     // Discovery only: never transmit application forms or interact with authentication.
     await context.route('**/*',route=>publicBrowserRequestAllowed(route.request().url(),route.request().method())?route.continue():route.abort());
@@ -79,7 +80,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
         }
       }
     }catch(error){result.status='BROWSER_TRANSPORT_ERROR';result.error=String(error.message).split('\n')[0].slice(0,250);}
-    finally{await context.close();}
+    finally{if(profile.prepared)await exportBoardState(context,name).catch(()=>{});await context.close();}
     report.sources.push(result);
   }}finally{await browser.close();}
   report.completed_at=new Date().toISOString();return report;
