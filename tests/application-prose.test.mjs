@@ -12,6 +12,8 @@ test('general employer prose is automated while unknown personal/legal/security 
  assert.equal(isModelAnswerable({type:'select-one',label:'Why this role?',options:[]}),false);
  assert.equal(isModelAnswerable({type:'text',label:'Optional additional note',required:false}),false);
  assert.equal(isModelAnswerable({type:'textarea',label:'Why this role?',required:false}),true);
+ for(const label of ['What is your phone number?','Please provide your legal name','Current or most recent title','How did you hear about this role?'])assert.equal(isModelAnswerable({type:'text',label}),false,label);
+ assert.equal(isModelAnswerable({type:'textarea',label:'How would you validate email addresses in an API?'}),true);
 });
 test('claim validator preserves project provenance, cited IDs, numeric limits and separates normative approach',()=>{
  assert.equal(validateProseClaims(document,facts).pass,true);

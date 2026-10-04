@@ -10,6 +10,9 @@ export function isModelAnswerable(field){
  const type=field.type??field.field_type;
  if(!['text','textarea'].includes(type)||field.options)return false;
  const label=norm(labelOf(field)),name=norm(field.name??field.field_name);
+ if(/^(?:current (?:or most recent )?(?:job )?title|current employer|most recent employer|education|degree|university|institution|graduation year)(?: required)?$/.test(label))return false;
+ if(/^(?:what is|what s|please (?:provide|enter|give)|could you (?:provide|give)|enter|provide) (?:your )?(?:legal name|full name|first name|last name|email(?: address)?|phone(?: number)?|address|date of birth|current employer|current (?:job )?title)(?: required)?$/.test(label))return false;
+ if(/(?:how|where) did you (?:hear about|find|learn about) (?:us|this (?:role|job|position|vacancy))/.test(label))return false;
  if(field.required===false&&/^(?:optional )?(?:additional (?:note|notes|information|comments)|note|notes|comments)(?: optional)?$/.test(label))return false;
  if(!label||/^(?:name|first name|last name|full name|given name|family name|email(?: address)?|phone(?: number)?|linkedin(?: profile)?|website|location|address|city|country|date of birth|legal name)(?: required| [a-f0-9]{8})*$/.test(label))return false;
  if(/captcha|password|passcode|one time|verification code|authentication code|\botp\b|\btotp\b|social security|passport|bank account|api key/.test(label+' '+name))return false;
