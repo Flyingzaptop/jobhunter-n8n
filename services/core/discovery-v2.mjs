@@ -6,6 +6,7 @@ import { normalizeRaw, duplicateConfidence, descriptionContent } from './normali
 import {probeHeadlessBoards} from './headless-public-boards.mjs';
 import {publishedNextPage,htmlPaginationLinks,listingCursor} from './discovery-cursors.mjs';
 import {nextDetailState} from './board-document.mjs';
+import {guestPagination} from './guest-pagination.mjs';
 const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html', 'public_listing_html']);
 
 export function publicListingJobUrls(source, text) {
@@ -517,12 +518,13 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           }
           if(source.adapter==='public_listing_html'){
             let nextUrl=publishedNextPage(htmlPaginationLinks(listing.text),currentUrl,{pagePattern:source.listing_page_pattern});
-            if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&jobUrls.length){const next=new URL(currentUrl);next.searchParams.set('start',String(Number(next.searchParams.get('start')??0)+jobUrls.length));nextUrl=next.href;metrics.pagination_strategy=source.pagination_strategy;}
+            const guest=source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'?guestPagination({currentUrl,jobUrls,previousFingerprint:resume.guest_page_fingerprint,previousUrl:resume.guest_page_url}):null;
+            if(guest){nextUrl=guest.nextUrl;metrics.pagination_strategy=source.pagination_strategy;metrics.guest_page_fingerprint=guest.fingerprint;metrics.guest_page_url=currentUrl;}
             Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl,total:jobUrls.length,offset,processed:bounded.length}));
             metrics.listing_root_url=source.url;metrics.listing_page_snapshot=metrics.listing_page_completed?[]:jobUrls;
             metrics.listing_retry_counts=metrics.listing_page_completed?{}:retryCounts;
             metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
-            if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&Number(new URL(currentUrl).searchParams.get('start')??0)>=1000){metrics.cycle_completed=false;metrics.coverage_status='PUBLIC_GUEST_RESULT_WINDOW_CAPPED';}
+            if(guest){metrics.coverage_scope='PUBLIC_GUEST_QUERY_WINDOW_ONLY';if(metrics.listing_page_completed){metrics.cycle_completed=guest.complete;metrics.coverage_status=guest.status;if(!guest.complete&&!guest.nextUrl){metrics.next_listing_page_url=currentUrl;metrics.truncated=true;}}}
           }
         } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();
