@@ -53,7 +53,7 @@ test('PostgreSQL daily excludes yesterday, preserves frozen application dimensio
   const repo = new Repository(), pool = repo.pool, client = await pool.connect();
   const schema = 'report_period_' + randomUUID().replaceAll('-', '');
   await client.query(`CREATE SCHEMA ${schema}`); await client.query(`SET search_path TO ${schema}`);
-  repo.pool = {query:(...args) => client.query(...args)};
+  repo.pool = {query:(...args) => client.query(...args),connect:async()=>({query:(...args)=>client.query(...args),release(){}})};
   try {
     await repo.migrate();
     const job = randomUUID(), oldJob = randomUUID(), cv = randomUUID(), app = randomUUID();
