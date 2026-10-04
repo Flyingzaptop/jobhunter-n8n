@@ -7,6 +7,31 @@ import YAML from 'yaml';
 import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting,extractExplicitApplicationDeadlines,officialDeadlineConflict,publicListingJobUrls } from '../services/core/discovery-v2.mjs';
 import { normalizeRaw } from '../services/core/normalization.mjs';
 
+test('public detail retry survives cursor movement and repeated failures beyond two attempts',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'public-retry-')),registryPath=join(dir,'sources.yaml');
+ const root='https://board.example/search',detail='https://board.example/engineer_1.html';
+ await writeFile(registryPath,YAML.stringify({sources:[{name:'retry-board',platform:'Praca.pl',adapter:'public_listing_html',url:root,profile:'real',enabled:true,source_class:'poland_board',permitted_access:true,allowed_hosts:['board.example'],job_link_pattern:'_[0-9]+\\.html$',max_pages:1}]}));
+ let metadata={listing_root_url:root,next_listing_page_url:root+'?page=2',pending_details:[{url:detail,listing_url:root,attempts:5,next_retry_at:'2000-01-01T00:00:00Z'}]}, fail=true,stored=0;
+ const repository={pool:{async query(sql,args){
+  if(sql.startsWith('SELECT * FROM market_source_health'))return{rows:[{metadata}]};
+  if(sql.startsWith('INSERT INTO market_source_health'))metadata=args.at(-1);
+  return{rows:[]};
+ }},async listCanonicalJobs(){return[];},async insertRaw(raw){return{...raw,raw_id:'raw'};},async upsertCanonicalJob(job){stored++;return{job_id:job.job_id,is_new:true};}};
+ const fetchOptions={lookupImpl:async()=>[{address:'8.8.8.8',family:4}],sleepImpl:async()=>{},fetchImpl:async url=>{
+  if(url.pathname==='/search')return new Response(url.search?'':`<a href="${detail}">Engineer</a>`);
+  if(fail)return new Response('temporary error',{status:500});
+  return new Response(`<script type="application/ld+json">${JSON.stringify({'@type':'JobPosting',title:'Mechanical engineer',hiringOrganization:{name:'Employer'},description:'Mechanical engineering and CAD design. '.repeat(6),url:detail})}</script>`);
+ }};
+ try{
+  const first=await runMarketDiscovery({repository,registryPath,fetchOptions});
+  assert.equal(metadata.pending_details[0].attempts,6);assert.equal(metadata.pending_details[0].listing_url,root);
+  assert.equal(first.sources[0].cycle_completed,false);assert.equal(stored,0);
+  metadata.pending_details[0].next_retry_at='2000-01-01T00:00:00Z';fail=false;
+  await runMarketDiscovery({repository,registryPath,fetchOptions});
+  assert.equal(metadata.pending_details.length,0);assert.equal(stored,1);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
 test('robots wildcard, query patterns and specific agent groups cannot be bypassed', () => {
   const text = 'User-agent: Googlebot\nAllow: /\nUser-agent: *\nDisallow: /api/\nDisallow: /*?*\nAllow: /feed?*\n';
   assert.equal(robotsAllows(text, 'https://board.example/api/jobs'), false);

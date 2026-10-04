@@ -28,9 +28,9 @@ export async function extractVisibleBoardJob(page,board){
 export function nextDetailState(previous,details,now=new Date()){
  const pending=new Map((previous??[]).map(item=>[item.url,item]));
  for(const detail of details){
-  if(detail.status==='PUBLIC_DETAIL_READABLE'&&detail.structured_job_count===1){pending.delete(detail.url);continue;}
+  if(detail.status==='CONFIRMED_CLOSED'||detail.status==='PUBLIC_DETAIL_READABLE'&&detail.structured_job_count===1){pending.delete(detail.url);continue;}
   const earlier=pending.get(detail.url);
-  pending.set(detail.url,{url:detail.url,error_code:detail.status,attempts:(earlier?.attempts??0)+1,
+  pending.set(detail.url,{...earlier,url:detail.url,...(detail.listing_url?{listing_url:detail.listing_url}:{}),error_code:detail.status,attempts:(earlier?.attempts??0)+1,
    next_retry_at:new Date(now.getTime()+300000).toISOString()});
  }
  return [...pending.values()];

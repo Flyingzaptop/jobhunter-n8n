@@ -475,7 +475,9 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             if(detail.status!=='PUBLIC_DETAIL_READABLE'||detail.structured_job_count!==1){metrics.normalization_errors.push({source_url:detail.url,error:detail.status});continue;}
             const records=parseSourcePayload({...source,adapter:'json'},{jobs:detail.job_postings.map(item=>({...item,url:item.url??detail.url}))},detail.url)
               .map(raw=>({...raw,adapter:source.adapter}));
+            const before=metrics.normalization_errors.length;
             await ingest(records);
+            if(metrics.normalization_errors.length>before)detail.status='NORMALIZATION_FAILED';
           }
           if(retry){for(const key of ['listing_page_url','listing_page_completed','cycle_completed','coverage_status','next_listing_page_url','next_listing_offset','truncated','listing_page_snapshot'])metrics[key]=resume[key];}
           else {Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl:board.published_next_page_url,
@@ -497,26 +499,35 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&!jobUrls.length&&listing.text.trim())throw new Error('GUEST_SEARCH_RESPONSE_UNVERIFIED');
           const oldOffset=Number(resume.next_listing_offset??0);
           const offset = source.adapter === 'public_listing_html' ? oldOffset-oldSnapshot.slice(0,oldOffset).filter(url=>!actualVacancy(url)).length : 0;
-          const retryCounts=resume.listing_page_url===currentUrl?{...(resume.listing_retry_counts??{})}:{};
-          if(source.adapter==='public_listing_html')for(const failure of resume.normalization_errors??[]){
-            const index=jobUrls.indexOf(failure.source_url);
-            if(index>=0&&index<offset&&(retryCounts[failure.source_url]??0)<2){jobUrls.push(failure.source_url);retryCounts[failure.source_url]=(retryCounts[failure.source_url]??0)+1;}
-          }
+          const retryCounts={};
           const bounded = jobUrls.slice(offset, offset + source.max_pages);
           metrics.bounded_job_urls = jobUrls.length;
           metrics.next_listing_offset = offset + bounded.length;
           metrics.truncated = offset + bounded.length < jobUrls.length;
-          for (const url of bounded) {
+          const pending=resume.pending_details??[];
+          const due=pending.filter(item=>Date.parse(item.next_retry_at)<=Date.now()&&!bounded.includes(item.url)).slice(0,1);
+          const outcomes=[];
+          for (const item of [...due,...bounded.map(url=>({url,listing_url:currentUrl}))]) {
+            const {url}=item;
+            let readingDetail=false;
             try {
-              const verification = await verifyPublicJobPosting({ source, url, fetchOptions, listingText: listing.text, robotsText: robots });
+              const retryListing=item.listing_url&&item.listing_url!==currentUrl?await read(item.listing_url):listing;
+              readingDetail=true;
+              const verification = await verifyPublicJobPosting({ source, url, fetchOptions, listingText: retryListing.text, robotsText: robots });
               metrics.pages++; metrics.last_request_at = new Date().toISOString();
-              if (!verification.raw) metrics.normalization_errors.push({ source_url: url, error: verification.reason });
-              else await ingest([verification.raw]);
+              if (!verification.raw){metrics.normalization_errors.push({ source_url: url, error: verification.reason });outcomes.push({...item,status:verification.reason??'DETAIL_UNVERIFIED'});}
+              else {
+                const before=metrics.normalization_errors.length;
+                await ingest([verification.raw]);
+                outcomes.push({...item,status:metrics.normalization_errors.length===before?'PUBLIC_DETAIL_READABLE':'NORMALIZATION_FAILED',structured_job_count:1});
+              }
             } catch (error) {
               if (error.message === 'DISCOVERY_CANCELLED' || /ROBOTS|SOURCE_HTTP_40[1369]/.test(error.message)) throw error;
               metrics.normalization_errors.push({ source_url: url, error: error.message });
+              outcomes.push({...item,status:readingDetail&&error.message==='SOURCE_HTTP_404'?'CONFIRMED_CLOSED':error.message});
             }
           }
+          metrics.pending_details=nextDetailState(pending,outcomes);
           if(source.adapter==='public_listing_html'){
             let nextUrl=publishedNextPage(htmlPaginationLinks(listing.text),currentUrl,{pagePattern:source.listing_page_pattern});
             const guest=source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'?guestPagination({currentUrl,jobUrls,previousFingerprint:resume.guest_page_fingerprint,previousUrl:resume.guest_page_url}):null;
@@ -526,6 +537,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             metrics.listing_retry_counts=metrics.listing_page_completed?{}:retryCounts;
             metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
             if(guest){metrics.coverage_scope='PUBLIC_GUEST_QUERY_WINDOW_ONLY';if(metrics.listing_page_completed){metrics.cycle_completed=guest.complete;metrics.coverage_status=guest.status;if(!guest.complete&&!guest.nextUrl){metrics.next_listing_page_url=currentUrl;metrics.truncated=true;}}}
+            if(metrics.pending_details.length){metrics.cycle_completed=false;metrics.truncated=true;metrics.coverage_status='DETAIL_RETRIES_PENDING';}
           }
         } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();

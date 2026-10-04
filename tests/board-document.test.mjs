@@ -1,5 +1,15 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {nextDetailState} from '../services/core/board-document.mjs';
+
+test('detail retries retain original listing provenance and normalization failures until proven read or closed',()=>{
+ const now=new Date('2026-10-05T00:00:00Z');
+ const first=nextDetailState([],[{url:'https://board.example/job',listing_url:'https://board.example/page/1',status:'NORMALIZATION_FAILED'}],now);
+ const again=nextDetailState(first,[{url:first[0].url,status:'DETAIL_TRANSPORT_ERROR'}],now);
+ assert.equal(again[0].listing_url,first[0].listing_url);
+ assert.equal(again[0].attempts,2);
+ assert.equal(again[0].next_retry_at,'2026-10-05T00:05:00.000Z');
+ assert.equal(nextDetailState(again,[{url:first[0].url,status:'CONFIRMED_CLOSED'}],now).length,0);
+});
 import {boardProfilePath} from '../services/core/board-profiles.mjs';
 import {chromium} from 'playwright';
 import {extractVisibleBoardJob} from '../services/core/board-document.mjs';
