@@ -1,6 +1,19 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import pg from 'pg';
 import {Repository} from '../services/core/repository.mjs';
-import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel,verificationRetryPlan,availabilityVerificationDue} from '../services/core/relevance-queue.mjs';
+import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel,verificationRetryPlan,availabilityVerificationDue,RELEVANCE_LOCATION_ORDER_SQL} from '../services/core/relevance-queue.mjs';
+
+test('actual queue SQL gives compatible remote and local engineering equal geography tier ahead of unknown remote',{skip:!process.env.DATABASE_URL},async()=>{
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+ try{
+  const rows=(await pool.query(`SELECT name,${RELEVANCE_LOCATION_ORDER_SQL} AS tier FROM
+   (VALUES ('hybrid','MECHANICAL_WROCLAW_HYBRID_HINT',90),('local','MECHANICAL_WROCLAW_HINT',97),
+    ('worldwide','REMOTE_COMPATIBLE_REGION_HINT',99),('eu','REMOTE_COMPATIBLE_REGION_HINT',95),
+    ('unknown','REMOTE_ELIGIBILITY_UNKNOWN',100)) AS q(name,location_class,relevance_score)
+   ORDER BY ${RELEVANCE_LOCATION_ORDER_SQL},q.relevance_score DESC`)).rows;
+  assert.deepEqual(rows.map(row=>row.name),['hybrid','worldwide','local','eu','unknown']);
+  assert.equal(rows.find(row=>row.name==='eu').tier,rows.find(row=>row.name==='worldwide').tier);
+ }finally{await pool.end();}
+});
 const now=new Date('2026-10-04T12:00:00Z');
 test('cheap screening selects technical junior roles without fake fit/eligibility and deprioritizes incidental body keywords',()=>{
  const technical=screenRelevance({title:'Junior Mechanical Design Engineer',location:'Poland',country:'PL',description_text:'CAD prototyping',availability_status:'OPEN'},{now});

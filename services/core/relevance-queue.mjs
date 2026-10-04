@@ -118,12 +118,16 @@ export async function buildRelevanceQueue({repository,observer=async()=>{},now=n
   }
   return {scope:'DETERMINISTIC_MARKET_SCREEN_NOT_LLM_FIT',version:RELEVANCE_VERSION,total:jobs.length,inserted:changed,counts};
 }
+export const RELEVANCE_LOCATION_ORDER_SQL=`CASE
+ WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
+ WHEN q.location_class IN ('MECHANICAL_WROCLAW_HINT','REMOTE_COMPATIBLE_REGION_HINT') THEN 1
+ WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 2 ELSE 3 END`;
+
 export async function listRelevanceCandidates(repository,{limit=500,minScore=40}={}) {
   if(!Number.isInteger(limit)||limit<1||limit>5000)throw new Error('INVALID_RELEVANCE_LIMIT');
   return (await repository.pool.query(`SELECT j.*,q.relevance_score,q.role_hints,q.reasons,q.location_class,q.seniority_class,q.needs_hydration,q.status AS queue_status
     FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.relevance_score>=$1 AND q.status<>'CLOSED'
-    ORDER BY CASE WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
-      WHEN q.location_class='REMOTE_COMPATIBLE_REGION_HINT' THEN 1 WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 2 ELSE 3 END,
+    ORDER BY ${RELEVANCE_LOCATION_ORDER_SQL},
       q.relevance_score DESC,CASE WHEN q.seniority_class='JUNIOR_STUDENT' THEN 0 ELSE 1 END,j.first_seen_at,job_id LIMIT $2`,[minScore,limit])).rows.map(jobSnapshot);
 }
 
@@ -150,9 +154,7 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           AND NOT EXISTS(SELECT 1 FROM job_analysis h WHERE h.job_id=q.job_id AND h.analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE'
             AND h.analysis_json->>'profile_hash'=$2 AND h.analysis_json->>'policy_hash'=$3
             AND h.analysis_json->>'hard_gate_job_input_hash'=q.input_hash)
-          AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),CASE
-            WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
-            WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 1 ELSE 2 END,
+          AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),${RELEVANCE_LOCATION_ORDER_SQL},
             q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null,hash(profile),hash(policy)])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
