@@ -28,6 +28,17 @@ export function relevanceInputHash(job) {
 export function fitInputHash({job,profile,policy,model,promptVersion=PROMPT_VERSION,gatewayVersion=LLM_GATEWAY_VERSION}) {
   return hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),model,promptVersion,gatewayVersion});
 }
+export function availabilityVerificationDue(job,{now=new Date(),maxAgeMs=86400000}={}){
+  const j=jobSnapshot(job);const checked=Date.parse(j.last_verified_open_at??j.last_open_verification?.verified_at??'');
+  return !Number.isFinite(checked)||now.getTime()-checked>=maxAgeMs;
+}
+export function verificationRetryPlan(verification,attempt,{now=new Date()}={}){
+  if(verification.status==='CLOSED')return{status:'CLOSED',next_retry_at:null,error_code:'PUBLIC_POSTING_CLOSED'};
+  const reason=String(verification.reason??'CURRENT_OPEN_NOT_CONFIRMED');
+  const temporary=/BROWSER_TRANSPORT_ERROR|DETAIL_TRANSPORT_ERROR|SOURCE_TRANSPORT_ERROR|TIMEOUT|NETWORK_ERROR|ECONN|fetch failed|timed? ?out|SOURCE_HTTP_5\d\d/i.test(reason);
+  return{status:temporary?'RETRY':'OPEN_UNVERIFIED',error_code:reason,
+    next_retry_at:new Date(now.getTime()+(temporary?Math.min(3600000,300000*2**Math.min(4,Math.max(0,attempt-1))):86400000)).toISOString()};
+}
 export function screenRelevance(job,{now=new Date()}={}) {
   const j=jobSnapshot(job),title=fold(j.title),description=fold(j.description_text),location=fold(j.location),country=fold(j.country);
   const reasons=[],roles=[]; let score=0;
@@ -123,8 +134,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
           const key=fitInputHash({job,profile,policy,model:llm.model});
-          if(['DEAD_LETTER','OPEN_UNVERIFIED'].includes(row.status)&&row.active_fit_hash===key){seen.add(row.job_id);continue;}
-          if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount){seen.add(row.job_id);continue;}
+          if(row.status==='DEAD_LETTER'&&row.active_fit_hash===key){seen.add(row.job_id);continue;}
+          if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount&&!availabilityVerificationDue(job)){seen.add(row.job_id);continue;}
           selected={row,job:jobSnapshot(job),key};break;}
         if(!selected)break;const {row}=selected;seen.add(row.job_id);let job=selected.job,key=selected.key;
         const claim=(await repository.pool.query(`UPDATE relevance_queue SET status='RUNNING',claimed_by=$2,claimed_at=now(),active_fit_hash=$3,
@@ -134,13 +145,16 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         try {
           const verification=await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
           if(verification.status!=='OPEN'){
-            await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,claimed_by=NULL WHERE job_id=$1",[row.job_id,verification.status==='CLOSED'?'CLOSED':'OPEN_UNVERIFIED','CURRENT_OFFICIAL_OPEN_NOT_CONFIRMED']);
-            results.push({job_id:row.job_id,status:verification.status==='CLOSED'?'CLOSED':'OPEN_UNVERIFIED'});continue;
+            const plan=verificationRetryPlan(verification,claim.attempt_count);
+            await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.status,plan.error_code,plan.next_retry_at]);
+            results.push({job_id:row.job_id,status:plan.status,error:plan.error_code,retry_at:plan.next_retry_at});continue;
           }
+          await repository.pool.query("UPDATE jobs SET availability_status='OPEN',last_verified_open_at=now(),closed_at=NULL WHERE job_id=$1",[row.job_id]);
           job.availability_status='OPEN';key=fitInputHash({job,profile,policy,model:llm.model});
           await repository.pool.query('UPDATE relevance_queue SET active_fit_hash=$2 WHERE job_id=$1',[row.job_id,key]);
           if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount){
-            await repository.pool.query("UPDATE relevance_queue SET status='ANALYZED',claimed_by=NULL,last_completed_hash=$2 WHERE job_id=$1",[row.job_id,key]);continue;
+            await repository.pool.query("UPDATE relevance_queue SET status='ANALYZED',claimed_by=NULL,last_completed_hash=$2,error_code=NULL,next_retry_at=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,key]);
+            results.push({job_id:row.job_id,status:'AVAILABILITY_REVERIFIED_UNCHANGED_FIT',fit_input_hash:key});continue;
           }
           inferenceAttempts++;const analysis=await analyzer({job,profile,policy,llm});
           Object.assign(analysis,computePriority({job,analysis,policy}),{model:llm.model,prompt_version:PROMPT_VERSION,profile_version:profile.profile_version??profile.profile_id,
@@ -162,14 +176,15 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         }catch(error){const plan=retryPlan(error,claim.attempt_count);
           await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.retryable?'RETRY':'DEAD_LETTER',error.code??error.name,plan.next_retry_at]);
           results.push({job_id:row.job_id,status:plan.retryable?'RETRY':'DEAD_LETTER',error:error.name,retry_at:plan.next_retry_at});
-          if(error.code==='HTTP_429')return {scope:'REAL_CLOUD_FIT',provider:llm.provider,model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,results,blocked_reason:'PROVIDER_RATE_LIMIT',retry_at:plan.next_retry_at};
+          if(error.code==='HTTP_429')return {scope:['local','lmstudio'].includes(llm.provider)?'REAL_LOCAL_FIT':'REAL_CLOUD_FIT',provider:llm.provider,model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,results,blocked_reason:'PROVIDER_RATE_LIMIT',retry_at:plan.next_retry_at};
         }
           await observer(repository,{event:'QUEUED_FIT_PROGRESS',message:`Actual ${llm.model??'model'} jobs ${inferenceAttempts}/${maxJobs}; queue processed ${results.length}`,processed_count:results.length,
           success_count:results.filter(x=>x.status==='ANALYZED').length,failure_count:results.filter(x=>x.error).length});
       }
-      return {scope:regressionMode?'REGRESSION_INJECTED_GATEWAY':llm.provider&&llm.provider!=='local'?'REAL_CLOUD_FIT':'REAL_LOCAL_FIT',provider:llm.provider??'local',model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,
+      return {scope:regressionMode?'REGRESSION_INJECTED_GATEWAY':llm.provider&&!['local','lmstudio'].includes(llm.provider)?'REAL_CLOUD_FIT':'REAL_LOCAL_FIT',provider:llm.provider??'local',model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,
         selection_scope:jobIds?'EXPLICIT_ACTUAL_JOB_SUBSET':'DETERMINISTIC_RELEVANCE_QUEUE',selected_job_ids:jobIds??null,
-        errors:results.filter(x=>x.status!=='ANALYZED').map(x=>({job_id:x.job_id,status:x.status,error:x.error})),results,cancelled:Boolean(signal?.aborted)};
+        availability_reverified:results.filter(x=>x.status==='AVAILABILITY_REVERIFIED_UNCHANGED_FIT').length,
+        errors:results.filter(x=>!['ANALYZED','AVAILABILITY_REVERIFIED_UNCHANGED_FIT'].includes(x.status)).map(x=>({job_id:x.job_id,status:x.status,error:x.error})),results,cancelled:Boolean(signal?.aborted)};
     },{trigger:'relevance-queue',mode:regressionMode?'MOCK':'REAL'});
   } finally { if(acquired)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[lockKey]);lock.release(); }
 }

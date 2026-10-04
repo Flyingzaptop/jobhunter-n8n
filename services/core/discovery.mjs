@@ -172,7 +172,7 @@ export function parseSourcePayload(source, payload, fetchedUrl = sourceEndpoint(
     if (typeof id === 'object') throw new Error('INVALID_SOURCE_ITEM_ID');
     return {
       source_name: source.name, source_item_id: String(id), source_url: resolvedUrl,
-      title_hint: item.title ?? item.text ?? '', company_hint: item.hiringOrganization?.name ?? item.company ?? source.company ?? '',
+      title_hint: item.title ?? item.text ?? '', company_hint: item.hiringOrganization?.name ?? (typeof item.hiringOrganization==='string'?item.hiringOrganization:undefined) ?? item.company ?? source.company ?? '',
       location_hint: typeof item.location === 'string' ? item.location : item.location?.name ?? item.categories?.location
         ?? [location?.addressLocality, location?.addressCountry].filter(Boolean).join(', '),
       published_at: item.publishedAt ?? item.published_at ?? item.datePosted ?? item.first_published ?? null,

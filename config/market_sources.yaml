@@ -9,7 +9,7 @@ sources:
   - name: praca
     platform: Praca.pl
     adapter: public_listing_html
-    url: https://www.praca.pl/
+    url: https://www.praca.pl/praca.html
     robots_url: https://www.praca.pl/robots.txt
     profile: real
     enabled: true
@@ -20,9 +20,11 @@ sources:
     allowed_hosts:
       - www.praca.pl
     job_link_pattern: '_[0-9]+\.html$'
+    listing_page_pattern: '^/praca(?:_[0-9]+)?\.html$'
     max_pages: 16
     min_scan_interval_ms: 3600000
-    search_url: https://www.praca.pl/
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/praca.html
     required: true
     reason: Live ordinary public listing and detail GET return 200; bounded dynamic vacancy links and JobPosting extraction, without private APIs.
   - name: praca-wroclaw
@@ -39,8 +41,10 @@ sources:
     allowed_hosts:
       - www.praca.pl
     job_link_pattern: '_[0-9]+\.html$'
+    listing_page_pattern: '^/wroclaw(?:_[0-9]+)?\.html$'
     max_pages: 16
     min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
     search_url: https://www.praca.pl/wroclaw.html
   - name: pracuj
     platform: Pracuj.pl
@@ -59,18 +63,21 @@ sources:
     required: true
   - name: olx
     platform: OLX Praca
-    adapter: policy_probe
-    url: https://www.olx.pl/robots.txt
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/
+    robots_url: https://www.olx.pl/robots.txt
     profile: real
     enabled: true
     source_class: poland_board
-    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
     application_capability: MANUAL_TAKEOVER
-    permitted_access: false
+    permitted_access: true
     allowed_hosts:
       - www.olx.pl
-    reason: No documented permitted automatic vacancy feed configured. Only
-      robots/access policy is inspected; no protected search request.
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting details; robots HTTP 403 is recorded separately as unknown policy, without bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
     search_url: https://www.olx.pl/praca/
     required: true
   - name: justjoin

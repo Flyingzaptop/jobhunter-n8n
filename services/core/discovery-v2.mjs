@@ -3,16 +3,20 @@ import { randomUUID } from 'node:crypto';
 import YAML from 'yaml';
 import { safeFetch, parseSourcePayload, sourceEndpoint, extractJobPostings, decodeEntities } from './discovery.mjs';
 import { normalizeRaw, duplicateConfidence, descriptionContent } from './normalization.mjs';
+import {probeHeadlessBoards} from './headless-public-boards.mjs';
+import {publishedNextPage,htmlPaginationLinks,listingCursor} from './discovery-cursors.mjs';
 const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html', 'public_listing_html']);
 
 export function publicListingJobUrls(source, text) {
   if (!source.job_link_pattern) throw new Error('PUBLIC_LISTING_JOB_PATTERN_REQUIRED');
   const pattern = new RegExp(source.job_link_pattern);
+  const pagePattern=source.listing_page_pattern?new RegExp(source.listing_page_pattern):null;
   const urls = new Set();
   for (const [, href] of String(text).matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
     try {
       const url = new URL(decodeEntities(href), source.url);
       if (url.origin !== new URL(source.url).origin || !pattern.test(url.pathname)) continue;
+      if(pagePattern?.test(url.pathname+url.search))continue;
       url.hash = ''; url.search = ''; urls.add(url.href);
     } catch { /* Invalid page links are not vacancy URLs. */ }
   }
@@ -185,6 +189,44 @@ export async function verifyPublicJobPosting({ source, url, fetchOptions = {}, l
   return { status: 'OPEN', raw, method: 'OFFICIAL_PUBLIC_LISTING_AND_JOBPOSTING_GET' };
 }
 
+export function verifyPublicBoardPayload({source,url,postings,now=new Date()}){
+  if(!Array.isArray(postings)||postings.length!==1)return{status:'UNKNOWN',reason:'EXACT_PUBLIC_BOARD_JOBPOSTING_NOT_CONFIRMED'};
+  let raw,normalized;try{
+    [raw]=parseSourcePayload({...source,adapter:'json'},{jobs:postings.map(item=>({...item,url:item.url??url}))},url);
+    raw.adapter=source.adapter;normalized=normalizeRaw(raw);
+  }catch{return{status:'UNKNOWN',reason:'PUBLIC_BOARD_IDENTITY_INCOMPLETE'};}
+  const expected=new URL(url),actual=new URL(normalized.canonical_url);
+  if(expected.origin!==actual.origin||expected.pathname!==actual.pathname||normalized.description_text.length<80)
+    return{status:'UNKNOWN',reason:'PUBLIC_BOARD_POSTING_IDENTITY_MISMATCH'};
+  const conflict=officialDeadlineConflict(raw,{now});if(conflict)return{...conflict,raw:null};
+  const item=raw.raw_payload;const expiry=Date.parse(item.validThrough??item.application_deadline??'');
+  let status='UNKNOWN',reason='PUBLIC_BOARD_EXPIRY_MISSING_OR_INVALID';
+  if(item.closed===true||item.active===false||/^(?:closed|expired|inactive)$/i.test(item.status??'')){status='CLOSED';reason='PUBLIC_BOARD_EXPLICIT_CLOSED';}
+  else if(Number.isFinite(expiry)){
+    status=expiry>new Date(now).getTime()?'OPEN':'CLOSED';reason=status==='OPEN'?'PUBLIC_BOARD_CURRENT_DATED_POSTING':'PUBLIC_BOARD_EXPLICIT_EXPIRY';
+    if(/^\d{4}-\d{2}-\d{2}$/.test(item.validThrough??'')&&(item.validThrough===new Date(now).toISOString().slice(0,10))){status='UNKNOWN';reason='PUBLIC_BOARD_DATE_ONLY_EXPIRY_TODAY_UNCERTAIN';}
+    if(status==='CLOSED'&&/^(?:open|active)$/i.test(item.status??'')){status='UNKNOWN';reason='AVAILABILITY_CONFLICT';}
+  }
+  raw.raw_payload.status=status;
+  return{status,reason,raw,method:'CURRENT_PUBLIC_BOARD_POSTING'};
+}
+
+export async function verifyPublicBoardPosting({source,url,fetchOptions={}}){
+  if(source.adapter==='public_headless_jobposting'){
+    let robots=null;try{robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);}catch(error){if(!/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message))throw error;}
+    if(robots&&(!robotsAllows(robots,url)||!robotsAllows(robots,source.url)))throw new Error('ROBOTS_ACCESS_BLOCKED');
+    const report=await probeHeadlessBoards({names:[source.name],maxDetails:1,exactJobUrl:url,allowUrl:input=>!robots||robotsAllows(robots,input)});
+    const board=report.sources[0];const detail=board.details[0];
+    if(detail?.http_status===404)return{status:'CLOSED',reason:'PUBLIC_BOARD_POSTING_NOT_FOUND',method:'PUBLIC_BOARD_POSTING_NOT_FOUND'};
+    if(board.status!=='PUBLIC_PAGE_READABLE'||detail?.status!=='PUBLIC_DETAIL_READABLE')return{status:'UNKNOWN',reason:detail?.status??board.status};
+    return verifyPublicBoardPayload({source,url,postings:detail.job_postings});
+  }
+  const robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);
+  if(!robotsAllows(robots,url))throw new Error('ROBOTS_ACCESS_BLOCKED');
+  const response=await safeFetch(url,source,fetchOptions);
+  return verifyPublicBoardPayload({source,url,postings:extractJobPostings(response.text)});
+}
+
 export function queryEvidence(job) {
   // Indexing hints only: zero evidence never excludes a vacancy from ingestion.
   const text = `${job.title}\n${job.description_text}`.toLowerCase();
@@ -256,7 +298,16 @@ export async function listMarketSourceHealth(repository, registryPath = MARKET_R
     authenticated: false, observed_operational: Boolean(byName.get(source.name)?.last_success_at) }));
 }
 
-export async function runMarketDiscovery({ repository, observer = async () => {}, registryPath = MARKET_REGISTRY,
+export async function runMarketDiscovery(options={}){
+  if(!options.repository?.pool?.connect)return performMarketDiscovery(options);
+  const lock=await options.repository.pool.connect();let acquired=false;
+  try{
+    acquired=(await lock.query("SELECT pg_try_advisory_lock(hashtext('jobhunter.market-discovery')) AS locked")).rows[0].locked;
+    if(!acquired)throw new Error('DISCOVERY_ALREADY_RUNNING');
+    return await performMarketDiscovery(options);
+  }finally{if(acquired)await lock.query("SELECT pg_advisory_unlock(hashtext('jobhunter.market-discovery'))");lock.release();}
+}
+async function performMarketDiscovery({ repository, observer = async () => {}, registryPath = MARKET_REGISTRY,
   sourceIds, maxSources, signal, fetchOptions = {} } = {}) {
   if (!repository) throw new Error('POSTGRES_REPOSITORY_REQUIRED');
   const catalog = await loadMarketSources(registryPath);
@@ -288,11 +339,22 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
       pages: 0, normalization_errors: [], samples: [], query_evidence_count: 0 };
     const sourceUnique = new Set(); let sourceNew = 0;
     const prior = repository.pool ? (await repository.pool.query('SELECT * FROM market_source_health WHERE source_id=$1', [source.name])).rows[0] : null;
+    const sourceInterval=source.adapter==='policy_probe'?(source.min_scan_interval_ms??3600000):
+      prior?.metadata?.truncated?(source.continuation_scan_interval_ms??source.min_scan_interval_ms??0):(source.min_scan_interval_ms??0);
+    const failedPrior=['FAILED','ACCESS_BLOCKED'].includes(prior?.status);
+    const listingRootChanged=['public_listing_html','public_headless_jobposting'].includes(source.adapter)&&prior?.metadata?.listing_root_url!==source.url;
+    const cooldownAnchor=listingRootChanged?null:source.adapter==='policy_probe'||failedPrior?prior?.last_run_at:prior?.last_success_at;
+    const interval=failedPrior?(source.failure_backoff_ms??3600000):sourceInterval;
+    const storedDueAt=Date.parse(prior?.metadata?.next_request_at??'');
+    const calculatedDueAt=cooldownAnchor?new Date(cooldownAnchor).getTime()+interval:0;
+    const dueAt=listingRootChanged?0:Number.isFinite(storedDueAt)?storedDueAt:calculatedDueAt;
     try {
       await emit(source, { event: 'source_started', status: 'RUNNING', cursor: results.length + 1,
         message: source.source_class === 'employer_ats' ? `${source.platform} board scan — ${source.company} — source ${results.length + 1}/${sources.length}` : `Searching ${source.platform}` });
       if (source.enabled === false) {
         metrics.status = source.discovery_capability ?? 'DISABLED'; metrics.error_code = 'SOURCE_DISABLED'; metrics.reason = source.reason;
+      } else if(Date.now()<dueAt){
+        metrics.status='RATE_LIMIT_WAIT';metrics.next_request_at=new Date(dueAt).toISOString();
       } else if (source.adapter === 'policy_probe') {
         // Attempt policy only. Forbidden APIs/search pages are never probed.
         metrics.last_request_at = new Date().toISOString();
@@ -303,14 +365,19 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
           robots_excerpt: response.text.slice(0, 1600) };
       } else if (source.permitted_access !== true) {
         metrics.status = 'MANUAL_DISCOVERY_FALLBACK'; metrics.error_code = 'ACCESS_NOT_CONFIGURED_AS_PERMITTED';
-      } else if (prior?.last_success_at && Date.now() - new Date(prior.last_success_at).getTime() < (source.min_scan_interval_ms ?? 0)) {
-        metrics.status = 'RATE_LIMIT_WAIT'; metrics.next_request_at = new Date(new Date(prior.last_success_at).getTime() + source.min_scan_interval_ms).toISOString();
       } else {
         let robots = null;
         if (source.robots_url) {
           metrics.policy_attempted = true; metrics.last_request_at = new Date().toISOString();
-          const policyResponse = await safeFetch(source.robots_url, source, fetchOptions);
-          metrics.policy_requests = 1; robots = validateRobotsPayload(policyResponse.text);
+          try {
+            const policyResponse = await safeFetch(source.robots_url, source, fetchOptions);
+            metrics.policy_requests = 1; robots = validateRobotsPayload(policyResponse.text);
+            metrics.policy_status = 'PUBLIC_ROBOTS_READABLE'; metrics.policy_error_code = null;
+          } catch (error) {
+            if (source.adapter !== 'public_headless_jobposting' || !/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message)) throw error;
+            metrics.policy_requests = 1; metrics.policy_status = 'UNKNOWN_PUBLIC_ROBOTS_UNAVAILABLE';
+            metrics.policy_error_code = error.message;
+          }
         }
         const read = async url => {
           checkAbort();
@@ -367,11 +434,48 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
             errors: metrics.normalization_errors.length,
             message: `${source.platform}: ${metrics.raw_count} vacancies, ${sourceNew} new, page ${metrics.pages}` });
         };
-        if (publicHtmlAdapters.has(source.adapter)) {
-          const listing = await read(source.url);
+        if (source.adapter === 'public_headless_jobposting') {
+          if (robots && !robotsAllows(robots,source.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
+          const resume=prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
+          const currentUrl=resume.next_listing_page_url??source.url;
+          if(robots&&!robotsAllows(robots,currentUrl))throw new Error('ROBOTS_ACCESS_BLOCKED');
+          const result = await probeHeadlessBoards({names:[source.name],maxDetails:source.max_pages,
+            detailOffset:Number(resume.next_listing_offset??0),listingUrl:currentUrl,snapshotLinks:resume.listing_page_snapshot,
+            allowUrl:url=>!robots||robotsAllows(robots,url)});
+          const board=result.sources[0]; metrics.headless=true; metrics.gpu_disabled=true;
+          metrics.browser_status=board.status; metrics.listing_http_status=board.http_status;
+          metrics.public_vacancy_links=board.job_link_count??0; metrics.listing_root_url=source.url;
+          metrics.pages=1+board.details.length;
+          if(board.status==='PUBLIC_POLICY_DENIED')throw new Error('ROBOTS_ACCESS_BLOCKED');
+          if(['CHALLENGE_OR_CAPTCHA','HTTP_ACCESS_BLOCKED','PARTIAL_ACCESS_BLOCKED'].includes(board.status)) throw new Error('HEADLESS_PUBLIC_CHALLENGE');
+          if(board.status!=='PUBLIC_PAGE_READABLE') throw new Error('HEADLESS_PUBLIC_LISTING_UNAVAILABLE');
+          for(const detail of board.details) {
+            if(robots&&!robotsAllows(robots,detail.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
+            if(detail.status!=='PUBLIC_DETAIL_READABLE'||detail.structured_job_count!==1){metrics.normalization_errors.push({source_url:detail.url,error:detail.status});continue;}
+            const records=parseSourcePayload({...source,adapter:'json'},{jobs:detail.job_postings.map(item=>({...item,url:item.url??detail.url}))},detail.url)
+              .map(raw=>({...raw,adapter:source.adapter}));
+            await ingest(records);
+          }
+          Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl:board.published_next_page_url,
+            total:board.job_link_count,offset:Number(resume.next_listing_offset??0),processed:board.details.length}));
+          metrics.listing_page_snapshot=metrics.listing_page_completed?[]:board.job_links;
+          metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
+        } else if (publicHtmlAdapters.has(source.adapter)) {
+          const resume=source.adapter==='public_listing_html'&&prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
+          const currentUrl=resume.next_listing_page_url??source.url;
+          const listing = await read(currentUrl);
           metrics.listing_url = listing.url;
-          const jobUrls = source.adapter === 'public_listing_html' ? publicListingJobUrls(source, listing.text) : source.job_urls;
-          const offset = source.adapter === 'public_listing_html' ? Number(prior?.metadata?.next_listing_offset ?? 0) % (jobUrls.length || 1) : 0;
+          const oldSnapshot=resume.listing_page_snapshot??[];
+          const pagePattern=source.listing_page_pattern?new RegExp(source.listing_page_pattern):null;
+          const actualVacancy=url=>!pagePattern?.test(new URL(url).pathname+new URL(url).search);
+          const jobUrls = source.adapter === 'public_listing_html' ? (oldSnapshot.length?oldSnapshot.filter(actualVacancy):publicListingJobUrls(source, listing.text)) : source.job_urls;
+          const oldOffset=Number(resume.next_listing_offset??0);
+          const offset = source.adapter === 'public_listing_html' ? oldOffset-oldSnapshot.slice(0,oldOffset).filter(url=>!actualVacancy(url)).length : 0;
+          const retryCounts=resume.listing_page_url===currentUrl?{...(resume.listing_retry_counts??{})}:{};
+          if(source.adapter==='public_listing_html')for(const failure of resume.normalization_errors??[]){
+            const index=jobUrls.indexOf(failure.source_url);
+            if(index>=0&&index<offset&&(retryCounts[failure.source_url]??0)<2){jobUrls.push(failure.source_url);retryCounts[failure.source_url]=(retryCounts[failure.source_url]??0)+1;}
+          }
           const bounded = jobUrls.slice(offset, offset + source.max_pages);
           metrics.bounded_job_urls = jobUrls.length;
           metrics.next_listing_offset = offset + bounded.length;
@@ -386,6 +490,13 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
               if (error.message === 'DISCOVERY_CANCELLED' || /ROBOTS|SOURCE_HTTP_40[1369]/.test(error.message)) throw error;
               metrics.normalization_errors.push({ source_url: url, error: error.message });
             }
+          }
+          if(source.adapter==='public_listing_html'){
+            const nextUrl=publishedNextPage(htmlPaginationLinks(listing.text),currentUrl,{pagePattern:source.listing_page_pattern});
+            Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl,total:jobUrls.length,offset,processed:bounded.length}));
+            metrics.listing_root_url=source.url;metrics.listing_page_snapshot=metrics.listing_page_completed?[]:jobUrls;
+            metrics.listing_retry_counts=metrics.listing_page_completed?{}:retryCounts;
+            metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
           }
         } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();
@@ -410,6 +521,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
           metrics.next_sitemap_offset = offset + bounded.length; metrics.truncated = offset + bounded.length < urls.length;
         } else {
           metrics.queries = [];
+          metrics.feed_cursors={...(prior?.metadata?.feed_cursors??{})};
           for (const plan of source.query_plans ?? [{ query: 'All published vacancies', geography: 'Global / Europe / Poland', parameters: {} }]) {
             const initial = new URL(marketEndpoint(source));
             for (const [key, value] of Object.entries(plan.parameters ?? {})) initial.searchParams.set(key, String(value));
@@ -418,11 +530,16 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
               message: `Searching ${source.platform} — ${plan.query} — ${plan.geography}` });
             const queryMetrics = { query: source.current_query, query_family: plan.query, geography: plan.geography, raw_count: 0, pages: 0 };
             metrics.queries.push(queryMetrics);
-            let next = initial.href; let page = 0;
+            const feedKey=initial.href;const feedCursor=metrics.feed_cursors[feedKey]??{};
+            if(feedCursor.cycle_completed&&prior?.metadata?.cycle_completed===false){queryMetrics.completed_prior_cycle=true;continue;}
+            let next = feedCursor.next_url??initial.href; let page = 0;let absolutePage=feedCursor.next_url?Number(feedCursor.pages_processed??0):0;
+            let cycleRecords=feedCursor.next_url?Number(feedCursor.records_processed??0):0;
+            const cycleStartedAt=feedCursor.next_url?feedCursor.cycle_started_at:new Date().toISOString();
             while (next && page < source.max_pages) {
               const previousCount = metrics.raw_count;
-              const response = await read(next); await ingest(parseMarketPayload(source, response.text, response.url)); page++;
+              const response = await read(next); await ingest(parseMarketPayload(source, response.text, response.url)); page++;absolutePage++;
               queryMetrics.raw_count += metrics.raw_count - previousCount; queryMetrics.pages++;
+              cycleRecords+=metrics.raw_count-previousCount;
               const data = ['rss', 'wwr_rss'].includes(source.adapter) ? {} : JSON.parse(response.text);
               next = null;
               if (source.adapter === 'himalayas' && data.nextCursor) {
@@ -433,28 +550,34 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
                 const url = new URL(initial); url.searchParams.set('cursor', data.nextCursor); next = url.href;
               }
               if (source.adapter === 'jobgether' && data.pagination?.hasMore) {
-                const url = new URL(initial); url.searchParams.set('page', String(page + 1)); url.searchParams.set('limit', '25'); next = url.href;
+                const url = new URL(initial); url.searchParams.set('page', String(absolutePage + 1)); url.searchParams.set('limit', '25'); next = url.href;
               }
-              if (source.adapter === 'smartrecruiters' && Number(data.totalFound) > page * 100) {
-                const url = new URL(marketEndpoint(source)); url.searchParams.set('offset', String(page * 100)); next = url.href;
+              if (source.adapter === 'smartrecruiters' && Number(data.totalFound) > absolutePage * 100) {
+                const url = new URL(marketEndpoint(source)); url.searchParams.set('offset', String(absolutePage * 100)); next = url.href;
               }
               queryMetrics.truncated = Boolean(next);
               metrics.truncated = metrics.truncated || Boolean(next);
+              metrics.feed_cursors[feedKey]={next_url:next,pages_processed:absolutePage,records_processed:cycleRecords,
+                cycle_started_at:cycleStartedAt,cycle_completed_at:next?null:new Date().toISOString(),cycle_completed:!next,last_page_url:response.url};
             }
           }
+          metrics.cycle_completed=!metrics.truncated;
+          metrics.coverage_status=metrics.cycle_completed?'OBSERVED_FEED_CYCLE_COMPLETE':'INCREMENTAL_SCAN_PENDING';
         }
         metrics.status = metrics.normalization_errors.length ? 'OPERATIONAL_PARTIAL' : 'OPERATIONAL';
       }
     } catch (error) {
       metrics.error_code = /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'SOURCE_TRANSPORT_ERROR';
       if (error.message === 'DISCOVERY_CANCELLED') { metrics.status = 'CANCELLED'; cancelled = true; }
-      else metrics.status = /SOURCE_HTTP_40[1369]|ROBOTS/.test(error.message) ? 'ACCESS_BLOCKED' : 'FAILED';
+      else metrics.status = /SOURCE_HTTP_40[1369]|ROBOTS|HEADLESS_PUBLIC_CHALLENGE/.test(error.message) ? 'ACCESS_BLOCKED' : 'FAILED';
       if (error.message === 'INVALID_ROBOTS_PAYLOAD') { metrics.status = 'MANUAL_DISCOVERY_FALLBACK'; metrics.reason = 'Public robots endpoint did not return a usable policy; no protected/API fallback attempted.'; }
       // Failed access never triggers a stealth browser/alternate authenticated API.
     }
     metrics.latency_ms = Math.round(performance.now() - t); metrics.unique_count = sourceUnique.size;
     if (['OPERATIONAL', 'OPERATIONAL_PARTIAL'].includes(metrics.status)) metrics.next_request_at = source.min_scan_interval_ms
-      ? new Date(Date.now() + source.min_scan_interval_ms).toISOString() : null;
+      ? new Date(Date.now() + (metrics.truncated?(source.continuation_scan_interval_ms??source.min_scan_interval_ms):source.min_scan_interval_ms)).toISOString() : null;
+    else if(['FAILED','ACCESS_BLOCKED'].includes(metrics.status))metrics.next_request_at=new Date(Date.now()+(source.failure_backoff_ms??3600000)).toISOString();
+    else if(source.adapter==='policy_probe'&&metrics.status!=='RATE_LIMIT_WAIT')metrics.next_request_at=new Date(Date.now()+(source.min_scan_interval_ms??3600000)).toISOString();
     metrics.new_count = sourceNew; metrics.duplicate_count = Math.max(0, metrics.raw_count - sourceNew - metrics.normalization_errors.length);
     await saveSourceHealth(repository, runId, source, metrics); results.push(metrics);
     await emit(source, { event: 'source_completed', status: metrics.status, count: metrics.raw_count,
@@ -505,6 +628,26 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
   for (const mapping of mappings) {
     const source = sources.find(item => item.name === mapping.source_name);
     if (!source?.enabled || !source.permitted_access) continue;
+    if(source.source_class==='poland_board'&&['public_listing_html','public_headless_jobposting'].includes(source.adapter)){
+      try{
+        const verified=await verifyPublicBoardPosting({source,url:mapping.source_url,fetchOptions});
+        if(verified.raw){
+          const refreshed={...canonicalSnapshot(job),...normalizeRaw(verified.raw),job_id:job.job_id,canonical_url:job.canonical_url,
+            adapter:source.adapter,last_open_verification:{source:source.name,status:verified.status,method:verified.method,verified_at:new Date().toISOString()}};
+          await repository.insertRaw?.(verified.raw);await repository.upsertCanonicalJob?.(refreshed,{source:verified.raw});
+          if(repository.pool)await repository.pool.query("UPDATE jobs SET availability_status=$2,last_verified_open_at=CASE WHEN $2='OPEN' THEN now() ELSE last_verified_open_at END,closed_at=CASE WHEN $2='CLOSED' THEN COALESCE(closed_at,now()) ELSE NULL END WHERE job_id=$1",[job.job_id,verified.status]);
+          return{...verified,raw:undefined,source_id:source.name,verified_at:new Date().toISOString(),job:refreshed};
+        }
+        if(verified.status==='CLOSED'&&repository.pool)await repository.pool.query("UPDATE jobs SET availability_status='CLOSED',closed_at=COALESCE(closed_at,now()) WHERE job_id=$1",[job.job_id]);
+        return{...verified,source_id:source.name,verified_at:new Date().toISOString()};
+      }catch(error){
+        if(error.message==='SOURCE_HTTP_404'){
+          if(repository.pool)await repository.pool.query("UPDATE jobs SET availability_status='CLOSED',closed_at=COALESCE(closed_at,now()) WHERE job_id=$1",[job.job_id]);
+          return{status:'CLOSED',source_id:source.name,method:'PUBLIC_BOARD_POSTING_NOT_FOUND',verified_at:new Date().toISOString()};
+        }
+        return{status:'UNKNOWN',source_id:source.name,reason:error.message,verified_at:new Date().toISOString()};
+      }
+    }
     if (publicHtmlAdapters.has(source.adapter)) {
       try {
         const verified = await verifyPublicJobPosting({ source, url: mapping.source_url, fetchOptions });

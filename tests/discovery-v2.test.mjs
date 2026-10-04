@@ -28,6 +28,7 @@ test('public board discovery uses unique current same-origin vacancy links witho
  const html='<a href="/mechanical_123.html">Engineer</a><a href="https://www.praca.pl/mechanical_123.html">dup</a><a href="https://evil.example/job_123.html">offhost</a><a href="/api/jobs">api</a><a href="/wroclaw.html">city</a>';
  assert.deepEqual(publicListingJobUrls(source,html),['https://www.praca.pl/mechanical_123.html']);
  assert.throws(()=>publicListingJobUrls({url:source.url},html),/PUBLIC_LISTING_JOB_PATTERN_REQUIRED/);
+ assert.deepEqual(publicListingJobUrls({...source,listing_page_pattern:'^/praca(?:_[0-9]+)?\\.html$'},'<a href="/praca_2.html">Next</a><a href="/engineer_123.html">Job</a>'),['https://www.praca.pl/engineer_123.html']);
 });
 test('public board scan continues after malformed detail and preserves source provenance for valid vacancies',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'public-board-'));const path=join(dir,'registry.yaml');

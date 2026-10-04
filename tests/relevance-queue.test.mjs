@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import pg from 'pg';
 import {Repository} from '../services/core/repository.mjs';
-import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel} from '../services/core/relevance-queue.mjs';
+import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel,verificationRetryPlan,availabilityVerificationDue} from '../services/core/relevance-queue.mjs';
 const now=new Date('2026-10-04T12:00:00Z');
 test('cheap screening selects technical junior roles without fake fit/eligibility and deprioritizes incidental body keywords',()=>{
  const technical=screenRelevance({title:'Junior Mechanical Design Engineer',location:'Poland',country:'PL',description_text:'CAD prototyping',availability_status:'OPEN'},{now});
@@ -51,6 +51,14 @@ test('salary amounts and missing salary do not filter or penalize discovery rele
  assert.equal(low.relevance_score,high.relevance_score);assert.equal(low.relevance_score,missing.relevance_score);
  assert.equal(low.status,'QUEUED');assert.equal(low.status,missing.status);
 });
+test('availability verification retries network failure after at least five minutes, checks unsupported/challenge states daily and closes explicit expiry',()=>{
+ const retry=verificationRetryPlan({status:'UNKNOWN',reason:'BROWSER_TRANSPORT_ERROR'},1,{now});
+ assert.equal(retry.status,'RETRY');assert.equal(Date.parse(retry.next_retry_at)-now.getTime(),300000);
+ const challenge=verificationRetryPlan({status:'UNKNOWN',reason:'SOURCE_HTTP_403'},1,{now});assert.equal(challenge.status,'OPEN_UNVERIFIED');assert.equal(Date.parse(challenge.next_retry_at)-now.getTime(),86400000);
+ assert.equal(verificationRetryPlan({status:'CLOSED'},1,{now}).next_retry_at,null);
+ assert.equal(availabilityVerificationDue({last_verified_open_at:'2026-10-04T11:00:00Z'},{now}),false);
+ assert.equal(availabilityVerificationDue({last_verified_open_at:'2026-10-02T11:00:00Z'},{now}),true);
+});
 test('real PostgreSQL queue resumes unique analyses, skips unchanged receipts and separates transient/semantic failures',{skip:!process.env.DATABASE_URL},async t=>{
  const repo=new Repository(),admin=repo.pool,schema='relevance_test_'+randomUUID().replaceAll('-','');await admin.query(`CREATE SCHEMA ${schema}`);
  repo.pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema},public`,max:8});
@@ -71,5 +79,14 @@ test('real PostgreSQL queue resumes unique analyses, skips unchanged receipts an
  const retry=await runRelevanceFitBatch({...options,profile:{profile_id:'fixture-network'},analyzer:async()=>{throw new TypeError('fetch failed');}});
  assert.equal(retry.results[0].status,'RETRY');
  assert.ok(retry.results[0].retry_at);assert.equal((await repo.pool.query("SELECT count(*)::int n FROM operation_runs WHERE mode='MOCK'")).rows[0].n,6);
+ await repo.pool.query("UPDATE jobs SET last_verified_open_at=now()-interval '2 days' WHERE job_id=$1",[ids[2]]);
+ let verificationCalls=0;const availabilityOptions={...options,jobIds:[ids[2]],analyzer:async()=>{throw new Error('Unchanged receipt must not invoke analyzer');},verifier:async({job})=>{verificationCalls++;return{status:'OPEN',job};}};
+ const unchanged=await runRelevanceFitBatch(availabilityOptions);assert.equal(unchanged.inference_attempted,0);assert.equal(unchanged.availability_reverified,1);assert.equal(verificationCalls,1);
+ await repo.pool.query("UPDATE jobs SET last_verified_open_at=now()-interval '2 days' WHERE job_id=$1",[ids[2]]);
+ const verificationFailure=await runRelevanceFitBatch({...availabilityOptions,verifier:async()=>({status:'UNKNOWN',reason:'BROWSER_TRANSPORT_ERROR'})});
+ assert.equal(verificationFailure.results[0].status,'RETRY');assert.ok(Date.parse(verificationFailure.results[0].retry_at)-Date.now()>290000);
+ assert.equal((await runRelevanceFitBatch(availabilityOptions)).attempted,0);
+ await repo.pool.query("UPDATE relevance_queue SET next_retry_at=now()-interval '1 second' WHERE job_id=$1",[ids[2]]);
+ assert.equal((await runRelevanceFitBatch(availabilityOptions)).availability_reverified,1);assert.equal(verificationCalls,2);
  await assert.rejects(runRelevanceFitBatch({...options,regressionMode:false}),/BATCH_INFERENCE_AUTHORIZATION_REQUIRED/);
 });
