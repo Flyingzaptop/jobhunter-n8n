@@ -464,6 +464,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             allowUrl:url=>!robots||robotsAllows(robots,url)});
           const board=result.sources[0]; metrics.headless=board.headless??true; metrics.gpu_disabled=true;metrics.access_mode=board.access_mode??'ISOLATED_PUBLIC_BROWSER';
           metrics.browser_status=board.status; metrics.listing_http_status=board.http_status;
+          metrics.browser_error=board.error??null;
           metrics.public_vacancy_links=board.job_link_count??0; metrics.listing_root_url=source.url;
           metrics.pages=1+board.details.length;
           if(board.status==='PUBLIC_POLICY_DENIED')throw new Error('ROBOTS_ACCESS_BLOCKED');
