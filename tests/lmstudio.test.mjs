@@ -77,3 +77,32 @@ test('native count checks actual loaded context and never transmits oversized in
   assert.equal(calls.length,0);
   assert.deepEqual(client.lastStats.validation_codes,['INPUT_BUDGET_EXCEEDED','INPUT_BUDGET_EXCEEDED']);
 });
+test('SDK production seam disables thinking per request, preserves schema and semantic repair',async()=>{
+  const requests=[];
+  const {client,calls}=harness([],{sdkPredict:async request=>{
+    requests.push(request);
+    return {content:JSON.stringify({quote:requests.length===1 ? 'invented' : 'Python'}),modelInfo:{identifier:model},
+      stats:{stopReason:'eosFound',promptTokensCount:100,predictedTokensCount:20,tokensPerSecond:15}};
+  }});
+  await client.json({system:'Extract',prompt:'Python',schema,validate:result=>{
+    if(result.quote!=='Python') throw new StructuredOutputError('Exact quote required');
+  }});
+  assert.equal(calls.length,1);
+  assert.equal(requests.length,2);
+  assert.equal(requests[0].options.enableThinking,false);
+  assert.equal(requests[0].options.maxTokens,4096);
+  assert.equal(requests[0].options.contextOverflowPolicy,'stopAtLimit');
+  assert.deepEqual(requests[0].options.structured,{type:'json',jsonSchema:schema});
+  assert.equal(requests[1].messages[1].content,'Python');
+  assert.equal(client.lastStats.transport,'lmstudio-sdk');
+  assert.equal(client.lastStats.enable_thinking,false);
+  assert.equal(client.lastStats.requests[0].tokens_per_second,15);
+});
+test('SDK incomplete or mismatched results cannot pass even with valid JSON',async()=>{
+  for(const failure of [{stopReason:'maxPredictedTokensReached',identifier:model},
+    {stopReason:'contextLengthReached',identifier:model},{stopReason:'userStopped',identifier:model},
+    {stopReason:'eosFound',identifier:'other'}]) {
+    const {client}=harness([],{sdkPredict:async()=>({content:'{"quote":"Python"}',modelInfo:{identifier:failure.identifier},stats:{stopReason:failure.stopReason}})});
+    await assert.rejects(client.json({system:'Extract',prompt:'Python',schema}),StructuredOutputError);
+  }
+});

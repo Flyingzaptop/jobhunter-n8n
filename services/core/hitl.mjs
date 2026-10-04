@@ -21,9 +21,10 @@ async function event(client, applicationId, kind, payload) {
   await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)', [randomUUID(), 'application', applicationId, kind, payload]);
 }
 // Caller owns the transaction. Telegram can invoke this inside its durable inbox
-// transaction; dashboard invokes the wrapper below. Both use the exact same row.
+// transaction; dashboard and trusted chat tooling invoke the wrapper below.
+// Public HTTP callers still use their endpoint's fixed source, never caller input.
 export async function acceptQuestionAnswerWithClient(client, { questionId, correlationId, answer, source, profileId }) {
-  if (!uuid(questionId) || !uuid(correlationId) || !profileId || !['USER_DASHBOARD','USER_TELEGRAM'].includes(source)) throw hitlError('INVALID_QUESTION_ANSWER_REQUEST', 400);
+  if (!uuid(questionId) || !uuid(correlationId) || !profileId || !['USER_DASHBOARD','USER_TELEGRAM','USER_CHAT'].includes(source)) throw hitlError('INVALID_QUESTION_ANSWER_REQUEST', 400);
   const value = boundedAnswer(answer);
   const question = (await client.query('SELECT * FROM application_questions WHERE question_id=$1 FOR UPDATE', [questionId])).rows[0];
   if (!question || question.telegram_request_id !== correlationId) throw hitlError('QUESTION_NOT_FOUND', 404);

@@ -83,6 +83,16 @@ test('actual PostgreSQL: one correlated answer, authenticated review gate, stale
     const events=(await repo.pool.query("SELECT payload_json FROM events WHERE entity_id=$1 AND event_type='HITL_ANSWER_ACCEPTED'",[seeded.application])).rows;assert.equal(events.length,1);assert.equal(JSON.stringify(events).includes('User supplied answer'),false);
     let calls=0;await Promise.all([dispatchQuestionAnswer(repo,seeded.question,async()=>{calls++;}),dispatchQuestionAnswer(repo,seeded.question,async()=>{calls++;})]);assert.equal(calls,1);
   });
+  await t.test('trusted chat answer retains source, correlation and once-only dispatch without exposing answer in audit',async()=>{
+    const seeded=await seed(),input={questionId:seeded.question,correlationId:seeded.request,answer:'Authorized in the posting country',source:'USER_CHAT',profileId:profile.profile_id};
+    await assert.rejects(answerApplicationQuestion(repo,{...input,source:'UNTRUSTED_HTTP'}),/INVALID_QUESTION_ANSWER_REQUEST/);
+    const accepted=await answerApplicationQuestion(repo,input);assert.equal(accepted.source,'USER_CHAT');
+    const stored=(await repo.pool.query('SELECT answer,answer_source,reusable FROM application_questions WHERE question_id=$1',[seeded.question])).rows[0];assert.equal(stored.answer,input.answer);assert.equal(stored.answer_source,'USER_CHAT');assert.equal(stored.reusable,false);
+    const receipt=(await repo.pool.query('SELECT source FROM application_answer_receipts WHERE question_id=$1',[seeded.question])).rows[0];assert.equal(receipt.source,'USER_CHAT');
+    const audit=(await repo.pool.query("SELECT payload_json FROM events WHERE entity_id=$1 AND event_type='HITL_ANSWER_ACCEPTED'",[seeded.application])).rows[0].payload_json;assert.equal(audit.source,'USER_CHAT');assert.equal(JSON.stringify(audit).includes(input.answer),false);
+    await assert.rejects(answerApplicationQuestion(repo,input),/QUESTION_ALREADY_ANSWERED/);
+    let calls=0;await dispatchQuestionAnswer(repo,seeded.question,async()=>{calls++;return {status:'REGRESSION_NO_SUBMIT'};});await dispatchQuestionAnswer(repo,seeded.question,async()=>{calls++;});assert.equal(calls,1);
+  });
   await t.test('secret questions and foreign/stale applications cannot be answered',async()=>{
     const seeded=await seed('NEEDS_USER','CAPTCHA');
     for(const override of [{profileId:'foreign'},{correlationId:randomUUID()},{}])await assert.rejects(answerApplicationQuestion(repo,{questionId:seeded.question,correlationId:seeded.request,answer:'123456',source:'USER_DASHBOARD',profileId:profile.profile_id,...override}));
@@ -110,6 +120,7 @@ test('actual PostgreSQL: one correlated answer, authenticated review gate, stale
       assert.equal((await post(route,valid,{cookie})).status,403);
       assert.equal((await fetch(base+route,{headers:{cookie}})).status,405);
       assert.equal((await post(route,{...valid,application_id:seeded.application},headers)).status,400);
+      assert.equal((await post(route,{...valid,source:'USER_CHAT'},headers)).status,400);
       assert.equal((await post(route,{...valid,confirmed:false},headers)).status,400);
       assert.equal((await post(route,valid,headers)).status,200);
       assert.equal((await post(route,valid,headers)).status,409);

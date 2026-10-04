@@ -76,6 +76,7 @@ export class OllamaClient {
     contextLimit = Number(process.env.LM_STUDIO_CONTEXT_LENGTH || process.env.LMSTUDIO_CONTEXT_LIMIT || 32768),
     structuredFormat = process.env.LMSTUDIO_STRUCTURED_FORMAT || 'json_schema',
     tokenCounter,
+    sdkPredict,
     fetchImpl = globalThis.fetch} = {}) {
     if (!['local','cloud','cloud-relay','openrouter','lmstudio'].includes(provider)) throw new Error('Invalid Ollama provider');
     let url;
@@ -115,11 +116,12 @@ export class OllamaClient {
     this.timeoutMs = timeoutMs; this.fetch = fetchImpl;
     this.contextLimit = contextLimit; this.structuredFormat = structuredFormat;
     this.tokenCounter = tokenCounter;
+    this.sdkPredict = sdkPredict;
   }
 
   withModels({model = this.model, strongModel = this.strongModel} = {}) {
     return new OllamaClient({provider:this.provider, baseUrl:this.baseUrl, apiKey:this.#apiKey,
-      model,strongModel,timeoutMs:this.timeoutMs,contextLimit:this.contextLimit,structuredFormat:this.structuredFormat,tokenCounter:this.tokenCounter,fetchImpl:this.fetch});
+      model,strongModel,timeoutMs:this.timeoutMs,contextLimit:this.contextLimit,structuredFormat:this.structuredFormat,tokenCounter:this.tokenCounter,sdkPredict:this.sdkPredict,fetchImpl:this.fetch});
   }
 
   requestOptions(options = {}) {
@@ -240,7 +242,9 @@ export class OllamaClient {
           measured_input_tokens:measuredInput});
         this.lastStats.semantic_attempts++;
         const openRouter = this.provider === 'openrouter';
-        const response = await this.fetch(`${this.baseUrl}${openRouter || lmStudio ? '/chat/completions' : '/api/chat'}`, this.requestOptions({
+        const sdkInference = lmStudio && (this.sdkPredict || this.fetch === globalThis.fetch);
+        const response = sdkInference ? await this.#lmStudioSDKResponse({model:selectedModel,messages,schema,numPredict})
+          : await this.fetch(`${this.baseUrl}${openRouter || lmStudio ? '/chat/completions' : '/api/chat'}`, this.requestOptions({
           method: 'POST', headers: {'content-type': 'application/json'},
           signal: AbortSignal.timeout(this.timeoutMs),
           body: JSON.stringify(lmStudio ? {model:selectedModel, stream:false, temperature:0,
@@ -350,6 +354,37 @@ export class OllamaClient {
         }
       }
     }
+  }
+
+  async #lmStudioSDKResponse({model,messages,schema,numPredict}) {
+    const options = {enableThinking:false,temperature:0,maxTokens:numPredict || 4096,
+      contextOverflowPolicy:'stopAtLimit',
+      ...(this.structuredFormat === 'json_schema' ? {structured:{type:'json',jsonSchema:schema}} : {}),
+      signal:AbortSignal.timeout(this.timeoutMs)};
+    const result = this.sdkPredict ? await this.sdkPredict({model,messages,options,baseUrl:this.baseUrl})
+      : await this.#predictLMStudio(model,messages,options);
+    const reason = result.stats?.stopReason;
+    const finish = ['maxPredictedTokensReached','contextLengthReached'].includes(reason) ? 'length'
+      : ['eosFound','stopStringFound'].includes(reason) ? 'stop' : 'incomplete';
+    this.lastStats.transport = 'lmstudio-sdk';
+    this.lastStats.enable_thinking = false;
+    const request = this.lastStats.requests.at(-1);
+    request.tokens_per_second = typeof result.stats?.tokensPerSecond === 'number' && Number.isFinite(result.stats.tokensPerSecond)
+      ? result.stats.tokensPerSecond : null;
+    return {ok:true,json:async()=>({model:result.modelInfo?.identifier,
+      choices:[{message:{content:result.content},finish_reason:finish}],
+      usage:{prompt_tokens:result.stats?.promptTokensCount,completion_tokens:result.stats?.predictedTokensCount,
+        total_tokens:Number.isSafeInteger(result.stats?.promptTokensCount) && Number.isSafeInteger(result.stats?.predictedTokensCount)
+          ? result.stats.promptTokensCount + result.stats.predictedTokensCount : undefined}})};
+  }
+
+  async #predictLMStudio(model,messages,options) {
+    const {LMStudioClient,Chat} = await import('@lmstudio/sdk');
+    const endpoint = new URL(this.baseUrl);
+    const sdk = new LMStudioClient({baseUrl:`${endpoint.protocol === 'https:' ? 'wss:' : 'ws:'}//${endpoint.host}`});
+    const handle = (await sdk.llm.listLoaded()).find(item => item.identifier === model);
+    if (!handle) throw new StructuredOutputError('LM Studio exact configured instance is not already loaded');
+    return await handle.respond(Chat.from(messages),options);
   }
 
   async #measureLMStudioInput(model,messages) {

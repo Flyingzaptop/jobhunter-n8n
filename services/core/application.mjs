@@ -6,6 +6,7 @@ import { browserConfig } from '../browser-service/server.mjs';
 import {persistPendingApplicationQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 import {settleApplicationForm} from './form-settling.mjs';
+import {confirmedFieldMatches} from './confirmed-field.mjs';
 import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
@@ -137,6 +138,12 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(field.type==='checkbox'||field.type==='radio'){if(!/^(yes|agree|approved|true)$/i.test(String(answer)))return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});}
       else if(field.options)view=await browser.call(`/sessions/${sessionId}/select`,{selector:field.selector,value:answer});
       else view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:answer});
+      const observed=view.fields.find(f=>f.selector===field.selector);
+      if(observed){
+        const confirmed={label:observed.label,type:observed.type,value:observed.value,fingerprint:view.fingerprint,question_id:answerRow.question_id};
+        application.last_state.confirmed_fields={...(application.last_state.confirmed_fields??{}),[field.selector]:confirmed};
+        await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{confirmed_fields:application.last_state.confirmed_fields}]);
+      }
       await repository.event('application',application.application_id,'ANSWER_CONSUMED',{question_id:answerRow.question_id});
     }
     if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
@@ -150,6 +157,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: interactive CAPTCHA\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
       for(const field of view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
+        if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector]))continue;
         if(field.type==='file'){if(field.value)continue;const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);if(!field.required&&!resume)continue;if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
         if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment/i.test(field.label)) {
           if(field.checked)continue;const consent=classifyConsent(field.label,field.required);if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED'))continue;
