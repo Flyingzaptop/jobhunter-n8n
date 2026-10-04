@@ -4,6 +4,16 @@ import {OllamaClient,StructuredOutputError} from '../services/core/llm.mjs';
 
 const model = 'gemma4-26b-a4b-qat-uncensored-hauhaucs-balanced-mtp';
 const schema = {type:'object',properties:{quote:{type:'string'}},required:['quote'],additionalProperties:false};
+test('only LM Studio permits an explicit local one-hour timeout',()=>{
+  const client=new OllamaClient({provider:'lmstudio',model,timeoutMs:3600000});
+  assert.equal(client.timeoutMs,3600000);
+  assert.equal(client.withModels().timeoutMs,3600000);
+  assert.throws(()=>new OllamaClient({provider:'lmstudio',model,timeoutMs:3600001}),/Invalid Ollama timeout/);
+  for(const timeoutMs of [999,NaN,1000.5])
+    assert.throws(()=>new OllamaClient({provider:'lmstudio',model,timeoutMs}),/Invalid Ollama timeout/);
+  assert.throws(()=>new OllamaClient({provider:'local',model,timeoutMs:600001}),/Invalid Ollama timeout/);
+  assert.throws(()=>new OllamaClient({provider:'openrouter',model:'google/gemma-4-26b-a4b-it:free',apiKey:'test-key',timeoutMs:600001}),/Invalid Ollama timeout/);
+});
 function harness(outputs, options = {}) {
   const calls = [];
   const client = new OllamaClient({provider:'lmstudio',model,strongModel:model,...options,fetchImpl:async (url,init) => {
@@ -81,6 +91,9 @@ test('SDK production seam disables thinking per request, preserves schema and se
   const requests=[];
   const {client,calls}=harness([],{sdkPredict:async request=>{
     requests.push(request);
+    request.options.onPromptProcessingProgress(.5,{totalPromptTokenCount:100,processedPromptTokenCount:50});
+    request.options.onFirstToken();
+    request.options.onPredictionFragment({content:'private model text'});
     return {content:JSON.stringify({quote:requests.length===1 ? 'invented' : 'Python'}),modelInfo:{identifier:model},
       stats:{stopReason:'eosFound',promptTokensCount:100,predictedTokensCount:20,tokensPerSecond:15}};
   }});
@@ -97,6 +110,35 @@ test('SDK production seam disables thinking per request, preserves schema and se
   assert.equal(client.lastStats.transport,'lmstudio-sdk');
   assert.equal(client.lastStats.enable_thinking,false);
   assert.equal(client.lastStats.requests[0].tokens_per_second,15);
+  assert.equal(client.lastStats.requests[0].stage,'completed');
+  assert.equal(client.lastStats.requests[0].generated_fragments,1);
+  assert.equal(client.lastStats.requests[0].prompt_processing_progress,.5);
+  assert.equal(JSON.stringify(client.lastStats).includes('private model text'),false);
+});
+test('SDK timeout is a fixed failure and never consumes a second attempt',async()=>{
+  let count=0;
+  const {client}=harness([],{sdkPredict:async()=>{
+    count++;
+    throw new DOMException('timeout','TimeoutError');
+  }});
+  await assert.rejects(client.json({system:'Extract',prompt:'Python',schema}),{code:'INFERENCE_TIMEOUT'});
+  assert.equal(count,1);
+  assert.deepEqual(client.lastStats.validation_codes,['INFERENCE_TIMEOUT']);
+});
+test('hard SDK deadline cancels an unresponsive prediction and does not retry',async()=>{
+  let cancelled=0,started=0;
+  const {client}=harness([],{timeoutMs:1000,sdkPredict:()=>{
+    started++;
+    const pending=new Promise(()=>{});
+    pending.cancel=()=>{cancelled++;return Promise.resolve();};
+    return pending;
+  }});
+  const start=Date.now();
+  await assert.rejects(client.json({system:'Extract',prompt:'Python',schema}),{code:'INFERENCE_TIMEOUT'});
+  assert.equal(started,1);
+  assert.equal(cancelled,1);
+  assert.equal(client.lastStats.requests[0].stage,'timeout');
+  assert.ok(Date.now()-start<3000);
 });
 test('SDK incomplete or mismatched results cannot pass even with valid JSON',async()=>{
   for(const failure of [{stopReason:'maxPredictedTokensReached',identifier:model},

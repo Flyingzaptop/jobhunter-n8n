@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
-export const PROMPT_VERSION = 'fit-analysis-v3.1-compact';
+export const PROMPT_VERSION = 'fit-analysis-v3.2-polish-boundaries';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -169,6 +169,7 @@ function workFormatStatement(text) {
 }
 
 function employerContextStatement(text) {
+  if(/^(?:oferujemy\s|organizacja pracy\s|nasze wymagania (?:jakosciowe|produkcyjne|techniczne) dotycza (?:oferowanych )?(?:produktow|uslug|procesow))/.test(normalize(text)))return true;
   if (/^to be in consideration for multiple roles\b|^please apply to (?:each|the top)\b|^we will accept resumes on a rolling basis\b/i.test(text)) return true;
   if (/\bnot (?:required|mandatory|essential)\b/i.test(text)) return true;
   if (/\b(?:candidates?|you|must|required|require|expect|seek|qualification)\b/i.test(text)) return false;
@@ -191,7 +192,13 @@ function standaloneQualificationHeading(text) {
   // employer prose would manufacture candidate obligations. Keep source text
   // untouched: normalization here is solely for detecting the heading.
   const key = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().replace(/[:—.-]+\s*$/, '').trim();
+    .toLowerCase().replace(/ł/g,'l').replace(/[:—.-]+\s*$/, '').trim();
+  if(/^(?:czego oczekujemy\??|oczekujemy|nasze wymagania|wymagania(?: wobec kandydata)?|wymagamy|oczekiwania|kogo szukamy\??|twoj profil|kwalifikacje)$/.test(key))
+    return {importance:'MANDATORY'};
+  if(/^(?:mile widziane|dodatkowe atuty|preferowane kwalifikacje)$/.test(key))
+    return {importance:'STRONG_PREFERENCE'};
+  if(/^(?:na tym stanowisku bedziesz|twoje obowiazki|zakres obowiazkow|obowiazki|organizacja pracy|co oferujemy\??|oferujemy|to oferujemy|nasza oferta|benefity|warunki zatrudnienia)$/.test(key))
+    return {importance:null};
   if (/^(?:must have|essential skills|minimum requirements|you have|who you are|what you bring|about you|your qualifications|qualifications|required qualifications|(?:required|minimum|basic) skills(?: and experience)?|formation\s*(?:\/|et)\s*experience|competences(?: techniques)?|qualites personnelles|profil recherche|votre profil)$/.test(key))
     return { importance: 'MANDATORY' };
   if (/^(?:we prefer|desired skills(?: and experience)?|competences souhaitees|qualifications souhaitees|atouts|nous preferons)$/.test(key))
@@ -234,6 +241,9 @@ function qualificationSentences(source,{job}={}) {
   const pieces=[];let start=0;
   for(const match of source.matchAll(/(?<=[.!?;])\s+|\n+/g)){
     if(!match[0].includes('\n')&&/(?:\be\.g\.|\bi\.e\.|\bz\.\s*b\.|\bu\.s\.|\betc\.)$/i.test(source.slice(start,match.index)))continue;
+    // Polish licence abbreviations are part of the same exact qualification.
+    if(!match[0].includes('\n')&&/(?:\bgr\.|\bkat\.)$/i.test(source.slice(start,match.index))
+      && /^(?:\d|[A-Z]\b)/.test(source.slice(match.index+match[0].length)))continue;
     pieces.push(source.slice(start,match.index));start=match.index+match[0].length;
   }pieces.push(source.slice(start));
   return pieces.map(text => text.trim()).filter(Boolean).map(text => {
@@ -271,6 +281,9 @@ function requirementItems(text, list) {
   // Alternative fields and examples qualify the one requirement; they are not
   // independent qualifications which the candidate must satisfy simultaneously.
   if (/\b(?:or|either|such as|for example|including|eg|ou|soit|notamment|par exemple|oder|beispielsweise)\b|\be\.g\.|\bz\.\s*b\./i.test(text)) return [];
+  // Licence group numbers and a preferred specialization qualify one clause;
+  // neither is a list of independent candidate obligations.
+  if(/\d\s*,\s*\d|\b(?:lub|albo|preferowan[aey]|preferowane|preferowany|np)\b/i.test(normalize(text)))return [];
   const content = (list?.[2] || text).replace(/[.!?;]+$/, '');
   return content.split(/,|\s+and\s+/i).map(item => item.trim()).filter(Boolean);
 }

@@ -9,6 +9,31 @@ import { sourceFragmentCatalog, compactSchemaForJob, mandatoryRequirementAnchors
 const profile = YAML.parse(await readFile(new URL('./fixtures/candidate_profile_test.yaml', import.meta.url), 'utf8'));
 const base = { title: 'Engineering role', location: 'Europe', work_mode: 'UNKNOWN' };
 const atomic = (catalog, importance) => catalog.filter(f => f.importance_hint === importance && !f.list_container);
+test('observed OLX Polish expectation headings yield five intact mandatory clauses and bounded benefits/work organisation',async()=>{
+ const fixture=JSON.parse(await readFile(new URL('./fixtures/olx-polish-qualification-boundaries.json',import.meta.url),'utf8'));
+ const job={...base,description_text:fixture.description_text};const catalog=sourceFragmentCatalog(job);
+ assert.deepEqual(atomic(catalog,'MANDATORY').map(f=>f.text),fixture.mandatory_quotes);
+ assert.deepEqual(mandatoryRequirementAnchors(job),fixture.mandatory_quotes);
+ const schema=compactSchemaForJob(job,profile,catalog);
+ for(const text of ['Na tym stanowisku będziesz:','Czego oczekujemy?','Organizacja pracy','Co oferujemy?',
+  'Praca od poniedziałku do piątku .','Ubezpieczenie na życie PZU .']){
+  const fragment=catalog.find(f=>f.text===text);assert.ok(fragment.context_only);
+  assert.equal(fragment.importance_hint,null);
+  assert.ok(!Object.hasOwn(schema.properties.requirements.properties,String(fragment.id)));
+ }
+});
+test('observed Polish Oferujemy and Oczekujemy are headings, not scored candidate knowledge',()=>{
+ const job={...base,description_text:'Oferujemy:\n- zatrudnienie na podstawie umowy o pracę\nOczekujemy:\n• aktualnych uprawnień diagnosty samochodowego\n• znajomości obsługi urządzeń diagnostycznych\n• prawa jazdy kat. B\nZakres obowiązków:\n- wykonywanie badań technicznych pojazdów'};
+ const catalog=sourceFragmentCatalog(job);
+ assert.deepEqual(atomic(catalog,'MANDATORY').map(f=>f.text),['• aktualnych uprawnień diagnosty samochodowego','• znajomości obsługi urządzeń diagnostycznych','• prawa jazdy kat. B']);
+ assert.equal(catalog.find(f=>f.text==='Oferujemy:').context_only,true);
+ assert.equal(catalog.find(f=>f.text==='- wykonywanie badań technicznych pojazdów').context_only,true);
+});
+test('Polish heading vocabulary inside employer prose does not manufacture candidate requirements',()=>{
+ const job={...base,description_text:'Oferujemy możliwość rozwoju w naszej firmie. Organizacja pracy jest elastyczna. Nasze wymagania jakościowe dotyczą oferowanych produktów.'};
+ assert.deepEqual(mandatoryRequirementAnchors(job),[]);
+ assert.equal(sourceFragmentCatalog(job).some(f=>f.importance_hint),false);
+});
 
 test('observed You have / We prefer headings require exact mandatory/preferred catalog IDs', () => {
   const job = { ...base, description_text: `You will:

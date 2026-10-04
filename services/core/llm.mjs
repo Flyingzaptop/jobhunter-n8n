@@ -112,7 +112,8 @@ export class OllamaClient {
       throw new Error('Ollama must remain on a local/private endpoint');
     Object.defineProperties(this, Object.fromEntries(Object.entries({provider,baseUrl:url.href.replace(/\/$/, ''),model,strongModel})
       .map(([key,value]) => [key,{value,enumerable:true}])));
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) throw new Error('Invalid Ollama timeout');
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > (provider === 'lmstudio' ? 3600000 : 600000))
+      throw new Error('Invalid Ollama timeout');
     this.timeoutMs = timeoutMs; this.fetch = fetchImpl;
     this.contextLimit = contextLimit; this.structuredFormat = structuredFormat;
     this.tokenCounter = tokenCounter;
@@ -322,6 +323,8 @@ export class OllamaClient {
         if (validate) await validate(result);
         return result;
       } catch (error) {
+        if (lmStudio && (error?.code === 'INFERENCE_TIMEOUT' || ['TimeoutError','AbortError'].includes(error?.name)))
+          failureCode = 'INFERENCE_TIMEOUT';
         if (this.provider === 'openrouter' && /^HTTP_[1-5][0-9]{2}$/.test(error?.code || '')) failureCode = error.code;
         if (this.provider === 'openrouter' && failureCode === 'HTTP_429') {
           retryAfterSeconds ??= retryDelay(error?.metadata?.retry_after_seconds);
@@ -343,8 +346,9 @@ export class OllamaClient {
         // Do not log prompts, profile, model content, headers or personal identifiers.
         // An immediate repair cannot resolve quota/authentication failures.
         // Let the queue persist RETRY and defer without consuming another call.
-        const defer = this.provider === 'openrouter'
-          && ['HTTP_429','HTTP_401','HTTP_402','HTTP_403','OPENROUTER_NONFREE_USAGE'].includes(failureCode);
+        const defer = (this.provider === 'openrouter'
+          && ['HTTP_429','HTTP_401','HTTP_402','HTTP_403','OPENROUTER_NONFREE_USAGE'].includes(failureCode))
+          || (lmStudio && failureCode === 'INFERENCE_TIMEOUT');
         if (attempt === 1 || defer) {
           const attempts = attempt + 1;
           const failure = new StructuredOutputError(`${lmStudio ? 'LM Studio' : this.provider === 'openrouter' ? 'OpenRouter' : 'Ollama'} failed after ${attempts} attempt${attempts === 1 ? '' : 's'} (${retryReason})`);
@@ -357,18 +361,63 @@ export class OllamaClient {
   }
 
   async #lmStudioSDKResponse({model,messages,schema,numPredict}) {
+    const request = this.lastStats.requests.at(-1);
+    const started = Date.now();
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    Object.assign(request,{stage:'awaiting_inference',started_at:new Date(started).toISOString(),
+      prompt_processing_progress:0,generated_fragments:0});
     const options = {enableThinking:false,temperature:0,maxTokens:numPredict || 4096,
       contextOverflowPolicy:'stopAtLimit',
       ...(this.structuredFormat === 'json_schema' ? {structured:{type:'json',jsonSchema:schema}} : {}),
-      signal:AbortSignal.timeout(this.timeoutMs)};
-    const result = this.sdkPredict ? await this.sdkPredict({model,messages,options,baseUrl:this.baseUrl})
-      : await this.#predictLMStudio(model,messages,options);
+      signal,
+      onPromptProcessingProgress:(progress,details={})=>{
+        request.stage='processing_prompt';
+        if(typeof progress==='number' && Number.isFinite(progress) && progress>=0 && progress<=1)
+          request.prompt_processing_progress=progress;
+        request.prompt_processing={cached_tokens:tokenCount(details.cachedTokenCount),
+          total_tokens:tokenCount(details.totalPromptTokenCount),processed_tokens:tokenCount(details.processedPromptTokenCount),
+          unprocessed_tokens:tokenCount(details.unprocessedPromptTokenCount)};
+      },
+      onFirstToken:()=>{request.stage='generating';request.time_to_first_token_ms=Date.now()-started;},
+      onPredictionFragment:()=>{request.generated_fragments++;request.last_progress_elapsed_ms=Date.now()-started;}};
+    this.lastStats.transport = 'lmstudio-sdk';
+    this.lastStats.enable_thinking = false;
+    let result;
+    let deadline;
+    let pending;
+    try {
+      pending = this.sdkPredict ? this.sdkPredict({model,messages,options,baseUrl:this.baseUrl})
+        : this.#predictLMStudio(model,messages,options);
+      // Some SDK versions fail to reject the promise after aborting a queued or
+      // generating prediction. A separate deadline must end our wait reliably.
+      const timeout = new Promise((_,reject)=>{
+        deadline=setTimeout(()=>{
+          if(typeof pending?.cancel==='function') {
+            try { Promise.resolve(pending.cancel()).catch(()=>{}); } catch {}
+          }
+          const error=new StructuredOutputError('LM Studio inference timed out');
+          error.code='INFERENCE_TIMEOUT';
+          reject(error);
+        },this.timeoutMs);
+      });
+      result=await Promise.race([pending,timeout]);
+    } catch(error) {
+      const timedOut=signal.aborted || error?.code==='INFERENCE_TIMEOUT' || ['TimeoutError','AbortError'].includes(error?.name);
+      request.stage=timedOut ? 'timeout' : 'failed';
+      request.elapsed_ms=Date.now()-started;
+      if(timedOut) {
+        const failure=new StructuredOutputError('LM Studio inference timed out');
+        failure.code='INFERENCE_TIMEOUT';
+        throw failure;
+      }
+      throw error;
+    } finally {
+      clearTimeout(deadline);
+    }
+    request.stage='completed';request.elapsed_ms=Date.now()-started;
     const reason = result.stats?.stopReason;
     const finish = ['maxPredictedTokensReached','contextLengthReached'].includes(reason) ? 'length'
       : ['eosFound','stopStringFound'].includes(reason) ? 'stop' : 'incomplete';
-    this.lastStats.transport = 'lmstudio-sdk';
-    this.lastStats.enable_thinking = false;
-    const request = this.lastStats.requests.at(-1);
     request.tokens_per_second = typeof result.stats?.tokensPerSecond === 'number' && Number.isFinite(result.stats.tokensPerSecond)
       ? result.stats.tokensPerSecond : null;
     return {ok:true,json:async()=>({model:result.modelInfo?.identifier,
@@ -384,7 +433,12 @@ export class OllamaClient {
     const sdk = new LMStudioClient({baseUrl:`${endpoint.protocol === 'https:' ? 'wss:' : 'ws:'}//${endpoint.host}`});
     const handle = (await sdk.llm.listLoaded()).find(item => item.identifier === model);
     if (!handle) throw new StructuredOutputError('LM Studio exact configured instance is not already loaded');
-    return await handle.respond(Chat.from(messages),options);
+    if(options.signal.aborted) throw options.signal.reason;
+    const prediction=handle.respond(Chat.from(messages),options);
+    const cancel=()=>{try { Promise.resolve(prediction.cancel()).catch(()=>{}); } catch {}};
+    options.signal.addEventListener('abort',cancel,{once:true});
+    try { return await prediction; }
+    finally {options.signal.removeEventListener('abort',cancel);}
   }
 
   async #measureLMStudioInput(model,messages) {
