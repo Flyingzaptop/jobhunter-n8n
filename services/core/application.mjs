@@ -7,6 +7,10 @@ import {persistPendingApplicationQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 import {settleApplicationForm} from './form-settling.mjs';
 import {confirmedFieldMatches} from './confirmed-field.mjs';
+import {enqueueCaptchaHandoff} from './captcha-handoff.mjs';
+import {currentPreparationPolicy} from './preparation-policy.mjs';
+import YAML from 'yaml';
+import {isModelAnswerable,enqueue as enqueueProse,getReady as readyProse,consume as consumeProse} from './application-prose.mjs';
 import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
@@ -46,6 +50,7 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   let value, source='PROFILE';
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
+  if(/linkedin/i.test(label)&&known(identity.linkedin_url)&&['text','url'].includes(field.type))return {value:identity.linkedin_url,source:'PROFILE'};
   value=direct[field.name];
   if(field.name==='name'&&field.type==='text')value=legal;
   if(field.name==='location'&&field.type==='text'&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))value=`${candidate.base_location.city}, ${candidate.base_location.country}`;
@@ -97,7 +102,7 @@ export async function reverify({browser,job,applicationId}) {
   finally{await browser.call(`/sessions/${opened.session_id}`,undefined,'DELETE');}
 }
 
-export async function runApplication({ repository, jobId, applicationId, profile, answerMemory = {}, telegram, browser = new BrowserClient(), config = browserConfig(), maxSteps = 30, verifyOpen = reverify }) {
+export async function runApplication({ repository, jobId, applicationId, profile, policy, answerMemory = {}, telegram, browser = new BrowserClient(), config = browserConfig(), maxSteps = 30, verifyOpen = reverify }) {
   if(!profile.profile_id)throw new Error('PROFILE_ID_REQUIRED');
   const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
   if(!config.enabled||paused)return {status:'PAUSED',started:false};
@@ -118,6 +123,11 @@ export async function runApplication({ repository, jobId, applicationId, profile
     const cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[application.cv_id])).rows[0];
     if(!isMockUrl(new URL(job.canonical_url),config)){
       const latest=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[jobId])).rows[0]?.analysis_json;
+      const currentPolicy=policy??YAML.parse(await readFile('config/search_policy.yaml','utf8'));
+      const scope=currentPreparationPolicy({job,profile,policy:currentPolicy,analysis:latest,cv});
+      if(!scope.pass){await repository.event('application',application.application_id,'PREPARATION_POLICY_REJECTED',{reason:scope.reason,decision:scope.decision});
+        if(scope.decision==='REJECT'){await transition(repository,application.application_id,'SKIPPED',{skip_reason:scope.reason});return {application_id:application.application_id,status:'SKIPPED',reason:scope.reason};}
+        return {application_id:application.application_id,status:application.status,started:false,reason:scope.reason};}
       const evidence=await verifyCurrentCvEvidence({cv,job,profile,analysis:latest,artifactRoot:config.artifactRoot});
       if(!evidence.pass){await repository.event('application',application.application_id,'PREPARATION_EVIDENCE_REJECTED',{reasons:evidence.reasons});return {application_id:application.application_id,status:application.status,started:false,reason:'CURRENT_EMPLOYER_READY_CV_REQUIRED'};}
     }
@@ -155,7 +165,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(employerPolicy){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:employerPolicy,browser_session_id:sessionId,current_url:view.url});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:employerPolicy};}
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
-      if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: interactive CAPTCHA\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
+      if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});try{await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});}catch{await repository.event('application',application.application_id,'CAPTCHA_HANDOFF_PERSIST_FAILED',{reason:'DURABLE_HANDOFF_REQUIRED'});}return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
       for(const field of view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
         if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector]))continue;
         if(field.type==='file'){if(field.value)continue;const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);if(!field.required&&!resume)continue;if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
@@ -167,7 +177,18 @@ export async function runApplication({ repository, jobId, applicationId, profile
         if(field.type==='checkbox' && field.checked || field.type==='radio' && field.checked)continue;
         if(!field.options && !['checkbox','radio'].includes(field.type)&&known(field.value))continue;
         const answer=resolveField(field,{profile,job,answerMemory});if(answer?.skip)continue;
-        if(!answer){if(field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;}
+        if(!answer){
+          if(isModelAnswerable(field)){
+            const prosePolicy=policy??YAML.parse(await readFile('config/search_policy.yaml','utf8'));
+            const input={repo:repository,appId:application.application_id,field,view,profile,job,policy:prosePolicy};
+            const draft=await readyProse(input);
+            if(draft){view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:draft.text_answer,verified_facts:true});await consumeProse({repo:repository,draftId:draft.draft_id,appId:application.application_id});continue;}
+            const queued=await enqueueProse(input);
+            await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{prose_pending_question:{selector:field.selector,field_label:field.label,fingerprint:view.fingerprint,draft_id:queued.draft_id},pending_question:null}]);
+            return {application_id:application.application_id,status:'FILLING',prose_pending:true,draft_id:queued.draft_id};
+          }
+          if(field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
+        }
         const operation=field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);

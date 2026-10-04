@@ -18,6 +18,7 @@ import {computePriority} from './priority.mjs';
 import {dispatchQuestionAnswer} from './hitl.mjs';
 import {browserConfig} from '../browser-service/server.mjs';
 import {withExclusiveLocalGpu} from './gpu-lock.mjs';
+import {dispatchCaptchaTelegramReply,sendCaptchaQueue} from './captcha-telegram.mjs';
 const load = async (p) => YAML.parse(await readFile(p, "utf8"));
 const secretEqual = (a, b) => {
   const x = Buffer.from(a ?? ""),
@@ -112,10 +113,10 @@ export function createCore({
             if(verification.status==='CLOSED'){await repository.event('job',job.job_id,'SKIPPED_CLOSED');results.push({job_id:job.job_id,status:'CLOSED'});continue;}
           }
           const analysis = await analyzeJob({ job, profile, policy, llm });
-          analysis.model = llm.model;
+          analysis.model = analysis.analysis_method==='DETERMINISTIC_HARD_GATE'?null:llm.model;
           analysis.profile_version = profile.profile_version ?? createHash('sha256').update(JSON.stringify(profile)).digest('hex');
           Object.assign(analysis,computePriority({job,analysis,policy}));
-          analysis.runtime_statistics=llm.lastStats??null;
+          analysis.runtime_statistics=analysis.analysis_method==='DETERMINISTIC_HARD_GATE'?null:llm.lastStats??null;
           analysis.profile_hash=createHash('sha256').update(JSON.stringify(profile)).digest('hex');
           analysis.job_content_hash=job.content_hash;
           await repository.saveAnalysis(job.job_id, analysis);
@@ -251,6 +252,9 @@ export function createCore({
   }
   const telegramService=telegramAdapter??telegram;
   async function dispatchTelegram(accepted){
+    if(accepted.captcha_handoff_id){const profile=await load(testProfilePath??`${configDir}/candidate_profile.yaml`);return dispatchCaptchaTelegramReply({repository,browser:browserClient??new BrowserClient(),telegram:telegramService,accepted,profileId:profile.profile_id});}
+    if(accepted.command==='/captcha_queue'||accepted.command==='/start'){const profile=await load(testProfilePath??`${configDir}/candidate_profile.yaml`);return sendCaptchaQueue(repository,telegramService,{profileId:profile.profile_id});}
+    if(accepted.command==='/captcha_transport_reply'){await telegramService.send(`[TRANSPORT_TEST] Request ${accepted.transport_request_id.slice(0,8)}: ${accepted.transport_valid?'your photo reply matched its code.':'that code does not match this photo. Please reply to the correct photo and try again.'} No real CAPTCHA was verified and no application changed.`);return {scope:'TRANSPORT_TEST',code_valid:accepted.transport_valid};}
     if(accepted.application_id){
       const row=(await repository.pool.query('SELECT job_id FROM applications WHERE application_id=$1',[accepted.application_id])).rows[0];
       if(!row)throw new Error('Correlated application missing');

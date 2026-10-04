@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {acceptQuestionAnswerWithClient} from './hitl.mjs';
+import {acceptCaptchaTelegramReply,acceptCaptchaTransportReply} from './captcha-telegram.mjs';
 const updateId = value => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid Telegram update ID');
   return value;
@@ -10,7 +11,7 @@ const rejectionCodes = new Map([
   ['Unknown or already answered question', 'UNKNOWN_OR_ANSWERED_QUESTION'], ['Invalid Telegram message', 'INVALID_MESSAGE'],
 ]);
 const needsDispatch = accepted => Boolean(accepted.application_id || accepted.command);
-const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome']
+const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome','captcha_handoff_id','verify_requested','transport_request_id','transport_valid']
   .filter(key => accepted[key] !== undefined).map(key => [key, accepted[key]]));
 
 export async function getTelegramPollingCursor(repo) {
@@ -90,7 +91,7 @@ export class Telegram {
       );
       return { command: text };
     }
-    if (["/summary", "/weekly", "/status"].includes(text)) return { command: text };
+    if (["/summary", "/weekly", "/status", "/captcha_queue", "/start"].includes(text)) return { command: text };
     if (text.startsWith("/outcome ")) {
       const [, id, status] = text.split(/\s+/);
       const allowed = [
@@ -114,6 +115,11 @@ export class Telegram {
     }
     if (!message.reply_to_message?.message_id || !text.trim())
       throw new Error("Reply to the pending question required");
+    if(!Number.isSafeInteger(message.reply_to_message.message_id)||message.reply_to_message.message_id<1)throw new Error('Invalid Telegram message');
+    const captcha=await acceptCaptchaTelegramReply(repo,{messageId:message.reply_to_message.message_id,chatId:this.chatId,text});
+    if(captcha)return captcha;
+    const transport=await acceptCaptchaTransportReply(repo,{messageId:message.reply_to_message.message_id,chatId:this.chatId,text});
+    if(transport)return transport;
     const { rows } = await repo.pool.query(
       `SELECT q.*,a.candidate_profile_id FROM application_questions q JOIN applications a USING(application_id) WHERE q.telegram_message_id=$1 AND q.telegram_chat_id=$2 AND q.answered_at IS NULL`,
       [message.reply_to_message.message_id,this.chatId],
@@ -148,7 +154,7 @@ export class Telegram {
       let accepted; let outcome = 'ACCEPTED'; let errorCode = null;
       try { accepted = await this.accept(transactional, update); }
       catch (error) {
-        errorCode = rejectionCodes.get(error.message)??(error.code&&/^(?:INVALID_USER_ANSWER|QUESTION_|APPLICATION_NOT_WAITING|SECURITY_QUESTION)/.test(error.code)?error.code:null);
+        errorCode = rejectionCodes.get(error.message)??(error.code&&/^(?:INVALID_USER_ANSWER|QUESTION_|APPLICATION_NOT_WAITING|SECURITY_QUESTION|CAPTCHA_REPLY_|CAPTCHA_TRANSPORT_)/.test(error.code)?error.code:null);
         if (!errorCode) throw error;
         accepted = {}; outcome = 'REJECTED';
       }

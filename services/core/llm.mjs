@@ -168,9 +168,9 @@ export class OllamaClient {
         if (lmStudio) {
           let completeInputBudget = neededContext;
           // Native tokenizer is read-only and resolves an already loaded instance.
-          // A byte bound is sufficient for small requests; use native templating
-          // and tokenization when that bound alone cannot establish room.
-          if (neededContext > this.contextLimit) {
+          // Production must inspect the actual loaded context, which can change
+          // independently of configuration after a user reloads the model.
+          if (this.tokenCounter || this.fetch === globalThis.fetch || neededContext > this.contextLimit) {
             failureCode = 'NATIVE_TOKEN_COUNT_UNVERIFIED';
             const measured = this.tokenCounter ? await this.tokenCounter({model:selectedModel,messages,baseUrl:this.baseUrl})
               : this.fetch === globalThis.fetch ? await this.#measureLMStudioInput(selectedModel,messages) : null;

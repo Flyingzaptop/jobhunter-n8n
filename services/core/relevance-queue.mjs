@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { analyzeJob, PROMPT_VERSION, sourceFragmentCatalog } from './fit.mjs';
+import { analyzeJob, PROMPT_VERSION, sourceFragmentCatalog,deterministicHardReject } from './fit.mjs';
 import {LLM_GATEWAY_VERSION} from './llm.mjs';
 import { reverifyMarketJob } from './discovery-v2.mjs';
 import { computePriority } from './priority.mjs';
@@ -38,6 +38,26 @@ export function verificationRetryPlan(verification,attempt,{now=new Date()}={}){
   const temporary=/BROWSER_TRANSPORT_ERROR|DETAIL_TRANSPORT_ERROR|SOURCE_TRANSPORT_ERROR|TIMEOUT|NETWORK_ERROR|ECONN|fetch failed|timed? ?out|SOURCE_HTTP_5\d\d/i.test(reason);
   return{status:temporary?'RETRY':'OPEN_UNVERIFIED',error_code:reason,
     next_retry_at:new Date(now.getTime()+(temporary?Math.min(3600000,300000*2**Math.min(4,Math.max(0,attempt-1))):86400000)).toISOString()};
+}
+const hardGateHash=({job,profile,policy})=>hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),method:'DETERMINISTIC_HARD_GATE_v1'});
+export async function recordDeterministicHardReject({repository,job,profile,policy,rejection=deterministicHardReject({job:jobSnapshot(job),profile,policy})}){
+  if(!rejection)return null;
+  const gateHash=hardGateHash({job,profile,policy});const client=await repository.pool.connect();
+  try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['jobhunter.hard-gate.'+job.job_id]);
+    const existing=(await client.query("SELECT analysis_id FROM job_analysis WHERE job_id=$1 AND analysis_json->>'hard_gate_input_hash'=$2 LIMIT 1",[job.job_id,gateHash])).rows[0];
+    const analysis={...rejection,hard_gate_input_hash:gateHash,hard_gate_job_input_hash:relevanceInputHash(job),deterministically_rejected_at:new Date().toISOString()};
+    if(!existing)await client.query(`INSERT INTO job_analysis(analysis_id,job_id,model,prompt_version,profile_version,overall_fit,application_priority,decision,analysis_json)
+      VALUES($1,$2,'NO_MODEL_DETERMINISTIC','DETERMINISTIC_HARD_GATE_v1',$3,NULL,0,'REJECT',$4)`,[randomUUID(),job.job_id,hash(profile),analysis]);
+    else await client.query("UPDATE job_analysis SET analysis_json=analysis_json||jsonb_build_object('hard_gate_job_input_hash',$2::text) WHERE analysis_id=$1",[existing.analysis_id,relevanceInputHash(job)]);
+    await client.query("UPDATE relevance_queue SET status='ANALYZED',input_hash=$2,last_completed_hash=$3,error_code='DETERMINISTIC_HARD_REJECT',next_retry_at=NULL,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[job.job_id,relevanceInputHash(job),gateHash]);
+    await client.query("UPDATE jobs SET status='ANALYZED',last_analysis_error=NULL,next_analysis_retry_at=NULL WHERE job_id=$1",[job.job_id]);
+    await client.query('COMMIT');return{job_id:job.job_id,status:'DETERMINISTIC_REJECTED',inserted:!existing,analysis};
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
+export async function applyDeterministicHardRejects({repository,profile,policy,jobIds}={}){
+  const jobs=(await repository.listCanonicalJobs()).filter(job=>job.profile==='real'&&(!jobIds||jobIds.includes(job.job_id)));
+  const results=[];for(const job of jobs){const rejected=await recordDeterministicHardReject({repository,job,profile,policy});if(rejected)results.push({job_id:rejected.job_id,inserted:rejected.inserted,reasons:rejected.analysis.reasons});}
+  return{scope:'DETERMINISTIC_HARD_GATE',model:null,inference_performed:false,total_checked:jobs.length,rejected:results.length,new_rejections:results.filter(row=>row.inserted).length,results};
 }
 export function screenRelevance(job,{now=new Date()}={}) {
   const j=jobSnapshot(job),title=fold(j.title),description=fold(j.description_text),location=fold(j.location),country=fold(j.country);
@@ -127,13 +147,17 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
             errors:results.filter(x=>x.status!=='ANALYZED').map(x=>({job_id:x.job_id,status:x.status})),results,blocked_reason:'PAUSED'};
         const ready=(await repository.pool.query(`SELECT q.*,j.metadata AS job_metadata,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id)
           WHERE q.status IN('QUEUED','RETRY','ANALYZED','DEAD_LETTER','OPEN_UNVERIFIED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
+          AND NOT EXISTS(SELECT 1 FROM job_analysis h WHERE h.job_id=q.job_id AND h.analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE'
+            AND h.analysis_json->>'profile_hash'=$2 AND h.analysis_json->>'policy_hash'=$3
+            AND h.analysis_json->>'hard_gate_job_input_hash'=q.input_hash)
           AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),CASE
             WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
             WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 1 ELSE 2 END,
-            q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null])).rows;
+            q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null,hash(profile),hash(policy)])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
           const key=fitInputHash({job,profile,policy,model:llm.model});
+          if((await repository.pool.query("SELECT 1 FROM job_analysis WHERE job_id=$1 AND analysis_json->>'hard_gate_input_hash'=$2 LIMIT 1",[row.job_id,hardGateHash({job,profile,policy})])).rowCount){seen.add(row.job_id);continue;}
           if(row.status==='DEAD_LETTER'&&row.active_fit_hash===key){seen.add(row.job_id);continue;}
           if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount&&!availabilityVerificationDue(job)){seen.add(row.job_id);continue;}
           selected={row,job:jobSnapshot(job),key};break;}
@@ -143,6 +167,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         if(!claim)continue;
         await observer(repository,{event:'QUEUED_FIT_STARTED',entity_type:'job',entity_id:row.job_id,message:`Actual fit: ${job.company} — ${job.title}`,processed_count:results.length,total_count:maxJobs});
         try {
+          const hard=await recordDeterministicHardReject({repository,job,profile,policy});
+          if(hard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hard.analysis.reasons,model:null,inference_performed:false});continue;}
           const verification=await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
           if(verification.status!=='OPEN'){
             const plan=verificationRetryPlan(verification,claim.attempt_count);
@@ -184,7 +210,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
       return {scope:regressionMode?'REGRESSION_INJECTED_GATEWAY':llm.provider&&!['local','lmstudio'].includes(llm.provider)?'REAL_CLOUD_FIT':'REAL_LOCAL_FIT',provider:llm.provider??'local',model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,
         selection_scope:jobIds?'EXPLICIT_ACTUAL_JOB_SUBSET':'DETERMINISTIC_RELEVANCE_QUEUE',selected_job_ids:jobIds??null,
         availability_reverified:results.filter(x=>x.status==='AVAILABILITY_REVERIFIED_UNCHANGED_FIT').length,
-        errors:results.filter(x=>!['ANALYZED','AVAILABILITY_REVERIFIED_UNCHANGED_FIT'].includes(x.status)).map(x=>({job_id:x.job_id,status:x.status,error:x.error})),results,cancelled:Boolean(signal?.aborted)};
+        deterministic_rejected:results.filter(x=>x.status==='DETERMINISTIC_REJECTED').length,
+        errors:results.filter(x=>!['ANALYZED','AVAILABILITY_REVERIFIED_UNCHANGED_FIT','DETERMINISTIC_REJECTED'].includes(x.status)).map(x=>({job_id:x.job_id,status:x.status,error:x.error})),results,cancelled:Boolean(signal?.aborted)};
     },{trigger:'relevance-queue',mode:regressionMode?'MOCK':'REAL'});
   } finally { if(acquired)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[lockKey]);lock.release(); }
 }

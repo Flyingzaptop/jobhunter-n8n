@@ -8,6 +8,8 @@ import { chromium } from 'playwright';
 import { validateDestination, controlledSubmitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
 import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from './ats-adapters.mjs';
+import {captureCaptchaImage} from './captcha-image.mjs';
+import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -60,14 +62,15 @@ export async function createBrowserService(config = browserConfig()) {
           const safeMockWrite = destination.mock && /^\/(draft|step|captcha)(\/|$)/.test(destination.url.pathname);
           const adapter=atsAdapterFor(session.page?.url()??request.url());
           const reviewed=request.method()==='POST'&&reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed;
-          if (!safeMockWrite && !reviewed && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          const humanVerification=request.method()==='POST'&&reviewedHumanCaptchaPost(request.url(),session.humanCaptchaWindow,config);
+          if (!safeMockWrite && !reviewed && !humanVerification && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
         await route.fulfill(await pinnedRequest(request, destination));
       } catch (error) {
         const rejected=route.request();let operationName;
         try{const json=JSON.parse(rejected.postData()??'');if(typeof json.operationName==='string'&&/^[A-Za-z0-9_]{1,100}$/.test(json.operationName))operationName=json.operationName;}catch{}
-        session.blocked_requests.push({reason:error.message,url:observerUrl(rejected.url()),method:rejected.method(),...(operationName?{operation_name:operationName}:{}),timestamp:new Date().toISOString()});
+        session.blocked_requests.push({reason:error.message,url:captchaObserverUrl(rejected.url())??observerUrl(rejected.url()),method:rejected.method(),...(operationName?{operation_name:operationName}:{}),timestamp:new Date().toISOString()});
         await route.abort('blockedbyclient').catch(()=>{});
       }
     });
@@ -79,11 +82,12 @@ export async function createBrowserService(config = browserConfig()) {
     const result = await session.page.evaluate(() => {
       const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => e.id ? '#' + CSS.escape(e.id) : e.name ? `${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]` : `[data-jh-index="${e.dataset.jhIndex}"]`;
-      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
+      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link', final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
-    return { ...result, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
+    const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
+    return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
   async function checkpoint(session) {
     const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
@@ -91,9 +95,14 @@ export async function createBrowserService(config = browserConfig()) {
   }
   async function action(session, operation, payload) {
     session.current_action={operation,selector:payload.selector??null,started_at:new Date().toISOString()};
-    if (operation === 'navigate') { await validateDestination(payload.url, config); await session.page.goto(payload.url, { waitUntil: 'domcontentloaded' }); }
+    if (operation === 'navigate') {session.humanCaptchaViews?.clear();session.humanCaptchaWindow=null;session.humanCaptchaAction=null; await validateDestination(payload.url, config); await session.page.goto(payload.url, { waitUntil: 'domcontentloaded' }); }
     else if (operation === 'checkpoint') { session.pending_question = payload.pending_question ?? session.pending_question; return checkpoint(session); }
     else if (operation === 'screenshot') { const name = `${session.id}-${Date.now()}.png`, output = path.join(config.stateRoot, name); await session.page.screenshot({ path: output, fullPage: true }); return { path: output }; }
+    else if(operation==='captcha-image')return captureCaptchaImage(session.page);
+    else if(operation==='human-captcha-view')return humanCaptchaView(session,config);
+    else if(operation==='human-captcha-click')return humanCaptchaClick(session,config,payload);
+    else if(operation==='human-captcha-completion')return inspectHumanCaptchaCompletion(session,config);
+    else if(operation==='captcha-observation')return observePendingCaptcha(session.page,config);
     else if(operation==='observe-image'){const mask=session.page.frames().map(frame=>frame.locator('input[type=password],input[autocomplete=one-time-code],input[name*=token i],input[name*=otp i],input[name*=totp i],input[name*=authentication_code i]'));const png=await session.page.screenshot({fullPage:false,mask,maskColor:'#18212a'});return {png_base64:png.toString('base64'),captured_at:new Date().toISOString(),persisted:false};}
     else {
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);

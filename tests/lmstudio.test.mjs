@@ -4,6 +4,15 @@ import {OllamaClient,StructuredOutputError} from '../services/core/llm.mjs';
 
 const model = 'gemma4-26b-a4b-qat-uncensored-hauhaucs-balanced-mtp';
 const schema = {type:'object',properties:{quote:{type:'string'}},required:['quote'],additionalProperties:false};
+test('small prompts respect actual loaded context even when configured context is larger',async()=>{
+  let measured=0;
+  const {client,calls}=harness([],{contextLimit:32768,tokenCounter:async()=>{
+    measured++;return {inputTokens:100,contextLength:4096};
+  }});
+  await assert.rejects(client.json({system:'Extract',prompt:'Python',schema}),{code:'INPUT_BUDGET_EXCEEDED'});
+  assert.ok(measured>0);
+  assert.equal(calls.length,0);
+});
 test('only LM Studio permits an explicit local one-hour timeout',()=>{
   const client=new OllamaClient({provider:'lmstudio',model,timeoutMs:3600000});
   assert.equal(client.timeoutMs,3600000);

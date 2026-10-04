@@ -44,19 +44,47 @@ export async function pipeline(repo) {
     };
   });
 }
-export async function onboarding(providedProfile) {
+export async function onboarding(providedProfile,providedPolicy) {
   const profile = providedProfile??await load("candidate_profile");
-  const missing = [];
+  const policy=providedPolicy??await load('search_policy');
+  const known=value=>typeof value==='string'&&value.trim()&&!/^(?:unknown|null|n\/a)$/i.test(value.trim());
+  const identity={legal_name:profile.onboarding?.legal_name??profile.candidate?.legal_name??profile.identity?.legal_name,
+    email:profile.onboarding?.email??profile.identity?.email,phone:profile.onboarding?.phone??profile.identity?.phone};
+  const required={
+    'onboarding.legal_name':known(identity.legal_name)&&identity.legal_name.trim().split(/\s+/).length>=2,
+    'onboarding.email':known(identity.email)&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identity.email),
+    'onboarding.phone':known(identity.phone)&&identity.phone.replace(/\D/g,'').length>=7,
+    'candidate.base_location.city':known(profile.candidate?.base_location?.city),
+    'candidate.base_location.country':known(profile.candidate?.base_location?.country),
+  };
+  const missing=Object.entries(required).filter(([,valid])=>!valid).map(([field])=>field),unknown=[];
+  const noRelocation=policy.work_location_policy?.no_relocation===true;
+  const effectivePreferences={
+    relocation_willing:noRelocation?{value:false,provenance:'USER_POLICY',source:'search_policy.work_location_policy.no_relocation'}:
+      {value:typeof profile.onboarding?.relocation_willing==='boolean'?profile.onboarding.relocation_willing:'UNKNOWN',provenance:'VERIFIED_PROFILE',source:'candidate_profile.onboarding.relocation_willing'},
+    required_physical_base:{value:policy.work_location_policy?.required_base??null,provenance:'USER_POLICY',source:'search_policy.work_location_policy.required_base'},
+    compensation_filter_enabled:{value:typeof policy.compensation_filter?.enabled==='boolean'?policy.compensation_filter.enabled:'UNKNOWN',provenance:'USER_POLICY',source:'search_policy.compensation_filter.enabled'},
+  };
   function walk(object, prefix = "") {
     for (const [key, value] of Object.entries(object ?? {})) {
       const p = prefix ? `${prefix}.${key}` : key;
-      if (value === "UNKNOWN" || value == null) missing.push(p);
+      if (value == null||typeof value==='string'&&!known(value))unknown.push(p);
       else if (typeof value === "object") walk(value, p);
     }
   }
   walk(profile);
+  const policyResolved=noRelocation?['onboarding.relocation_willing']:[];
+  const optional=unknown.filter(field=>!missing.includes(field)&&!Object.hasOwn(required,field)&&!policyResolved.includes(field));
+  const words=known(identity.legal_name)?identity.legal_name.trim().split(/\s+/):[];
   return {
     missing_fields: missing,
+    blocking_missing_fields:missing,blocking_missing_count:missing.length,startup_ready:missing.length===0,
+    status:missing.length?'BLOCKED':'READY',required_startup_fields:Object.keys(required),
+    optional_unknown_fields:optional,optional_unknown_count:optional.length,
+    optional_unknown_notes:'Optional or conditional ATS answers stay unknown until an actual form requires them; they do not block startup.',
+    effective_preferences:effectivePreferences,
+    identity_summary:{legal_name_known:required['onboarding.legal_name'],email_known:required['onboarding.email'],phone_known:required['onboarding.phone'],
+      ...(words.length===2?{first_name:words[0],last_name:words[1],name_provenance:'DERIVED_FROM_VERIFIED_LEGAL_NAME'}:{})},
     professional_web_tools_question:
       "Were any React/Django/internal web tools actually created as part of professional hospital employment?",
     profile_version: profile.profile_version ?? null,

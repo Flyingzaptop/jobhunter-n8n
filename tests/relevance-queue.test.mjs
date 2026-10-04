@@ -90,3 +90,15 @@ test('real PostgreSQL queue resumes unique analyses, skips unchanged receipts an
  assert.equal((await runRelevanceFitBatch(availabilityOptions)).availability_reverified,1);assert.equal(verificationCalls,2);
  await assert.rejects(runRelevanceFitBatch({...options,regressionMode:false}),/BATCH_INFERENCE_AUTHORIZATION_REQUIRED/);
 });
+test('explicit nonlocal presence rejects before verifier/model with durable proof and no inference receipt',{skip:!process.env.DATABASE_URL},async t=>{
+ const repo=new Repository(),admin=repo.pool,schema='hard_gate_test_'+randomUUID().replaceAll('-','');await admin.query(`CREATE SCHEMA ${schema}`);
+ repo.pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema},public`,max:8});
+ t.after(async()=>{await repo.pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();});await repo.migrate();
+ const id=randomUUID();await repo.pool.query("INSERT INTO jobs(job_id,canonical_url,company,title,location,country,work_mode,description_text,content_hash,availability_status,metadata)VALUES($1,$2,'Regression Employer','Junior Mechanical Engineer','Warsaw, Poland','PL','HYBRID',$3,'regression-source','OPEN',$4)",[id,'https://example.invalid/'+id,'Note: This will be a hybrid onsite internship position.',{profile:'real'}]);
+ await buildRelevanceQueue({repository:repo});let modelCalls=0,verificationCalls=0;
+ const options={repository:repo,profile:{profile_id:'hard-gate-fixture',candidate:{base_location:{city:'Wroclaw',country:'Poland'}}},policy:{work_location_policy:{required_base:{city:'Wroclaw',country:'Poland'},no_relocation:true}},llm:{model:'MUST_NOT_BE_USED'},regressionMode:true,maxJobs:1,observer:async()=>{},analyzer:async()=>{modelCalls++;throw new Error('Forbidden inference');},verifier:async()=>{verificationCalls++;throw new Error('Forbidden verification');}};
+ const first=await runRelevanceFitBatch(options);assert.equal(first.deterministic_rejected,1);assert.equal(first.inference_attempted,0);assert.equal(first.analyzed,0);assert.equal(modelCalls,0);assert.equal(verificationCalls,0);
+ assert.equal((await repo.pool.query('SELECT count(*)::int n FROM fit_batch_receipts')).rows[0].n,0);
+ const saved=(await repo.pool.query('SELECT model,analysis_json FROM job_analysis')).rows[0];assert.equal(saved.model,'NO_MODEL_DETERMINISTIC');assert.equal(saved.analysis_json.model,null);assert.equal(saved.analysis_json.analysis_method,'DETERMINISTIC_HARD_GATE');assert.ok(saved.analysis_json.hard_reject_proof[0].policy_source);
+ assert.equal((await runRelevanceFitBatch(options)).attempted,0);assert.equal((await repo.pool.query('SELECT count(*)::int n FROM job_analysis')).rows[0].n,1);
+});

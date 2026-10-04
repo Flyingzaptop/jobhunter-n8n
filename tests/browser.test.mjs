@@ -62,6 +62,7 @@ test('real Playwright: complex application, human CAPTCHA, recovery, validation,
   let view=await snapshot(); assert.equal(view.fields.find(f=>f.name==='start_date').required,true); assert.equal(view.fields.find(f=>f.name==='start_date').value,'');
   // This deliberately missing answer is supplied by a simulated human, not guessed by production.
   await call('/sessions/'+id+'/checkpoint',{pending_question:{field:'start_date',status:'NEEDS_USER'}});await fill('start_date','2026-11-01');view=await next();assert.equal(view.current_step,5);assert.equal(view.captcha,true);
+  const crop=await call('/sessions/'+id+'/captcha-image',{});assert.equal(crop.scope,'CAPTCHA_ELEMENT_CROP');assert.equal(crop.redacted,true);assert.equal(crop.persisted,false);assert.ok(crop.png_base64.startsWith('iVBOR'));
   const captcha=await fixtureHumanCaptcha({baseUrl:'http://127.0.0.1:3002',draftId:view.draft_id,testToken:'fixture-human-token'});await fill('captcha_answer',captcha.code);assert.equal((await next()).current_step,6);
   view=await snapshot();assert.equal(view.fields.some(f=>f.name==='timezone_overlap'),true);await select('work_arrangement','Remote');await fill('timezone_overlap','09:00-17:00 Europe/Warsaw');view=await next();assert.equal(view.current_step,7);
   assert.equal(view.fields.find(f=>f.name==='website_trap').visible,false);

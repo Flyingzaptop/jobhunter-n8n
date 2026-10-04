@@ -15,6 +15,10 @@ import { randomUUID } from "node:crypto";
 import { n8nCli,prepareControlWorkflows } from "../../scripts/n8n-bootstrap.mjs";
 import { answerApplicationQuestion, dispatchQuestionAnswer, questionEligibility, hitlError } from '../core/hitl.mjs';
 import { prepareApplicationReview, approveApplicationReview, revokeApplicationReview, REVIEW_APPLICATION_LIMIT, REVIEW_CAMPAIGN } from './review-gates.mjs';
+import {resumeVerifiedHumanCaptcha} from '../core/manual-captcha-resume.mjs';
+import {safeDashboardReturnTo} from './return-to.mjs';
+import {captchaQueue} from '../core/captcha-telegram.mjs';
+import {exchangeCaptchaAccess,captchaAccessSession,checkCaptchaCsrf,rotateCaptchaCsrf} from '../core/captcha-access.mjs';
 async function body(req) {
   let text = "";
   for await (const chunk of req) {
@@ -45,6 +49,9 @@ export function createDashboard({
   profileProvider = () => q.load('candidate_profile'),
 } = {}) {
   const auth = createAuth(repository, { password });
+  async function manualBrowserCall(endpoint,payload){
+    try{return await browser.call(endpoint,payload);}catch(error){if(/^(?:CAPTCHA_[A-Z_]+|VISIBLE_TRUSTED_CAPTCHA_UNAVAILABLE|EXPLICIT_HUMAN_CAPTCHA_ACTION_REQUIRED)$/.test(error.message))throw hitlError(error.message,409);throw error;}
+  }
   const streams = new Set();
   let healthCache;
   let controlWorkflowsReady;
@@ -276,6 +283,33 @@ export function createDashboard({
         ).rows,
       });
     }
+    if(p==='/api/manual-captcha/queue'){if(req.method!=='GET')throw hitlError('GET_REQUIRED',405);const profile=await profileProvider();return send(await captchaQueue(repository,{profileId:profile.profile_id}));}
+    if(/^\/api\/manual-captcha\/[^/]+\/(?:session|view|click|resume)$/.test(p)){
+      const applicationId=p.split('/')[3],action=p.split('/')[4],profile=await profileProvider();
+      if(!q.uuid(applicationId))throw hitlError('INVALID_APPLICATION_ID',400);
+      const app=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
+      if(!app)throw hitlError('APPLICATION_NOT_FOUND_FOR_ACTIVE_PROFILE',404);
+      if(app.status!=='MANUAL_TAKEOVER'||app.last_state?.reason!=='INTERACTIVE_CAPTCHA'||app.dry_run!==true||app.confirmation_id||app.submitted_at)throw hitlError('APPLICATION_NOT_WAITING_FOR_MANUAL_CAPTCHA',409);
+      const sessionId=app.last_state.browser_session_id;
+      if(!q.uuid(sessionId)||app.last_state.captcha_handoff?.browser_session_id!==sessionId)throw hitlError('CURRENT_CAPTCHA_HANDOFF_REQUIRED',409);
+      if(session.captcha_scoped&&(session.application_id!==applicationId||session.handoff_id!==app.last_state.captcha_handoff?.handoff_id||session.browser_session_id!==sessionId))throw hitlError('CAPTCHA_ACCESS_SCOPE_STALE',401);
+      if(action==='session'){if(req.method!=='GET')throw hitlError('GET_REQUIRED',405);return send({application_id:applicationId,csrf_token:session.captcha_scoped?await rotateCaptchaCsrf(repository,session):await auth.rotateCsrf(session),scope:session.captcha_scoped?'CAPTCHA_ONLY':'DASHBOARD'});}
+      if(action==='view'){
+        if(req.method!=='GET')throw hitlError('GET_REQUIRED',405);
+        return send({...await manualBrowserCall(`/sessions/${sessionId}/human-captcha-view`,{}),application_id:applicationId,company:(await repository.pool.query('SELECT company FROM jobs WHERE job_id=$1',[app.job_id])).rows[0]?.company,submission_enabled:false});
+      }
+      if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+      const input=await body(req);
+      if(input.confirmed!==true)throw hitlError('EXPLICIT_MANUAL_CAPTCHA_CONFIRMATION_REQUIRED',400);
+      if(action==='click'){
+        if(!q.uuid(input.view_id)||Object.keys(input).some(k=>!['view_id','x','y','confirmed'].includes(k))||!Number.isFinite(input.x)||!Number.isFinite(input.y))throw hitlError('INVALID_MANUAL_CAPTCHA_POINTER',400);
+        const result=await manualBrowserCall(`/sessions/${sessionId}/human-captcha-click`,{...input,source:'USER_DASHBOARD'});
+        await repository.event('application',applicationId,'HUMAN_CAPTCHA_POINTER',{source:'USER_DASHBOARD',browser_session_id:sessionId,view_id:input.view_id,submission_enabled:false});
+        return send(result);
+      }
+      if(Object.keys(input).some(k=>k!=='confirmed'))throw hitlError('INVALID_MANUAL_CAPTCHA_RESUME',400);
+      try{return send(await resumeVerifiedHumanCaptcha({repository,browser,applicationId,profileId:profile.profile_id}));}catch(error){if(/^(?:FRESH_HUMAN_CAPTCHA_COMPLETION_REQUIRED|CURRENT_UNRESOLVED_CAPTCHA_HANDOFF_REQUIRED|MANUAL_CAPTCHA_APPLICATION_NOT_ELIGIBLE)$/.test(error.message))throw hitlError(error.message,409);throw error;}
+    }
     if (p === "/api/applications")
       return send(
         (
@@ -327,7 +361,7 @@ export function createDashboard({
     }
     if (p === "/api/hitl") {
       const profile=await profileProvider();
-      const questions=(await repository.pool.query(`SELECT q.*,j.company,j.title,a.status AS application_status,a.candidate_profile_id,a.last_state FROM application_questions q JOIN applications a USING(application_id) JOIN jobs j USING(job_id) WHERE q.answered_at IS NULL ORDER BY q.created_at`)).rows.map(row=>{const {last_state,candidate_profile_id,...visible}=row;const denied=questionEligibility(row,{status:row.application_status,candidate_profile_id,last_state},profile.profile_id);return {...visible,dashboard_answer_allowed:!denied,answer_blocked_reason:denied};});
+      const questions=(await repository.pool.query(`SELECT q.*,j.company,j.title,a.status AS application_status,a.candidate_profile_id,a.last_state FROM application_questions q JOIN applications a USING(application_id) JOIN jobs j USING(job_id) WHERE q.answered_at IS NULL AND q.closed_at IS NULL ORDER BY q.created_at`)).rows.map(row=>{const {last_state,candidate_profile_id,...visible}=row;const denied=questionEligibility(row,{status:row.application_status,candidate_profile_id,last_state},profile.profile_id);return {...visible,dashboard_answer_allowed:!denied,answer_blocked_reason:denied};});
       return send({
         questions,
         onboarding: await q.onboarding(profile),
@@ -514,12 +548,22 @@ export function createDashboard({
         );
       }
       if (url.pathname.startsWith("/api/")) {
-        const session = await auth.session(req);
+        const accessMatch=/^\/api\/manual-captcha\/([a-f0-9-]{36})\/access$/i.exec(url.pathname);
+        if(accessMatch){
+          if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+          const input=await body(req);if(!q.uuid(accessMatch[1])||Object.keys(input).some(k=>k!=='access_token'))throw hitlError('INVALID_CAPTCHA_ACCESS_REQUEST',400);
+          const profile=await profileProvider(),exchanged=await exchangeCaptchaAccess({repository,applicationId:accessMatch[1],token:input.access_token,profileId:profile.profile_id});
+          res.setHeader('set-cookie',`jobhunter_captcha=${exchanged.cookie}; HttpOnly; SameSite=Strict; Path=/api/manual-captcha/${accessMatch[1]}; Max-Age=${Math.max(1,Math.floor((new Date(exchanged.expires_at)-Date.now())/1000))}`);
+          res.writeHead(200,{'content-type':'application/json','cache-control':'no-store'});return res.end(JSON.stringify({data:{application_id:accessMatch[1],csrf_token:exchanged.csrf,scope:'CAPTCHA_ONLY',expires_at:exchanged.expires_at}}));
+        }
+        let session = await auth.session(req);
+        const capRoute=/^\/api\/manual-captcha\/([a-f0-9-]{36})\/(session|view|click|resume)$/i.exec(url.pathname);
+        if(!session&&capRoute&&q.uuid(capRoute[1])){const profile=await profileProvider(),grant=await captchaAccessSession({repository,req,applicationId:capRoute[1],profileId:profile.profile_id});if(grant)session={...grant,captcha_scoped:true};}
         if (!session)
           throw Object.assign(new Error("Authentication required"), {
             status: 401,
           });
-        if (!["GET", "HEAD"].includes(req.method)) auth.checkCsrf(req, session);
+        if (!["GET", "HEAD"].includes(req.method)){if(session.captcha_scoped)checkCaptchaCsrf(req,session);else auth.checkCsrf(req, session);}
         if (url.pathname === "/api/auth/me") {
           res.writeHead(200, {
             "content-type": "application/json",
@@ -591,6 +635,13 @@ export function createDashboard({
           return;
         }
         return await api(req, res, url, session);
+      }
+      if(url.pathname==='/manual-captcha.js'||/^\/manual-captcha\/[a-f0-9-]{36}$/i.test(url.pathname)){
+        if(req.method!=='GET')throw Object.assign(new Error('GET_REQUIRED'),{status:405});
+        // This shell is generic. All images, app metadata and actions require
+        // either ordinary admin auth or the exact private-Telegram CAPTCHA grant.
+        const file=new URL(url.pathname==='/manual-captcha.js'?'./manual-captcha/manual-captcha.js':'./manual-captcha/index.html',import.meta.url);
+        res.writeHead(200,{'content-type':url.pathname==='/manual-captcha.js'?'text/javascript; charset=utf-8':'text/html; charset=utf-8','cache-control':'no-store'});return res.end(await readFile(file));
       }
       if (req.method !== "GET")
         throw Object.assign(new Error("Method not allowed"), { status: 405 });

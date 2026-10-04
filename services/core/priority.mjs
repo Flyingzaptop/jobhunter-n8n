@@ -17,8 +17,10 @@ export function computePriority({
   now = new Date(),
 }) {
   const format = analysis.work_format_class ?? "UNKNOWN";
-  const preference = /REMOTE_.*FROM_POLAND|REMOTE_POLAND/.test(format)
-    ? 100
+  const requiredLocalPolicy=policy.work_location_policy?.no_relocation===true;
+  const localMechanicalHybrid=requiredLocalPolicy&&format==='HYBRID_WROCLAW_LOCAL'&&primary.has(analysis.role_family);
+  const preference = localMechanicalHybrid?100:/REMOTE_.*FROM_POLAND|REMOTE_POLAND/.test(format)
+    ? requiredLocalPolicy?98:100
     : format === "HYBRID_WROCLAW_LOCAL"
       ? 90
       : format === "HYBRID_POLAND_RARE_TRAVEL"

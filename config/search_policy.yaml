@@ -1,5 +1,6 @@
-policy_version: search-v2.1
+policy_version: search-v2.2-wroclaw-no-relocation
 thresholds: {auto_apply: 78, review: 60, stretch: 45}
+hard_reject_gate: {enabled: true, professional_years: true}
 qualification_weights:
   TECHNICAL: 40
   PROFESSIONAL_EXPERIENCE: 30
@@ -8,6 +9,10 @@ qualification_weights:
   OTHER: 5
 excluded_companies: []
 excluded_countries: []
+excluded_job_ids:
+  - 7eacc682-d769-5edd-96d4-537ee4d06e7b
+job_scope_exclusion_reasons:
+  7eacc682-d769-5edd-96d4-537ee4d06e7b: NO_CONFIRMED_REMOTE_FROM_REQUIRED_BASE
 role_families:
   primary:
     - mechanical_engineering
@@ -48,6 +53,9 @@ seniority:
   reject_explicit_senior_when_materially_unqualified: true
 work_location_policy:
   candidate_base: {city: Wroclaw, country: Poland}
+  required_base: {city: Wroclaw, country: Poland, remain_physical: true}
+  no_relocation: true
+  forbid_mandatory_travel: true
   discovery:
     worldwide_remote: true
     europe_remote: true
@@ -67,11 +75,11 @@ work_location_policy:
     onsite_discover: true
     onsite_auto_apply: false
   poland_nonlocal:
-    rare_travel_enabled: true
-    max_onsite_days_per_month_for_auto_apply: 1
-    regular_hybrid_action: REVIEW
-  europe_nonlocal: {discover: true, hybrid_action: REVIEW, onsite_action: REVIEW}
-  relocation: {assume_willing: false, allowed_countries: [], allowed_cities: []}
+    rare_travel_enabled: false
+    max_onsite_days_per_month_for_auto_apply: 0
+    regular_hybrid_action: REJECT
+  europe_nonlocal: {discover: true, hybrid_action: REJECT, onsite_action: REJECT}
+  relocation: {enabled: false, assume_willing: false, allowed_countries: [], allowed_cities: []}
   unknown_work_format: {action: REVIEW}
 application_domains: {allow: [], deny: []}
 

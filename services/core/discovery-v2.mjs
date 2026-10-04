@@ -215,7 +215,7 @@ export async function verifyPublicBoardPosting({source,url,fetchOptions={}}){
   if(source.adapter==='public_headless_jobposting'){
     let robots=null;try{robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);}catch(error){if(!/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message))throw error;}
     if(robots&&(!robotsAllows(robots,url)||!robotsAllows(robots,source.url)))throw new Error('ROBOTS_ACCESS_BLOCKED');
-    const report=await probeHeadlessBoards({names:[source.name],maxDetails:1,exactJobUrl:url,allowUrl:input=>!robots||robotsAllows(robots,input)});
+    const report=await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:1,exactJobUrl:url,allowUrl:input=>!robots||robotsAllows(robots,input)});
     const board=report.sources[0];const detail=board.details[0];
     if(detail?.http_status===404)return{status:'CLOSED',reason:'PUBLIC_BOARD_POSTING_NOT_FOUND',method:'PUBLIC_BOARD_POSTING_NOT_FOUND'};
     if(board.status!=='PUBLIC_PAGE_READABLE'||detail?.status!=='PUBLIC_DETAIL_READABLE')return{status:'UNKNOWN',reason:detail?.status??board.status};
@@ -300,15 +300,21 @@ export async function listMarketSourceHealth(repository, registryPath = MARKET_R
 
 export async function runMarketDiscovery(options={}){
   if(!options.repository?.pool?.connect)return performMarketDiscovery(options);
-  const lock=await options.repository.pool.connect();let acquired=false;
+  const lock=await options.repository.pool.connect();let acquired=false,shared=false,sourceKey;
   try{
-    acquired=(await lock.query("SELECT pg_try_advisory_lock(hashtext('jobhunter.market-discovery')) AS locked")).rows[0].locked;
+    if(options.parallelSource){
+      if(options.sourceIds?.length!==1)throw new Error('EXACT_SINGLE_SOURCE_REQUIRED');
+      shared=(await lock.query("SELECT pg_try_advisory_lock_shared(hashtext('jobhunter.market-discovery')) AS locked")).rows[0].locked;
+      if(!shared)throw new Error('DISCOVERY_ALREADY_RUNNING');
+      sourceKey='jobhunter.market-discovery.source.'+options.sourceIds[0];
+      acquired=(await lock.query('SELECT pg_try_advisory_lock(hashtext($1)) AS locked',[sourceKey])).rows[0].locked;
+    }else acquired=(await lock.query("SELECT pg_try_advisory_lock(hashtext('jobhunter.market-discovery')) AS locked")).rows[0].locked;
     if(!acquired)throw new Error('DISCOVERY_ALREADY_RUNNING');
     return await performMarketDiscovery(options);
-  }finally{if(acquired)await lock.query("SELECT pg_advisory_unlock(hashtext('jobhunter.market-discovery'))");lock.release();}
+  }finally{if(acquired){if(sourceKey)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[sourceKey]);else await lock.query("SELECT pg_advisory_unlock(hashtext('jobhunter.market-discovery'))");}if(shared)await lock.query("SELECT pg_advisory_unlock_shared(hashtext('jobhunter.market-discovery'))");lock.release();}
 }
 async function performMarketDiscovery({ repository, observer = async () => {}, registryPath = MARKET_REGISTRY,
-  sourceIds, maxSources, signal, fetchOptions = {} } = {}) {
+  sourceIds, maxSources, signal, fetchOptions = {},continuousPolling=false } = {}) {
   if (!repository) throw new Error('POSTGRES_REPOSITORY_REQUIRED');
   const catalog = await loadMarketSources(registryPath);
   let sources = catalog;
@@ -393,6 +399,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
               const raw = { ...record, ingestion_run_id: runId };
               const savedRaw = await repository.insertRaw(raw); raw.raw_id = savedRaw.raw_id;
               const job = normalizeRaw(raw); job.query_role_evidence = queryEvidence(job);
+              if(source.search_keyword)job.discovery_query={keyword:source.search_keyword,source_id:source.name,search_url:source.url,scope:'KEYWORD_SEARCH',geography_filter:'CURRENT_USER_POLICY_AFTER_DISCOVERY'};
               const conflict=source.source_class==='employer_ats'&&job.availability_status==='OPEN'?officialDeadlineConflict(raw):null;
               if(conflict){job.availability_status='UNKNOWN';job.availability_conflict=conflict;}
               job.adapter = raw.adapter; job.source_board = raw.source_board;
@@ -439,7 +446,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           const resume=prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
           const currentUrl=resume.next_listing_page_url??source.url;
           if(robots&&!robotsAllows(robots,currentUrl))throw new Error('ROBOTS_ACCESS_BLOCKED');
-          const result = await probeHeadlessBoards({names:[source.name],maxDetails:source.max_pages,
+          const result = await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:source.max_pages,
             detailOffset:Number(resume.next_listing_offset??0),listingUrl:currentUrl,snapshotLinks:resume.listing_page_snapshot,
             allowUrl:url=>!robots||robotsAllows(robots,url)});
           const board=result.sources[0]; metrics.headless=true; metrics.gpu_disabled=true;
@@ -576,6 +583,8 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
     metrics.latency_ms = Math.round(performance.now() - t); metrics.unique_count = sourceUnique.size;
     if (['OPERATIONAL', 'OPERATIONAL_PARTIAL'].includes(metrics.status)) metrics.next_request_at = source.min_scan_interval_ms
       ? new Date(Date.now() + (metrics.truncated?(source.continuation_scan_interval_ms??source.min_scan_interval_ms):source.min_scan_interval_ms)).toISOString() : null;
+    if(continuousPolling&&['OPERATIONAL','OPERATIONAL_PARTIAL'].includes(metrics.status))
+      metrics.next_request_at=new Date(Date.now()+(metrics.truncated?(source.continuation_scan_interval_ms??60000):3600000)).toISOString();
     else if(['FAILED','ACCESS_BLOCKED'].includes(metrics.status))metrics.next_request_at=new Date(Date.now()+(source.failure_backoff_ms??3600000)).toISOString();
     else if(source.adapter==='policy_probe'&&metrics.status!=='RATE_LIMIT_WAIT')metrics.next_request_at=new Date(Date.now()+(source.min_scan_interval_ms??3600000)).toISOString();
     metrics.new_count = sourceNew; metrics.duplicate_count = Math.max(0, metrics.raw_count - sourceNew - metrics.normalization_errors.length);

@@ -5,12 +5,12 @@ import path from 'node:path';
 import Ajv from 'ajv';
 import {chromium} from 'playwright';
 import {PDFParse} from 'pdf-parse';
-import {factIndex} from './fit.mjs';
+import {factIndex,sourceFragmentCatalog} from './fit.mjs';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {observe,operationContext} from './observability.mjs';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 
-export const CV_V2_VERSION = 'cv-factory-v2.1';
+export const CV_V2_VERSION = 'cv-factory-v2.3-exact-vacancy';
 const ajv = new Ajv({strict:true, allErrors:true});
 const str = {type:'string', minLength:1};
 const obj = properties => ({type:'object', additionalProperties:false, properties, required:Object.keys(properties)});
@@ -58,36 +58,174 @@ export function cvIdentityQa(profile) {
     identity:{name:!invalid(name) ? name : null, email:!invalid(email) ? email : null, phone:!invalid(phone) ? phone : null}};
 }
 
+const engineeringTerms=/mechanical|engineering|embedded|automation|control|robotic|simulation|cad|prototyp|gearbox|turbine|fea|cfd|plc|arduino|esp32|pid|inzynier|mechanik|automaty|robotyk/;
+export function cvSkillRelevance(skill,family){const text=normalize(skill);
+ if(family==='IT_SUPPORT')return /active directory|workstation|network|\blan\b|printer|peripheral|windows|linux/.test(text)?100:0;
+ if(family==='MECHANICAL')return /\bcad\b|fusion|mechanical|prototyp|\bfea\b|\bcfd\b|flow.3d|simulation|aerodynamic/.test(text)?100:/robotic|automation|\bplc\b|arduino|esp32|\bpid\b/.test(text)?50:0;
+ if(family==='ENGINEERING_AUTOMATION')return /\bplc\b|arduino|esp32|\bpid\b|automation|robotic/.test(text)?100
+  :/\bcad\b|mechanical|prototyp|\bfea\b|\bcfd\b|simulation|aerodynamic/.test(text)?70:/python|c\+\+|^c$|linux|git|profiling|benchmark/.test(text)?50:0;
+ if(family==='SOFTWARE')return /python|react|django|javascript|typescript|html|css|rest.api|c\+\+|^c$|linux|git/.test(text)?100:0;
+ if(family==='DATA')return /python|machine.learning|data.science|time.series|experiment|research|statistic/.test(text)?100:/linux|git/.test(text)?50:0;
+ return 1;
+}
+export function cvTargetFamily(job={},analysis={}){
+ const title=normalize(job.title),body=normalize(job.description_text),role=normalize(analysis.role_family);
+ if(/mechanical|cad|constructor|konstruktor|mechanik|simulation|cae/.test(title))return 'MECHANICAL';
+ if(/utrzymani.*ruchu|elektromechan|mechatron|automatyk/.test(title))return 'ENGINEERING_AUTOMATION';
+ if(/support|helpdesk|service desk|it administr|informatyk|wsparci.*it|wsparci.*techniczn.*system/.test(title))return 'IT_SUPPORT';
+ if(/embedded|automat|robotic|verification.*validation|hardware.*test|test.*hardware/.test(title))return 'ENGINEERING_AUTOMATION';
+ if(/data scien|machine learning|\bml\b|data engineer/.test(title))return 'DATA';
+ if(/software|developer|programmer|frontend|backend|full.?stack/.test(title))return 'SOFTWARE';
+ if(/mechanical/.test(role))return 'MECHANICAL';
+ if(/embedded|automation/.test(role)||/microcontroller|hardware.in.the.loop/.test(body)&&/test|engineering/.test(title))return 'ENGINEERING_AUTOMATION';
+ return 'GENERAL';
+}
+const cappedSkill=(raw,profile)=>{const text=skillText(raw).replace(/_/g,' ');
+ const cap=(profile.skills?.software??[]).some(value=>/basic.*c\+\+/i.test(skillText(value)));
+ return cap&&/^(?:c\+\+|basic.*c\+\+.*)$/i.test(text)?'C++ (basic-to-intermediate)':text;};
+const keywordDefinitions=[
+ ['CAD',['CAD']],['Fusion 360',['Fusion 360']],['SolidWorks',['SolidWorks']],['CATIA',['CATIA']],['ANSYS',['ANSYS']],
+ ['FEA',['FEA','finite-element','finite element']],['CFD',['CFD','computational fluid dynamics']],['FLOW-3D',['FLOW-3D']],
+ ['PLC',['PLC']],['Arduino',['Arduino']],['ESP32',['ESP32']],['PID',['PID']],['Python',['Python']],['C++',['C++']],
+ ['Linux',['Linux']],['Git',['Git','GitHub']],['React',['React']],['Django',['Django']],['JavaScript',['JavaScript']],
+ ['SQL',['SQL']],['Docker',['Docker']],['Windows',['Windows']],['Active Directory',['Active Directory']],
+ ['CAN',['CAN']],['FlexRay',['FlexRay']],['SPI',['SPI']],['I2C',['I2C']],
+ ['Hardware-in-the-Loop',['Hardware-in-the-Loop','Hardware in the Loop','HIL']],
+ ['Software-in-the-Loop',['Software-in-the-Loop','Software in the Loop','SIL']],
+ ['English',['English','angielski','angielskiego']],['Polish',['Polish','polski','polskiego']],
+ ['mechanical design',['mechanical design','projektowanie mechaniczne','konstrukcja mechaniczna']],['prototyping',['prototyping','prototype','prototypes','prototypowanie']],
+ ['automation',['automation','automatyzacja','automatyzacji','automatyka','automatyki']],['machine learning',['machine learning']],['data science',['data science']]
+];
+const hasKeyword=(text,term)=>term==='CAN'?/\bCAN\b/.test(String(text)):new RegExp(`(^|[^a-z0-9])${normalize(term).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}([^a-z0-9]|$)`,'i').test(normalize(text));
+export function vacancyKeywordPlan(profile,analysis={},job={}){
+ const facts=[...factIndex(profile).values()],catalog=sourceFragmentCatalog(job);
+ const requirements=Array.isArray(analysis.requirements)&&analysis.requirements.length?analysis.requirements:catalog.filter(f=>f.importance_hint&&!f.list_container).map(f=>({source_quote:f.text,importance:f.importance_hint}));
+ const clauses=requirements.filter(req=>typeof req.source_quote==='string'&&req.source_quote&&String(job.description_text??'').includes(req.source_quote));
+ for(const fragment of catalog.filter(f=>f.importance_hint&&!f.list_container))if(!clauses.some(req=>req.source_quote===fragment.text))clauses.push({source_quote:fragment.text,importance:fragment.importance_hint});
+ let stack=false;
+ for(const line of String(job.description_text??'').split(/\n+/).map(text=>text.trim()).filter(Boolean)){
+  if(/^(?:technology stack|tech stack|technologie|stos technologiczny)\s*:?$/i.test(line)){stack=true;continue;}
+  if(stack&&/^(?:qualifications|requirements|benefits|additional information|wymagania|co oferujemy|czego oczekujemy)\s*[:?]?$/i.test(line))stack=false;
+  if(stack&&!clauses.some(req=>req.source_quote===line))clauses.push({source_quote:line,importance:'DESCRIPTION_ONLY'});
+ }
+ const definitions=new Map(keywordDefinitions.map(([keyword,aliases])=>[normalize(keyword),{keyword,aliases}]));
+ // Candidate-specific exact skill labels are also ATS terms, including names
+ // not in the small technology vocabulary above. No target skills are invented.
+ for(const fact of facts)for(const raw of fact.skills??[]){const label=cappedSkill(raw,profile);if(label.length<100&&!definitions.has(normalize(label)))definitions.set(normalize(label),{keyword:label,aliases:[label]});}
+ for(const req of clauses)if(typeof req.skill==='string'&&req.skill.trim().length<100&&!definitions.has(normalize(req.skill)))definitions.set(normalize(req.skill),{keyword:req.skill.trim(),aliases:[req.skill.trim()]});
+ const entries=[];
+ for(const {keyword,aliases} of definitions.values()){
+  const matches=clauses.filter(req=>aliases.some(term=>hasKeyword(req.source_quote,term)||hasKeyword(req.skill??'',term)));
+  if(!matches.length)continue;
+  const supporting=facts.filter(fact=>aliases.some(term=>hasKeyword(JSON.stringify(Object.fromEntries(Object.entries(fact).filter(([key])=>!['id','provenance'].includes(key)))),term)));
+  const importance=matches.some(req=>req.importance==='MANDATORY')?'MANDATORY':matches.some(req=>req.importance==='STRONG_PREFERENCE')?'STRONG_PREFERENCE':matches.some(req=>req.importance==='NICE_TO_HAVE')?'NICE_TO_HAVE':'DESCRIPTION_ONLY';
+  const label=keyword==='C++'?cappedSkill(keyword,profile):keyword==='Linux'&&facts.some(f=>(f.skills??[]).some(s=>/linux familiarity/i.test(skillText(s))))?'Linux familiarity':keyword;
+  entries.push({keyword,cv_label:label,aliases,importance,weight:importance==='MANDATORY'?120:importance==='STRONG_PREFERENCE'?60:importance==='NICE_TO_HAVE'?20:10,
+   source_quotes:[...new Set(matches.map(req=>req.source_quote))],source_fact_ids:supporting.map(f=>f.id),
+   evidence_clauses:supporting.map(f=>({fact_id:f.id,provenance:f.provenance,
+    clauses:f.statements??[f.title,f.field,f.specialization,f.language,f.level,...(f.skills??[]).map(skillText)].filter(value=>typeof value==='string'&&value),
+    qualification_level:f.level??label,education_status:f.provenance==='EDUCATION'?f.status??null:null})),
+   status:supporting.length?'SUPPORTED':'UNSUPPORTED_DO_NOT_CLAIM'});
+ }
+ return {job_id:job.job_id??null,job_content_hash:job.content_hash??hash(job.description_text??''),
+  requirements_hash:canonicalAnalysisHash({job_id:job.job_id??null,content_hash:job.content_hash??hash(job.description_text??''),requirements:clauses}),source_catalog_hash:canonicalAnalysisHash(catalog),entries,
+  hard_missing_requirements:clauses.filter(req=>req.importance==='MANDATORY'&&req.strict===true&&req.match==='NO').map(req=>req.source_quote)};
+}
+export function cvTailoringPlan(profile,analysis={},job={}){
+ const family=cvTargetFamily(job,analysis),facts=[...factIndex(profile).values()];
+ const vacancyKeywords=vacancyKeywordPlan(profile,analysis,job);
+ const exactScore=fact=>vacancyKeywords.entries.filter(entry=>entry.source_fact_ids.includes(fact.id)).reduce((n,entry)=>n+entry.weight,0);
+ const strength=fact=>{const text=normalize([fact.title,fact.role,fact.field,fact.specialization,...(fact.skills??[]).map(skillText),...(fact.statements??[])].join(' '));
+  if(family==='IT_SUPPORT')return /active directory|workstation|hospital|troubleshoot|it specialist/.test(text)?100:/network|linux|windows/.test(text)?55:0;
+  if(family==='MECHANICAL')return /mechanical|\bcad\b|gearbox|turbine|prototyp|\bfea\b|\bcfd\b|flow.3d/.test(text)?100:/embedded|\bplc\b|robotic|automation/.test(text)?35:0;
+  if(family==='ENGINEERING_AUTOMATION')return /embedded|\bplc\b|arduino|esp32|\bpid\b|robotic|process automation/.test(text)?100
+   :/simulation|\bfea\b|\bcfd\b|gearbox|turbine|mechanical.design|prototyp/.test(text)?70:/c\+\+|profiling|benchmark/.test(text)?50:/python|data.processing|experiment/.test(text)?35:0;
+  if(family==='DATA')return /machine.learning|data.science|time.series|feature.engineer|statistical/.test(text)?100:/python/.test(text)?55:0;
+  if(family==='SOFTWARE')return /web.application|react|django|rest.api|javascript/.test(text)?100:/python|c\+\+|linux|git/.test(text)?60:0;
+  return 0;};
+ const focus=new Set(analysis.cv_focus_fact_ids??analysis.matched_fact_ids??[]);
+ const ranked=facts.map(fact=>({fact,score:exactScore(fact)*10+strength(fact)+(focus.has(fact.id)?15:0),core:strength(fact),exact:exactScore(fact)})).sort((a,b)=>b.score-a.score);
+ const bestExact=Math.max(0,...ranked.map(item=>item.exact));
+ const primary=ranked.filter(item=>bestExact?item.exact>0:item.core>=70).map(item=>item.fact.id);
+ const sections=ranked.filter(item=>item.fact.provenance&&!['EDUCATION','COURSE'].includes(item.fact.provenance));
+ const selected=family==='GENERAL'&&!bestExact||!primary.length?sections:sections.filter(item=>item.exact>0||item.core>=(family==='IT_SUPPORT'?70:1)).slice(0,4);
+ const target=normalize(`${job.title??''} ${job.description_text??''}`);
+ const relevantTraining=facts.filter(fact=>fact.provenance==='COURSE'&&(family==='GENERAL'||strength(fact)>=70
+  ||(normalize(fact.title).match(/python|\bcad\b|\bplc\b|linux|machine learning|data science/g)??[]).some(term=>target.includes(term)))).map(fact=>fact.id);
+ return {family,primary_fact_ids:primary,ranked_fact_ids:ranked.map(item=>item.fact.id),allowed_section_ids:selected.map(item=>item.fact.id),
+  preferred_section_ids:selected.map(item=>item.fact.id),engineering_education_first:['MECHANICAL','ENGINEERING_AUTOMATION'].includes(family),
+  relevant_training_ids:relevantTraining,
+  vacancy_keywords:vacancyKeywords,
+  scores:Object.fromEntries(ranked.map(item=>[item.fact.id,item.exact*10+item.core]))};
+}
+export function cvTailoringQa(document,profile,analysis={},job={}){
+ const plan=cvTailoringPlan(profile,analysis,job),errors=[],keywordCoverage=cvKeywordCoverage(document,profile,plan);
+ if(keywordCoverage.some(entry=>entry.status==='SUPPORTED_NOT_COVERED'))errors.push('SUPPORTED_ATS_KEYWORDS_MISSING');
+ if(keywordCoverage.some(entry=>entry.status==='UNSUPPORTED_KEYWORD_CLAIMED'))errors.push('UNSUPPORTED_ATS_KEYWORD_CLAIMED');
+ if(plan.vacancy_keywords.hard_missing_requirements.length)errors.push('UNSUPPORTED_STRICT_MANDATORY_QUALIFICATION');
+ if(!plan.primary_fact_ids.length)return {pass:errors.length===0,errors,family:plan.family,keyword_coverage:keywordCoverage,target_requirements_hash:plan.vacancy_keywords.requirements_hash};
+ const primary=new Set(plan.primary_fact_ids),aligned=claim=>claim.source_fact_ids?.some(id=>primary.has(id));
+ if(!aligned(document.headline))errors.push('HEADLINE_PRIMARY_EVIDENCE_REQUIRED');
+ const head=normalize(document.headline.text);
+ if(plan.engineering_education_first&&!engineeringTerms.test(head))errors.push('ENGINEERING_HEADLINE_REQUIRED');
+ if(!document.summary.length||!aligned(document.summary[0]))errors.push('SUMMARY_TARGET_EVIDENCE_FIRST');
+ const total=document.summary.reduce((n,c)=>n+c.text.split(/\s+/).length,0),relevant=document.summary.filter(aligned).reduce((n,c)=>n+c.text.split(/\s+/).length,0);
+ if(relevant<total*.5)errors.push('SUMMARY_UNRELATED_DOMINANCE');
+ const index=factIndex(profile);
+ for(const summary of document.summary){const scopes=new Set(summary.source_fact_ids.map(id=>index.get(id)?.provenance));
+  const text=normalize(summary.text);
+  if(scopes.has('ACADEMIC')&&!/academic|akademick/.test(text)||scopes.has('PERSONAL_PROJECT')&&!/personal|projekt.*wlasn/.test(text)
+   ||scopes.has('INDEPENDENT_R_AND_D')&&!/independent|niezalezn/.test(text))errors.push('SUMMARY_PROVENANCE_LABEL_REQUIRED');
+ }
+ const strongest=Math.max(0,...plan.allowed_section_ids.map(id=>plan.scores[id]??0));
+ if(document.sections.length&&((plan.scores[document.sections[0].source_fact_id]??0)<strongest||document.sections.some(section=>!plan.allowed_section_ids.includes(section.source_fact_id))))errors.push('TARGET_SECTION_ORDER_OR_SELECTION');
+ const skillAligned=claim=>cvSkillRelevance(claim.text,plan.family)>0||plan.vacancy_keywords.entries.some(entry=>entry.status==='SUPPORTED'&&entry.aliases.some(term=>hasKeyword(claim.text,term)));
+ const top=document.skills.slice(0,5);if(top.length&&top.filter(skillAligned).length<Math.ceil(top.length*.6))errors.push('TOP_SKILLS_UNRELATED_DOMINANCE');
+ return {pass:errors.length===0,errors,family:plan.family,primary_fact_ids:plan.primary_fact_ids,summary_primary_word_ratio:total?relevant/total:0,
+  keyword_coverage:keywordCoverage,target_requirements_hash:plan.vacancy_keywords.requirements_hash};
+}
+export function cvKeywordCoverage(document,profile,plan){const claims=cvClaimCatalog(document),index=factIndex(profile);
+ const deterministicIds=[...(profile.education??[]).map(f=>f.id),...(profile.languages??[]).map(f=>f.id),...plan.relevant_training_ids];
+ return plan.vacancy_keywords.entries.map(entry=>{const cited=claims.filter(claim=>entry.aliases.some(term=>hasKeyword(claim.text,term))
+   &&claim.source_fact_ids.some(id=>entry.source_fact_ids.includes(id)));
+  const deterministic=deterministicIds.filter(id=>entry.source_fact_ids.includes(id)&&entry.aliases.some(term=>hasKeyword(JSON.stringify(index.get(id)),term)));
+  const unsupportedMention=entry.status!=='SUPPORTED'&&claims.some(claim=>entry.aliases.some(term=>hasKeyword(claim.text,term)));
+  return {...entry,status:entry.status==='SUPPORTED'?(cited.length||deterministic.length?'SUPPORTED_COVERED':'SUPPORTED_NOT_COVERED')
+   :unsupportedMention?'UNSUPPORTED_KEYWORD_CLAIMED':'UNSUPPORTED_DO_NOT_CLAIM',covered_claim_ids:cited.map(claim=>claim.claim_id),deterministic_fact_ids:deterministic};});
+}
 function selectCatalog(profile, analysis, job) {
   const index = factIndex(profile);
+  const tailoring=cvTailoringPlan(profile,analysis,job),order=new Map(tailoring.ranked_fact_ids.map((id,n)=>[id,n]));
   const focus = new Set(analysis?.cv_focus_fact_ids ?? analysis?.matched_fact_ids ?? []);
   const vacancy = normalize(`${job.title ?? ''} ${job.description_text ?? ''} ${analysis?.role_family ?? ''}`);
   const score = fact => (focus.has(fact.id) ? 100 : 0) + (fact.skills ?? []).reduce((n,skill) => n + (vacancy.includes(normalize(skill)) ? 5 : 0),0);
-  const facts = [...index.values()].sort((a,b) => score(b)-score(a)).map(cleanFact);
+  const facts = [...index.values()].sort((a,b) => tailoring.family==='GENERAL'?score(b)-score(a):order.get(a.id)-order.get(b.id)).map(cleanFact);
   const skillMap = new Map();
   for (const fact of facts) for (const rawSkill of fact.skills ?? []) {
-    const skill=skillText(rawSkill);
+    const skill=cappedSkill(rawSkill,profile);
     // Preserve qualifiers: "Linux familiarity" cannot become "Linux expert".
     const key = normalize(skill);
     if (!skillMap.has(key)) skillMap.set(key,{text:skill.replace(/_/g,' '), source_fact_ids:[]});
     skillMap.get(key).source_fact_ids.push(fact.id);
   }
-  return {index, facts, skills:[...skillMap.values()].sort((a,b) => Number(vacancy.includes(normalize(b.text)))-Number(vacancy.includes(normalize(a.text))))};
+  const keywordScore=skill=>tailoring.vacancy_keywords.entries.filter(entry=>entry.status==='SUPPORTED'&&entry.aliases.some(term=>hasKeyword(skill.text,term))).reduce((n,entry)=>n+entry.weight,0);
+  const relevance=skill=>keywordScore(skill)*10+cvSkillRelevance(skill.text,tailoring.family);
+  return {index, facts,tailoring,skills:[...skillMap.values()].filter(skill=>relevance(skill)>0).sort((a,b) => relevance(b)-relevance(a)||Number(vacancy.includes(normalize(b.text)))-Number(vacancy.includes(normalize(a.text))))};
 }
 
-export function cvWriterSchema(profile) {
+export function cvWriterSchema(profile,{allowedSectionIds,allowedSkillNames}={}) {
   const facts = [...factIndex(profile).values()];
   if (!facts.length) throw new Error('CV requires verified candidate facts');
   const ids = facts.map(f => f.id);
   const claim = obj({text:{type:'string', minLength:1, maxLength:550}, source_fact_ids:{type:'array', minItems:1, maxItems:6, uniqueItems:true, items:{enum:ids}}});
-  const skillNames = [...new Set(facts.flatMap(f => f.skills ?? []).map(s => skillText(s).replace(/_/g,' ')))];
+  const skillNames = [...new Set(facts.flatMap(f => f.skills ?? []).map(s => cappedSkill(s,profile)))].filter(text=>!allowedSkillNames||allowedSkillNames.includes(text));
   const skill = structuredClone(claim);
   skill.properties.text = skillNames.length ? {enum:skillNames} : {type:'string', maxLength:0};
   const skillSchema=skillNames.length ? {oneOf:skillNames.map(text=>{
-    const supportedIds=facts.filter(f=>(f.skills??[]).some(s=>skillText(s).replace(/_/g,' ')===text)).map(f=>f.id);
+    const supportedIds=facts.filter(f=>(f.skills??[]).some(s=>cappedSkill(s,profile)===text)).map(f=>f.id);
     return obj({text:{const:text},source_fact_ids:{type:'array',minItems:1,maxItems:Math.min(6,supportedIds.length),uniqueItems:true,items:{enum:supportedIds}}});
   })} : skill;
-  const sectionIds = facts.filter(f => f.provenance && !['EDUCATION','COURSE'].includes(f.provenance)).map(f => f.id);
+  const sectionIds = facts.filter(f => f.provenance && !['EDUCATION','COURSE'].includes(f.provenance)&&(!allowedSectionIds||allowedSectionIds.includes(f.id))).map(f => f.id);
   const sectionSchema=sectionIds.length ? {oneOf:sectionIds.map(id=>{
     const bullet=structuredClone(claim);
     bullet.properties.source_fact_ids={type:'array',minItems:1,maxItems:1,items:{const:id}};
@@ -140,7 +278,8 @@ export function deterministicCvQa(document, profile) {
     for (const degreeType of [/\b(?:bachelor(?:'s)?|bsc|beng|licencjat)\b/i,/\b(?:master(?:'s)? degree|msc|meng|magister)\b/i,/\b(?:phd|doctorate|doktorat)\b/i])
       if (degreeType.test(text) && !degreeType.test(source)) error('UNSUPPORTED_DEGREE_LEVEL');
     if (inProgress && /\b(graduated|completed degree|bachelor|master|bsc|msc|absolwent|ukonczyl\w*|magister)\b/i.test(text) && !/\b(in progress|studying|student|ongoing|pursuing|w toku|studiuj\w*)\b/i.test(text)) error('DEGREE_STATUS_INFLATION');
-    if (claim.kind === 'skill' && !cited.some(f => (f.skills ?? []).some(s => normalize(skillText(s)) === text))) error('UNSUPPORTED_SKILL_LABEL');
+    if (claim.kind === 'skill' && !cited.some(f => (f.skills ?? []).some(s => normalize(cappedSkill(s,profile)) === text))) error('UNSUPPORTED_SKILL_LABEL');
+    if(claim.kind==='skill'&&/^c\+\+$/.test(text)&&cappedSkill('C++',profile)!=='C++')error('CPP_QUALIFIER_REQUIRED');
     // All named employers/institutions from the profile must use their own IDs.
     for (const fact of index.values()) for (const field of ['employer','organization','institution']) if (known(fact[field]) && text.includes(normalize(fact[field])) && !source.includes(normalize(fact[field]))) error('UNSUPPORTED_EMPLOYER');
     // New employment-at-X claims are not allowed by lexical evidence alone.
@@ -183,7 +322,7 @@ export async function verifyCvEntailment(document, profile, llm) {
   return {pass:allChecks.every(c=>c.verdict==='SUPPORTED'), model:llm.model ?? 'injected-gateway', checks:allChecks,batches};
 }
 
-export function renderCvV2Html(document, profile, language, identity) {
+export function renderCvV2Html(document, profile, language, identity,tailoring=null) {
   const pl = language === 'Polish';
   const labels = pl ? {summary:'Profil', skills:'Umiejętności', experience:'Doświadczenie zawodowe', projects:'Projekty i badania', education:'Wykształcenie', training:'Kursy',languages:'Języki'} : {summary:'Profile', skills:'Skills', experience:'Professional experience', projects:'Projects and research', education:'Education',training:'Training',languages:'Languages'};
   const provenance = pl ? {PROFESSIONAL:'Doświadczenie zawodowe',ACADEMIC:'Projekt akademicki',PERSONAL_PROJECT:'Projekt własny',INDEPENDENT_R_AND_D:'Niezależne badania i rozwój'} : {PROFESSIONAL:'Professional work',ACADEMIC:'Academic project',PERSONAL_PROJECT:'Personal project',INDEPENDENT_R_AND_D:'Independent research and development'};
@@ -198,10 +337,12 @@ export function renderCvV2Html(document, profile, language, identity) {
   const projectHtml=projects.length?`<h2>${labels.projects}</h2>${sectionHtml(projects)}`:'';
   const prioritizedSections=document.sections[0] && index.get(document.sections[0].source_fact_id).provenance!=='PROFESSIONAL' ? projectHtml+professionalHtml : professionalHtml+projectHtml;
   const education=(profile.education??[]).map(f=>`<article><h3>${escape(f.institution)}</h3><p>${escape([f.field,f.specialization].filter(known).join(' · '))}</p><p>${escape(f.status==='degree_in_progress' ? (pl?'Studia w toku':'Degree in progress') : f.status)}</p></article>`).join('');
-  const training=(profile.training??[]).map(f=>`<p>${escape(f.title)}${known(f.provider)?` · ${escape(f.provider)}`:''}${f.certificate?` · ${pl?'certyfikat kursu':'course certificate'}`:''}</p>`).join('');
+  const training=(profile.training??[]).filter(f=>!tailoring||tailoring.relevant_training_ids.includes(f.id)).map(f=>`<p>${escape(f.title)}${known(f.provider)?` · ${escape(f.provider)}`:''}${f.certificate?` · ${pl?'certyfikat kursu':'course certificate'}`:''}</p>`).join('');
   const contacts=[identity.email,identity.phone,profile.onboarding?.github_url,profile.onboarding?.portfolio_url].filter(known);
   const location=[profile.candidate?.base_location?.city,profile.candidate?.base_location?.country].filter(known).join(', ');
-  return `<!doctype html><html lang="${pl?'pl':'en'}"><meta charset="utf-8"><style>${CV_STYLE}</style><body>${identity.name?`<h1>${escape(identity.name)}</h1>`:''}<p class="headline">${escape(document.headline.text)}</p>${contacts.length?`<p class="contacts">${contacts.map(escape).join(' · ')}</p>`:''}${location?`<p class="meta">${escape(location)}</p>`:''}<h2>${labels.summary}</h2>${document.summary.map(c=>`<p>${escape(c.text)}</p>`).join('')}<h2>${labels.skills}</h2><p>${document.skills.map(c=>escape(c.text)).join(' · ')}</p>${prioritizedSections}${education?`<h2>${labels.education}</h2>${education}`:''}${training?`<h2>${labels.training}</h2>${training}`:''}<h2>${labels.languages}</h2><p>${(profile.languages??[]).map(l=>`${escape(l.language)} — ${escape(l.level)}`).join(' · ')}</p></body></html>`;
+  const educationHtml=education?`<h2>${labels.education}</h2>${education}`:'';
+  const body=tailoring?.engineering_education_first?educationHtml+prioritizedSections:prioritizedSections+educationHtml;
+  return `<!doctype html><html lang="${pl?'pl':'en'}"><meta charset="utf-8"><style>${CV_STYLE}</style><body>${identity.name?`<h1>${escape(identity.name)}</h1>`:''}<p class="headline">${escape(document.headline.text)}</p>${contacts.length?`<p class="contacts">${contacts.map(escape).join(' · ')}</p>`:''}${location?`<p class="meta">${escape(location)}</p>`:''}<h2>${labels.summary}</h2>${document.summary.map(c=>`<p>${escape(c.text)}</p>`).join('')}<h2>${labels.skills}</h2><p>${document.skills.map(c=>escape(c.text)).join(' · ')}</p>${body}${training?`<h2>${labels.training}</h2>${training}`:''}<h2>${labels.languages}</h2><p>${(profile.languages??[]).map(l=>`${escape(l.language)} — ${escape(l.level)}`).join(' · ')}</p></body></html>`;
 }
 const CV_STYLE = readFileSync(new URL('./templates/cv-v2.css',import.meta.url),'utf8');
 
@@ -238,16 +379,18 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     qa:{pass:false,claims:{pass:false},identity:{pass:identity.pass,status:identity.status,missing:identity.missing},pdf:{pass:false,status:'NOT_RENDERED'}}};
   let document;
   try {
-    const schema=cvWriterSchema(profile);
+    if(catalog.tailoring.vacancy_keywords.hard_missing_requirements.length){manifest.application_eligible=false;manifest.application_policy_blocker='UNSUPPORTED_STRICT_MANDATORY_QUALIFICATION';throw new StructuredOutputError('Unsupported strict mandatory qualification blocks CV generation');}
+    const schema=cvWriterSchema(profile,{allowedSectionIds:catalog.tailoring.allowed_section_ids,allowedSkillNames:catalog.skills.map(skill=>skill.text)});
     const validate=ajv.compile(schema);
     const writerStarted=performance.now();
     const writerSystem=await readFile(new URL('../../prompts/cv_writer_v2.md',import.meta.url),'utf8');manifest.writer_prompt_sha256=hash(writerSystem);
     if(repository?.pool)await observe(repository,{event:'CV_WRITER_STARTED',entity_type:'job',entity_id:job.job_id,message:'Grounded CV writer running',model:manifest.model});
     document=await llm.json({strong:true,numPredict:5000,schema,system:writerSystem,
       prompt:JSON.stringify({current_date:new Date().toISOString().slice(0,10),language,application_text_requested:applicationRequested,target:{title:job.title,description:job.description_text,role_family:analysis?.role_family},
-        priority_fact_ids:analysis?.cv_focus_fact_ids ?? [],facts:catalog.facts.map(writerFact),allowed_skills:catalog.skills}),
+        exact_requirements:analysis?.requirements??[],tailoring_plan:catalog.tailoring,priority_fact_ids:catalog.tailoring.primary_fact_ids,facts:catalog.facts.map(writerFact),allowed_skills:catalog.skills}),
       repairInstruction:'Use only supplied source IDs and supported facts. Keep provenance, qualifiers and degree status. No seniority or skills inferred from target title. Fix unsupported claims.',
       validate:value=>{if (!validate(value)) throw new StructuredOutputError('CV writer schema invalid');
+        const tailoring=cvTailoringQa(value,profile,analysis,job);if(!tailoring.pass)throw new StructuredOutputError(`CV target tailoring: ${tailoring.errors.join(', ')}`);
         if (!applicationRequested && value.application_text.length) throw new StructuredOutputError('Unrequested application text');
         const qa=deterministicCvQa(value,profile); if (!qa.pass) throw new StructuredOutputError(`CV deterministic fact guards: ${qa.errors.map(e=>e.reason).join(', ')}`);}});
     if (!validate(document)) {document=undefined; throw new StructuredOutputError('CV writer schema invalid');}
@@ -255,15 +398,18 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     manifest.writer_stats=structuredClone(llm.lastStats??null);manifest.writer_duration_ms=Math.round(performance.now()-writerStarted);
     if(repository?.pool)await observe(repository,{event:'CV_WRITER_COMPLETED',entity_type:'job',entity_id:job.job_id,message:'CV writer completed; checking independent entailment',model:manifest.model,model_requests:llm.lastStats?.semantic_attempts});
     const deterministic=deterministicCvQa(document,profile);
+    const tailoring=cvTailoringQa(document,profile,analysis,job);manifest.qa.tailoring=tailoring;
+    manifest.keyword_coverage={job_id:catalog.tailoring.vacancy_keywords.job_id,job_content_hash:catalog.tailoring.vacancy_keywords.job_content_hash,
+      requirements_hash:catalog.tailoring.vacancy_keywords.requirements_hash,source_catalog_hash:catalog.tailoring.vacancy_keywords.source_catalog_hash,entries:tailoring.keyword_coverage};
     const verifierStarted=performance.now();
     if(repository?.pool)await observe(repository,{event:'CV_VERIFIER_STARTED',entity_type:'job',entity_id:job.job_id,message:'Independent CV entailment verifier running',model:manifest.verifier_model});
     const semantic=await verifyCvEntailment(document,profile,llm);
     manifest.verifier_stats=structuredClone(llm.lastStats??null);manifest.verifier_duration_ms=Math.round(performance.now()-verifierStarted);
     if(repository?.pool)await observe(repository,{event:'CV_VERIFIER_COMPLETED',entity_type:'job',entity_id:job.job_id,message:semantic.pass?'Every CV claim supported':'CV claims blocked by independent verifier',claims_pass:semantic.pass,model:manifest.verifier_model,model_requests:llm.lastStats?.semantic_attempts});
-    manifest.qa.claims={pass:deterministic.pass && semantic.pass,deterministic,semantic};
+    manifest.qa.claims={pass:deterministic.pass && semantic.pass&&tailoring.pass,deterministic,semantic};
     manifest.document_path=path.join(dir,'cv.json');
     manifest.html_path=path.join(dir,'cv.html');
-    const html=renderCvV2Html(document,profile,language,identity.identity);
+    const html=renderCvV2Html(document,profile,language,identity.identity,catalog.tailoring);
     await writeFile(manifest.document_path,JSON.stringify({...document,target_job_id:job.job_id,language,identity:identity.identity},null,2));
     await writeFile(manifest.html_path,html);
     manifest.status=!manifest.qa.claims.pass ? 'BLOCKED_CLAIMS' : !identity.pass ? 'BLOCKED_IDENTITY' : 'BLOCKED_PDF';
@@ -288,7 +434,7 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
   manifest.qa.pass=manifest.status==='PASS';
   await writeFile(manifest.source_map_path,JSON.stringify({profile_version:manifest.profile_version,profile_hash:manifest.profile_hash,
     job_content_hash:manifest.job_content_hash,analysis_hash:manifest.analysis_hash,analysis_input_hash:manifest.analysis_input_hash,claims:document?cvClaimCatalog(document):[],
-    deterministic_sections:{education:(profile.education??[]).map(f=>f.id),training:(profile.training??[]).map(f=>f.id),languages:(profile.languages??[]).map(f=>f.id),
+    deterministic_sections:{education:(profile.education??[]).map(f=>f.id),training:catalog.tailoring.relevant_training_ids,languages:(profile.languages??[]).map(f=>f.id),
       metadata:document?document.sections.map(s=>({source_fact_id:s.source_fact_id,fields:['role','title','employer','organization','environment','provenance','start_date','exact_start_date','exact_end_date','status']})):[]},facts:catalog.facts},null,2));
   await writeFile(manifest.manifest_path,JSON.stringify(manifest,null,2));
   if (repository?.recordCvDraft) await repository.recordCvDraft(manifest);

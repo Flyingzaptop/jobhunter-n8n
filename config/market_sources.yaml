@@ -1,4 +1,4 @@
-version: market-v2
+version: market-v2.2-parallel-keyword
 schedule_minutes: 60
 defaults:
   timeout_ms: 12000
@@ -9,7 +9,7 @@ sources:
   - name: praca
     platform: Praca.pl
     adapter: public_listing_html
-    url: https://www.praca.pl/praca.html
+    url: https://www.praca.pl/s-konstruktor.html
     robots_url: https://www.praca.pl/robots.txt
     profile: real
     enabled: true
@@ -19,33 +19,38 @@ sources:
     permitted_access: true
     allowed_hosts:
       - www.praca.pl
-    job_link_pattern: '_[0-9]+\.html$'
-    listing_page_pattern: '^/praca(?:_[0-9]+)?\.html$'
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-konstruktor(?:_[0-9]+)?\.html$
     max_pages: 16
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
-    search_url: https://www.praca.pl/praca.html
+    search_url: https://www.praca.pl/s-konstruktor.html
     required: true
-    reason: Live ordinary public listing and detail GET return 200; bounded dynamic vacancy links and JobPosting extraction, without private APIs.
+    reason: Live ordinary public listing and detail GET return 200; bounded dynamic
+      vacancy links and JobPosting extraction, without private APIs.
+    search_keyword: konstruktor
+    search_scope: KEYWORD_SEARCH
   - name: praca-wroclaw
     platform: Praca.pl
     adapter: public_listing_html
     url: https://www.praca.pl/wroclaw.html
     robots_url: https://www.praca.pl/robots.txt
     profile: real
-    enabled: true
+    enabled: false
     source_class: poland_board
     discovery_capability: PUBLIC_LISTING_JOBPOSTING
     application_capability: MANUAL_TAKEOVER
     permitted_access: true
     allowed_hosts:
       - www.praca.pl
-    job_link_pattern: '_[0-9]+\.html$'
-    listing_page_pattern: '^/wroclaw(?:_[0-9]+)?\.html$'
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/wroclaw(?:_[0-9]+)?\.html$
     max_pages: 16
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
     search_url: https://www.praca.pl/wroclaw.html
+    reason: 'Broad city-only listing disabled: user requires keyword queries on
+      general boards.'
   - name: pracuj
     platform: Pracuj.pl
     adapter: policy_probe
@@ -58,13 +63,16 @@ sources:
     permitted_access: false
     allowed_hosts:
       - www.pracuj.pl
-    reason: 2026-10-04 ordinary robots GET returns 200 and advertises current-offers sitemap; ordinary search and advertised sitemap GET return 403 challenge. Public page readable through search tooling; Node automatic discovery remains blocked, manual fallback retained.
+    reason: 2026-10-04 ordinary robots GET returns 200 and advertises current-offers
+      sitemap; ordinary search and advertised sitemap GET return 403 challenge.
+      Public page readable through search tooling; Node automatic discovery
+      remains blocked, manual fallback retained.
     search_url: https://www.pracuj.pl/praca
     required: true
   - name: olx
     platform: OLX Praca
     adapter: public_headless_jobposting
-    url: https://www.olx.pl/praca/
+    url: https://www.olx.pl/praca/q-konstruktor/
     robots_url: https://www.olx.pl/robots.txt
     profile: real
     enabled: true
@@ -74,12 +82,17 @@ sources:
     permitted_access: true
     allowed_hosts:
       - www.olx.pl
-    reason: Ordinary isolated headless Chromium reads public listing and JobPosting details; robots HTTP 403 is recorded separately as unknown policy, without bypassing access challenges or requesting protected endpoints.
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
     max_pages: 2
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
-    search_url: https://www.olx.pl/praca/
+    search_url: https://www.olx.pl/praca/q-konstruktor/
     required: true
+    search_keyword: konstruktor
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
   - name: justjoin
     platform: Just Join IT
     adapter: sitemap_html
@@ -283,7 +296,7 @@ sources:
     discovery_capability: PUBLIC_FEED
     application_capability: MANUAL_TAKEOVER
     permitted_access: true
-    allowed_hosts: &a1
+    allowed_hosts: &id001
       - jobgether.com
     documentation: https://jobgether.com/astroapi/ai/jobs/docs
     robots_url: https://jobgether.com/robots.txt
@@ -300,17 +313,13 @@ sources:
     discovery_capability: PUBLIC_FEED
     application_capability: MANUAL_TAKEOVER
     permitted_access: true
-    allowed_hosts: *a1
+    allowed_hosts: *id001
     documentation: https://jobgether.com/astroapi/ai/jobs/docs
     robots_url: https://jobgether.com/robots.txt
     max_pages: 2
     min_scan_interval_ms: 21600000
     attribution_required: true
     query_plans:
-      - query: All current listings
-        geography: Worldwide
-        parameters:
-          limit: 25
       - query: mechanical engineer
         geography: Europe / Poland / worldwide
         parameters:
@@ -2919,3 +2928,219 @@ sources:
     catalog_state: SEED_UNVERIFIED
     reason: Attempt only ordinary public robots/HTML. A shell or unusable policy is
       UNKNOWN/manual, never fall back to protected/cxs APIs.
+  - name: olx-python
+    platform: OLX Praca
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/q-python/
+    robots_url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.olx.pl
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.olx.pl/praca/q-python/
+    required: false
+    search_keyword: python
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
+  - name: olx-cad
+    platform: OLX Praca
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/q-cad/
+    robots_url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.olx.pl
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.olx.pl/praca/q-cad/
+    required: false
+    search_keyword: cad
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
+  - name: olx-automatyk
+    platform: OLX Praca
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/q-automatyk/
+    robots_url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.olx.pl
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.olx.pl/praca/q-automatyk/
+    required: false
+    search_keyword: automatyk
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
+  - name: olx-informatyk
+    platform: OLX Praca
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/q-informatyk/
+    robots_url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.olx.pl
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.olx.pl/praca/q-informatyk/
+    required: false
+    search_keyword: informatyk
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
+  - name: praca-automatyk
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-automatyk.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-automatyk(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-automatyk.html
+    required: false
+    reason: Verified public keyword listing GET 200; listing title matches keyword.
+      Published pagination and JobPosting details only.
+    search_keyword: automatyk
+    search_scope: KEYWORD_SEARCH
+  - name: praca-inzynier
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-inzynier.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-inzynier(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-inzynier.html
+    required: false
+    reason: Verified public keyword listing GET 200; listing title matches keyword.
+      Published pagination and JobPosting details only.
+    search_keyword: inzynier
+    search_scope: KEYWORD_SEARCH
+  - name: praca-cad
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-cad.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-cad(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-cad.html
+    required: false
+    reason: Verified public keyword listing GET 200; listing title matches keyword.
+      Published pagination and JobPosting details only.
+    search_keyword: cad
+    search_scope: KEYWORD_SEARCH
+  - name: praca-python
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-python.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-python(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-python.html
+    required: false
+    reason: Verified public keyword listing GET 200; listing title matches keyword.
+      Published pagination and JobPosting details only.
+    search_keyword: python
+    search_scope: KEYWORD_SEARCH
+  - name: praca-informatyk
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-informatyk.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-informatyk(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-informatyk.html
+    required: false
+    reason: Verified public keyword listing GET 200; listing title matches keyword.
+      Published pagination and JobPosting details only.
+    search_keyword: informatyk
+    search_scope: KEYWORD_SEARCH

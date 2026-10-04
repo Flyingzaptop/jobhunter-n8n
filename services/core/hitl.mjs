@@ -8,6 +8,7 @@ export function boundedAnswer(value) {
   return value.trim();
 }
 export function questionEligibility(question, application, profileId) {
+  if (question.closed_at) return 'QUESTION_CLOSED';
   if (!application || application.candidate_profile_id !== profileId) return 'QUESTION_NOT_FOR_ACTIVE_PROFILE';
   if (question.answered_at != null || question.answer != null) return 'QUESTION_ALREADY_ANSWERED';
   if (application.status !== 'NEEDS_USER') return 'APPLICATION_NOT_WAITING_FOR_ANSWER';

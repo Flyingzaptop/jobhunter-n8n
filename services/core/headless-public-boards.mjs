@@ -38,7 +38,9 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
     cookies_imported:false,user_agent_overridden:false,stealth:false,challenge_solving:false,inference_requests:0,submissions:0,sources:[]};
   try{for(const name of names){
     const target=BOARD_TARGETS[name];const currentUrl=listingUrl??target.url;
-    const parsedListing=new URL(currentUrl);if(parsedListing.origin!==new URL(target.url).origin||parsedListing.pathname!==new URL(target.url).pathname)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
+    const parsedListing=new URL(currentUrl);const validPath=parsedListing.pathname===new URL(target.url).pathname
+      ||name==='olx'&&/^\/praca\/q-[a-zA-Z0-9%_,+-]+\/$/.test(parsedListing.pathname);
+    if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
     const context=await browser.newContext();
     // Discovery only: never transmit application forms or interact with authentication.
     await context.route('**/*',route=>publicBrowserRequestAllowed(route.request().url(),route.request().method())?route.continue():route.abort());
@@ -49,7 +51,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
       const state=await inspectPage(page,response);Object.assign(result,state,{http_status:state.status,status:state.challenge??'PUBLIC_PAGE_READABLE'});
       if(!state.challenge){
         const links=await page.locator('a[href]').evaluateAll(items=>items.map(item=>({href:item.href,text:item.innerText,rel:item.rel})));
-        result.published_next_page_url=publishedNextPage(links,currentUrl,{pagePattern:name==='olx'?'^/praca/\\?page=[0-9]+$':undefined});
+        result.published_next_page_url=publishedNextPage(links,currentUrl,{pagePattern:name==='olx'?'^'+parsedListing.pathname.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\?page=[0-9]+$':undefined});
         result.observed_job_links=boardVacancyLinks(name,links);
         result.job_links=snapshotLinks?.length?boardVacancyLinks(name,snapshotLinks.map(item=>({href:item.url,text:item.title_hint}))):result.observed_job_links;
         if(exactJobUrl){result.job_links=boardVacancyLinks(name,[{href:exactJobUrl}]);if(result.job_links.length!==1)throw new Error('INVALID_EXACT_PUBLIC_JOB_URL');}

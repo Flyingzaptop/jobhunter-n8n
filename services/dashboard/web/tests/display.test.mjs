@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { text, safeUrl, duration, tone, onboardingRows, actionLabel, sessionOptions,gateChecks,gateStatus } from '../src/display.mjs';
+import { text, safeUrl, duration, tone, onboardingRows,onboardingOptionalRows, actionLabel, sessionOptions,gateChecks,gateStatus } from '../src/display.mjs';
 test('unknown, zero and false remain distinct', () => {
   assert.equal(text(null), 'Not recorded'); assert.equal(text(0), '0'); assert.equal(text(false), 'No');
 });
@@ -20,6 +20,10 @@ test('onboarding supports actual missing-fields API without losing blockers', ()
   assert.deepEqual(records.map(r => r.field), ['onboarding.email', 'onboarding.legal_name']);
   assert.ok(records.every(r => r.status === 'UNKNOWN'));
   assert.deepEqual(onboardingRows(null), []);
+});
+test('optional ATS unknowns cannot become human startup tasks',()=>{
+ const value={missing_fields:['legacy.old'],blocking_missing_fields:[],optional_unknown_fields:['onboarding.github_url']};
+ assert.deepEqual(onboardingRows(value),[]);assert.deepEqual(onboardingOptionalRows(value).map(row=>row.field),['onboarding.github_url']);
 });
 test('browser action presents recorded operation without dumping trace metadata', () => {
   assert.equal(actionLabel({ operation: 'observe-image', selector: null, started_at: 'recorded' }), 'Refreshing the live browser view');

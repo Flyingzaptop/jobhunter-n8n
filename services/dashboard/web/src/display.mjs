@@ -29,8 +29,9 @@ export function tone(value) {
 export function rows(value) { return Array.isArray(value) ? value : []; }
 export function onboardingRows(value) {
   if (Array.isArray(value)) return value;
-  return rows(value?.missing_fields).map(field => ({ field, status: 'UNKNOWN', description: 'Missing candidate onboarding field' }));
+  return rows(value?.blocking_missing_fields??value?.missing_fields).map(field => ({ field, status: 'UNKNOWN', description: 'Required startup identity or base field is missing' }));
 }
+export function onboardingOptionalRows(value){return rows(value?.optional_unknown_fields).map(field=>({field,status:'UNKNOWN',description:'Optional or conditional ATS answer; requested only when a form needs it'}));}
 export function actionLabel(value) {
   if (!value || typeof value !== 'object') return text(value, 'No current action recorded');
   if (value.message) return text(value.message);

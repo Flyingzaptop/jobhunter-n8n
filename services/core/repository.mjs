@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import {operationContext} from './observability.mjs';
 import { readFile, readdir } from "node:fs/promises";
 export class Repository {
-  constructor(connectionString = process.env.DATABASE_URL) {
+  constructor(connectionString = process.env.DATABASE_URL, {max = 5} = {}) {
     if (!connectionString) throw new Error("DATABASE_URL required");
-    this.pool = new pg.Pool({ connectionString, max: 5 });
+    if(!Number.isInteger(max)||max<1||max>50)throw new Error('INVALID_DATABASE_POOL_SIZE');
+    this.pool = new pg.Pool({ connectionString, max });
   }
   async migrate() {
     for (const name of (await readdir("db/migrations"))

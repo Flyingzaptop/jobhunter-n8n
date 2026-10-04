@@ -4,10 +4,12 @@ import path from 'node:path';
 import {cvIdentityQa} from './cv-v2.mjs';
 import {reverifyMarketJob} from './discovery-v2.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
+import {currentPreparationPolicy} from './preparation-policy.mjs';
+import YAML from 'yaml';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
-export async function createControlledPreparation({repository,jobId,cvId,profile,artifactRoot='data/cv-v2'}){
+export async function createControlledPreparation({repository,jobId,cvId,profile,policy,artifactRoot='data/cv-v2'}){
  if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT==='true')throw new Error('CONTROLLED_PREPARATION_REQUIRES_DRY_RUN');
  if(!uuid(jobId)||!uuid(cvId)||!profile.profile_id||!cvIdentityQa(profile).pass)throw new Error('VERIFIED_IDENTITY_AND_IDS_REQUIRED');
  const job=(await repository.listCanonicalJobs()).find(j=>j.job_id===jobId);
@@ -19,12 +21,18 @@ export async function createControlledPreparation({repository,jobId,cvId,profile
  if(!cv?.qa_json?.pass||cv.manifest_json?.application_eligible!==true||cv.manifest_json?.application_policy_blocker)throw new Error('EMPLOYER_READY_VERIFIED_CV_REQUIRED');
  const profileHash=digest(JSON.stringify(profile));
  if(cv.profile_version!==profileHash)throw new Error('CV_PROFILE_CHANGED_REGENERATE_REQUIRED');
+ const currentPolicy=policy??YAML.parse(await readFile('config/search_policy.yaml','utf8'));
+ const preparation=currentPreparationPolicy({job,profile,policy:currentPolicy,analysis:analysis.analysis_json,cv});
+ if(!preparation.pass)throw new Error(preparation.reason);
+ if(analysis.analysis_json?.policy_hash!==digest(JSON.stringify(currentPolicy)))throw new Error('ANALYSIS_POLICY_CHANGED_REEVALUATE_REQUIRED');
  const root=await realpath(artifactRoot),file=await realpath(cv.pdf_path),relative=path.relative(root,file);
  if(relative.startsWith('..')||path.isAbsolute(relative)||path.extname(file).toLowerCase()!=='.pdf')throw new Error('CV_ARTIFACT_OUTSIDE_APPROVED_ROOT');
  const bytes=await readFile(file);if(digest(bytes)!==cv.sha256||bytes.subarray(0,5).toString()!=='%PDF-')throw new Error('CV_BYTES_CHANGED');
  const verified=await reverifyMarketJob({job,repository});
  if(verified.status!=='OPEN')throw new Error('CURRENT_OFFICIAL_POSTING_NOT_OPEN');
  const refreshedJob=verified.job??(await repository.listCanonicalJobs()).find(j=>j.job_id===jobId);
+ const refreshedPolicy=currentPreparationPolicy({job:refreshedJob,profile,policy:currentPolicy,analysis:analysis.analysis_json,cv});
+ if(!refreshedPolicy.pass)throw new Error(refreshedPolicy.reason);
  const current=await verifyCurrentCvEvidence({cv,job:refreshedJob,profile,analysis:analysis.analysis_json,artifactRoot});
  if(!current.pass)throw new Error(`PREPARATION_EVIDENCE_STALE:${current.reasons.join(',')}`);
  const state={preparation_only:true,control_mode:'PER_APPLICATION_CONFIRMATION',readiness_gate_pass:false,
