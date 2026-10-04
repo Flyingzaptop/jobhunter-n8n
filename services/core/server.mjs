@@ -104,6 +104,8 @@ export function createCore({
           if(!testMode&&/greenhouse|lever|ashby|smartrecruiters/i.test([job.ats_identity,job.metadata?.adapter,job.canonical_url].filter(Boolean).join(' '))){
             const {reverifyMarketJob}=await import('./discovery-v2.mjs');const verification=await reverifyMarketJob({job,repository});
             if(verification.job)Object.assign(job,verification.job);
+            job.availability_status=verification.status;
+            if(verification.status==='UNKNOWN')await repository.pool.query("UPDATE jobs SET availability_status='UNKNOWN' WHERE job_id=$1",[job.job_id]);
             if(verification.status==='CLOSED'){await repository.event('job',job.job_id,'SKIPPED_CLOSED');results.push({job_id:job.job_id,status:'CLOSED'});continue;}
           }
           const analysis = await analyzeJob({ job, profile, policy, llm });
@@ -238,6 +240,24 @@ export function createCore({
     if(!Number.isInteger(number)||number<1||number>6)throw new Error('Invalid stage');
     return runObserved(repository,number,body,async()=>{if(number<6&&(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused)return {blocked_reason:'PAUSED',processed:0};return executeStage(number,body);},{trigger:'n8n',mode:testMode?'MOCK':'REAL'});
   }
+  const telegramService=telegramAdapter??telegram;
+  async function dispatchTelegram(accepted){
+    if(accepted.application_id){
+      const row=(await repository.pool.query('SELECT job_id FROM applications WHERE application_id=$1',[accepted.application_id])).rows[0];
+      if(!row)throw new Error('Correlated application missing');
+      return stage(5,{job_id:row.job_id,application_id:accepted.application_id});
+    }
+    if(accepted.command==='/summary')return stage(6);
+    if(accepted.command==='/weekly')return stage(6,{weekly:true});
+    if(accepted.command==='/status'){
+      const rows=(await repository.pool.query('SELECT status,count(*)::int AS count FROM applications GROUP BY status')).rows;
+      const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
+      await telegramService.send(`JobHunter status\nPaused: ${Boolean(paused)}\n${rows.map(r=>`${r.status}: ${r.count}`).join('\n')}`);
+      return {paused:Boolean(paused),statuses:rows};
+    }
+    if(['/pause','/resume'].includes(accepted.command))await telegramService.send(accepted.command==='/pause'?'JobHunter paused. Saved application state is retained.':'JobHunter resumed. Queue processing is enabled.');
+    return accepted;
+  }
   const server = http.createServer(async (req, res) => {
     const runId = randomUUID();
     const send = (status, data) => {
@@ -262,39 +282,10 @@ export function createCore({
         return send(200, { ok: true, result });
       }
       if (req.method === "POST" && req.url === "/telegram/update") {
-        const accepted = await (telegramAdapter ?? telegram).accept(
-          repository,
-          body,
-        );
-        if (accepted.application_id) {
-          const row = (
-            await repository.pool.query(
-              "SELECT job_id FROM applications WHERE application_id=$1",
-              [accepted.application_id],
-            )
-          ).rows[0];
-          return send(200, {
-            ok: true,
-            result: await stage(5, {
-              job_id: row.job_id,
-              application_id: accepted.application_id,
-            }),
-          });
-        }
-        if (accepted.command === "/summary")
-          return send(200, { ok: true, result: await stage(6) });
-        if (accepted.command === "/weekly")
-          return send(200, { ok: true, result: await stage(6,{weekly:true}) });
-        if(accepted.command==='/status'){
-          const rows=(await repository.pool.query('SELECT status,count(*)::int AS count FROM applications GROUP BY status')).rows;
-          const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
-          await (telegramAdapter??telegram).send(`JobHunter status\nPaused: ${Boolean(paused)}\n${rows.map(r=>`${r.status}: ${r.count}`).join('\n')}`);
-          return send(200,{ok:true,result:{paused:Boolean(paused),statuses:rows}});
-        }
-        if(['/pause','/resume'].includes(accepted.command))
-          await (telegramAdapter??telegram).send(accepted.command==='/pause'?'JobHunter paused. Saved application state is retained.':'JobHunter resumed. Queue processing is enabled.');
-        return send(200, { ok: true, result: accepted });
+        const result=await telegramService.processUpdate(repository,body,dispatchTelegram);
+        return send(200,{ok:true,result});
       }
+      if(req.method==='POST'&&req.url==='/telegram/recover')return send(200,{ok:true,result:await telegramService.recoverPending(repository,dispatchTelegram,{limit:body.limit??20})});
       return send(404, { error: "Not found" });
     } catch (e) {
       console.error(

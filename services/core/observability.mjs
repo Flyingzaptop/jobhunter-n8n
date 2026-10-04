@@ -120,7 +120,7 @@ export async function runObserved(
           run_id,
           status,
           processed,
-          Math.max(0, processed - errors),
+          blocked ? 0 : Math.max(0, processed - errors),
           errors,
           blocked ?? `${STAGE_NAMES[stage - 1]} ${status.toLowerCase()}`,
           sanitize({ result_summary: { ...result, results: undefined }, mode }),

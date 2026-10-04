@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import { Repository } from "../core/repository.mjs";
 import { OllamaClient } from "../core/llm.mjs";
 import { BrowserClient } from "../core/application.mjs";
+import { browserConfig } from "../browser-service/server.mjs";
 import { createAuth } from "./auth.mjs";
 import * as q from "./queries.mjs";
 import { sanitize } from "../core/observability.mjs";
 import { report } from "../core/reporting.mjs";
 import { randomUUID } from "node:crypto";
-import { n8nCli } from "../../scripts/n8n-bootstrap.mjs";
+import { n8nCli,prepareControlWorkflows } from "../../scripts/n8n-bootstrap.mjs";
 async function body(req) {
   let text = "";
   for await (const chunk of req) {
@@ -41,6 +42,7 @@ export function createDashboard({
   const auth = createAuth(repository, { password });
   const streams = new Set();
   let healthCache;
+  let controlWorkflowsReady;
   async function health() {
     if (healthCache && Date.now() - healthCache.at < 5000)
       return healthCache.value;
@@ -96,8 +98,8 @@ export function createDashboard({
     return {
       mode: {
         paused: paused.rows[0]?.paused ?? false,
-        dry_run: true,
-        real_submit_enabled: false,
+        dry_run: browserConfig().dryRun,
+        real_submit_enabled: browserConfig().allowRealSubmit,
         application_fill_enabled:
           process.env.APPLICATION_FILL_ENABLED === "true",
       },
@@ -132,7 +134,9 @@ export function createDashboard({
       [operationId],
     );
     try {
-      await n8nCli(["execute", `--id=WF-${String(stage).padStart(2, "0")}`], {
+      controlWorkflowsReady??=prepareControlWorkflows().catch(error=>{controlWorkflowsReady=null;throw error;});
+      await controlWorkflowsReady;
+      await n8nCli(["execute", `--id=CC-WF-${String(stage).padStart(2, "0")}`], {
         timeoutMs: 3600000,
         env: { N8N_RUNNERS_BROKER_PORT: String(5900 + stage) },
       });
@@ -352,6 +356,10 @@ export function createDashboard({
     }
     if (p === "/api/sources") return send(await listSources());
     if (p === "/api/analytics") return send(await report(repository));
+    if(p==='/api/browser-sessions'){
+      const active=new Set((await browser.call('/sessions')).sessions.map(s=>s.browser_session_id));
+      return send((await repository.pool.query(`SELECT * FROM (SELECT DISTINCT ON (r.browser_session_id) r.browser_session_id,r.adapter,r.status,r.created_at,j.title,j.company,'ATS_COMPATIBILITY' AS scope FROM ats_compatibility_runs r LEFT JOIN jobs j USING(job_id) WHERE r.browser_session_id IS NOT NULL ORDER BY r.browser_session_id,r.created_at DESC) s ORDER BY created_at DESC LIMIT 100`)).rows.filter(r=>active.has(r.browser_session_id)));
+    }
     if (p.startsWith("/api/browser/")) {
       const [, id, image] =
         /^\/api\/browser\/([a-f0-9-]+)(?:\/(image))?$/i.exec(p) ?? [];

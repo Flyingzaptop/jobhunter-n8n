@@ -3,7 +3,7 @@ export function classifyAnalysisFailure(error) {
   const transient =
     /TimeoutError|AbortError|timed? ?out|ECONNRESET|ECONNREFUSED|fetch failed|Ollama HTTP (?:429|5\d\d)/i.test(
       message,
-    ) || ["TimeoutError", "AbortError", "TypeError"].includes(error?.name);
+    ) || ["TimeoutError", "AbortError"].includes(error?.name);
   return transient ? "TRANSIENT" : "SEMANTIC_OR_CONFIGURATION";
 }
 export function retryPlan(

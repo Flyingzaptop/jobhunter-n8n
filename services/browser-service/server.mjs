@@ -147,6 +147,7 @@ export async function createBrowserService(config = browserConfig()) {
       if (req.url === '/health' && req.method === 'GET') return send(200, { ok: true, service: 'browser', sessions: sessions.size });
       if (!authorized(req, config.token)) return send(401, { error: 'UNAUTHORIZED' });
       const url = new URL(req.url, 'http://service'), payload = ['POST', 'PUT'].includes(req.method) ? await bodyJSON(req) : {};
+      if(url.pathname==='/sessions'&&req.method==='GET')return send(200,{sessions:[...sessions.values()].map(session=>({browser_session_id:session.id,application_id:session.application_id,adapter:atsAdapterFor(session.page.url()),url:observerUrl(session.page.url())}))});
       if (url.pathname === '/sessions' && req.method === 'POST') { if (typeof payload.application_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(payload.application_id)) throw new Error('INVALID_APPLICATION_ID'); const session = await newSession(payload.application_id); if (payload.url) await action(session, 'navigate', payload); return send(201, { session_id: session.id, snapshot: await snapshot(session) }); }
       const [, id, operation] = /^\/sessions\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname) || [];
       if(id&&!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))throw new Error('INVALID_SESSION_ID');

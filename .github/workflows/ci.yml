@@ -21,5 +21,8 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - run: npm --prefix services/dashboard/web ci
+      - run: npm --prefix services/dashboard/web test
+      - run: npm run dashboard:build
       - run: npm run workflows
       - run: git diff --exit-code n8n/workflows

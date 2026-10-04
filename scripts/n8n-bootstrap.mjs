@@ -49,6 +49,32 @@ export async function importWorkflow(workflow, suffix = '') {
   return workflow.id;
 }
 
+export function controlWorkflowCopy(workflow){
+  const copy=structuredClone(workflow),stage=Number(/^WF-(\d+)/.exec(copy.id)?.[1]);
+  if(!Number.isInteger(stage)||stage<1||stage>6)throw new Error('Invalid stage workflow');
+  copy.id=`CC-WF-${String(stage).padStart(2,'0')}`;
+  copy.name=`Control Center — ${workflow.name}`;copy.active=false;
+  copy.nodes=copy.nodes.filter(node=>!['n8n-nodes-base.scheduleTrigger','n8n-nodes-base.webhook'].includes(node.type));
+  delete copy.connections.Schedule;delete copy.connections['Stage Webhook'];
+  for(const node of copy.nodes){
+    if(node.type==='n8n-nodes-base.httpRequest')node.parameters.url=node.parameters.url.replace('http://core:3000','http://127.0.0.1:3000');
+    if(node.type==='n8n-nodes-base.executeWorkflow'){
+      node.parameters.workflowId.value=`CC-WF-${String(stage+1).padStart(2,'0')}`;
+      node.parameters.options.waitForSubWorkflow=true;
+    }
+  }
+  return copy;
+}
+export async function prepareControlWorkflows(){
+  const copies=[];
+  for(const filename of (await readdir('n8n/workflows')).filter(name=>/^WF-\d\d-.*\.json$/.test(name)).sort()){
+    const workflow=controlWorkflowCopy(JSON.parse(await readFile(`n8n/workflows/${filename}`,'utf8')));
+    copies.push(workflow.id);await importWorkflow(workflow,'-control');
+  }
+  for(const id of [...copies].reverse())await n8nCli(['publish:workflow',`--id=${id}`]);
+  return {workflow_ids:copies,scheduled_triggers:0};
+}
+
 export async function bootstrapN8n() {
   if (!process.env.CORE_SERVICE_TOKEN) throw new Error('CORE_SERVICE_TOKEN required');
   await mkdir('data/n8n', { recursive: true });
