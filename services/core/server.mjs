@@ -17,6 +17,7 @@ import {retryPlan} from './analysis-retry.mjs';
 import {computePriority} from './priority.mjs';
 import {dispatchQuestionAnswer} from './hitl.mjs';
 import {browserConfig} from '../browser-service/server.mjs';
+import {withExclusiveLocalGpu} from './gpu-lock.mjs';
 const load = async (p) => YAML.parse(await readFile(p, "utf8"));
 const secretEqual = (a, b) => {
   const x = Buffer.from(a ?? ""),
@@ -240,7 +241,13 @@ export function createCore({
   }
   async function stage(number,body={}){
     if(!Number.isInteger(number)||number<1||number>6)throw new Error('Invalid stage');
-    return runObserved(repository,number,body,async()=>{if(number<6&&(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused)return {blocked_reason:'PAUSED',processed:0};return executeStage(number,body);},{trigger:'n8n',mode:testMode?'MOCK':'REAL'});
+    return runObserved(repository,number,body,async()=>{
+      if(number<6&&(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused)return {blocked_reason:'PAUSED',processed:0};
+      if(!testMode&&(number===3||(number===4&&body.job_id))){
+        return withExclusiveLocalGpu(repository,()=>executeStage(number,body));
+      }
+      return executeStage(number,body);
+    },{trigger:'n8n',mode:testMode?'MOCK':'REAL'});
   }
   const telegramService=telegramAdapter??telegram;
   async function dispatchTelegram(accepted){
