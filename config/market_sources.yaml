@@ -2834,3 +2834,46 @@ sources:
     authentication_required: true
     application_capability: MANUAL_TAKEOVER
     reason: Employer-specific opt-in XML feed; no approved employer tenant supplied.
+  - name: teamtailor-teamtailor-public
+    platform: Teamtailor
+    adapter: teamtailor_public_html
+    profile: real
+    source_class: employer_ats
+    company: Teamtailor
+    enabled: true
+    permitted_access: true
+    url: https://career.teamtailor.com/jobs
+    robots_url: https://career.teamtailor.com/robots.txt
+    allowed_hosts:
+      - career.teamtailor.com
+    job_urls:
+      - https://career.teamtailor.com/jobs/8124466-director-data-analytics
+      - https://career.teamtailor.com/jobs/7951948-customer-support-agent-dutch-english-speaking
+      - https://career.teamtailor.com/jobs/7748148-ai-accelerator
+    max_pages: 3
+    min_scan_interval_ms: 3600000
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: GUARDED_DRY_RUN
+    documentation: https://career.teamtailor.com/robots.txt
+    catalog_state: SEED_UNVERIFIED
+  - name: workday-nvidia-public
+    platform: Workday
+    adapter: workday_public_html
+    profile: real
+    source_class: employer_ats
+    company: NVIDIA
+    enabled: true
+    permitted_access: true
+    url: https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite
+    robots_url: https://nvidia.wd5.myworkdayjobs.com/robots.txt
+    allowed_hosts:
+      - nvidia.wd5.myworkdayjobs.com
+    job_urls:
+      - https://nvidia.wd5.myworkdayjobs.com/en-US/NVIDIAExternalCareerSite/job/Software-Engineer--CUDA-Deep-Learning-Systems_JR2022831
+    max_pages: 1
+    min_scan_interval_ms: 3600000
+    discovery_capability: PUBLIC_HTML_POLICY_CHECK_REQUIRED
+    application_capability: MANUAL_TAKEOVER
+    catalog_state: SEED_UNVERIFIED
+    reason: Attempt only ordinary public robots/HTML. A shell or unusable policy is
+      UNKNOWN/manual, never fall back to protected/cxs APIs.

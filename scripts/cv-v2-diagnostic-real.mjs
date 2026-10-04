@@ -7,12 +7,15 @@ import {reverifyMarketJob} from '../services/core/discovery-v2.mjs';
 
 if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT!=='false')throw new Error('Dry-run only');
 const repository=new Repository();const llm=new OllamaClient();
+const cvModelArg=process.argv.find(arg=>arg.startsWith('--cv-model='))?.slice('--cv-model='.length);
+const cvLlm=new OllamaClient({model:process.env.CV_VERIFIER_MODEL??cvModelArg??llm.model,strongModel:process.env.CV_WRITER_MODEL??cvModelArg??llm.strongModel});
 const profile=YAML.parse(await readFile('config/candidate_profile.yaml','utf8'));
 const policy=YAML.parse(await readFile('config/search_policy.yaml','utf8'));
 const report=JSON.parse(await readFile('tests/results/cv-v2-real.json','utf8'));
 const save=()=>writeFile('tests/results/cv-v2-real.json',JSON.stringify(report,null,2));
 report.diagnostic_attempts=[...(report.diagnostic_attempts??[]),...(report.diagnostic_content??[])];
 report.diagnostic_content=[];
+report.cv_model_evaluations=[...(report.cv_model_evaluations??[]),{writer_model:cvLlm.strongModel,verifier_model:cvLlm.model,started_at:new Date().toISOString()}];
 try {
   // Retry the actual non-rejected Python sample after fixing the verified YAML
   // skill-map normalization. Reuse its saved genuine model analysis unchanged.
@@ -25,7 +28,7 @@ try {
       pythonSample.previous_cv_error=pythonSample.error;delete pythonSample.error;
       pythonSample.pre_cv_open_verification=await reverifyMarketJob({job:pythonJob,repository});
       if(pythonSample.pre_cv_open_verification.status!=='OPEN')throw new Error('Real Python vacancy no longer OPEN');
-      pythonSample.cv=await observedCvBuild({job:pythonJob,profile,analysis:pythonAnalysis,llm,repository,outputRoot:'data/cv-v2-real'});pythonSample.status=pythonSample.cv.status;
+      pythonSample.cv=await observedCvBuild({job:pythonJob,profile,analysis:pythonAnalysis,llm:cvLlm,repository,outputRoot:'data/cv-v2-real'});pythonSample.status=pythonSample.cv.status;
       console.log(JSON.stringify({event:'python_cv_complete',job_id:pythonId,cv_id:pythonSample.cv.cv_id,status:pythonSample.status,claims_pass:pythonSample.cv.qa.claims.pass,error:pythonSample.cv.qa.error}));
     }catch(error){pythonSample.status='FAILED';pythonSample.error=error.message;}
     await save();
@@ -42,7 +45,7 @@ try {
         await repository.saveAnalysis(job.job_id,sample.analysis);Object.assign(sample,{decision:sample.analysis.decision,overall_fit:sample.analysis.overall_fit,role_family:sample.analysis.role_family});
         if(sample.decision==='REJECT')sample.status='REJECTED_BY_REAL_FIT';
         else if(!sample.analysis.requirements.length || sample.overall_fit===null)sample.status='REVIEW_INFORMATION_INCOMPLETE';
-        else {sample.pre_cv_open_verification=await reverifyMarketJob({job,repository});if(sample.pre_cv_open_verification.status==='OPEN')sample.cv=await observedCvBuild({job,profile,analysis:sample.analysis,llm,repository,outputRoot:'data/cv-v2-real'});sample.status=sample.cv?.status??'BLOCKED_PRE_CV_OPEN_VERIFICATION';}
+        else {sample.pre_cv_open_verification=await reverifyMarketJob({job,repository});if(sample.pre_cv_open_verification.status==='OPEN')sample.cv=await observedCvBuild({job,profile,analysis:sample.analysis,llm:cvLlm,repository,outputRoot:'data/cv-v2-real'});sample.status=sample.cv?.status??'BLOCKED_PRE_CV_OPEN_VERIFICATION';}
       }
     }catch(error){sample.status='FAILED';sample.error=error.message;}
     sample.completed_at=new Date().toISOString();console.log(JSON.stringify({event:'it_sample_complete',job_id:job.job_id,status:sample.status,fit:sample.overall_fit,decision:sample.decision}));await save();
@@ -57,7 +60,7 @@ try {
       if(analysis?.decision!=='REJECT')throw new Error('Diagnostic requires actual stored REJECT, never injected routing');
       sample.pre_cv_open_verification=await reverifyMarketJob({job,repository});
       if(sample.pre_cv_open_verification.status!=='OPEN')throw new Error('Real vacancy no longer OPEN');
-      sample.cv=await observedCvBuild({job,profile,analysis,llm,repository,outputRoot:'data/cv-v2-real-diagnostics'});
+      sample.cv=await observedCvBuild({job,profile,analysis,llm:cvLlm,repository,outputRoot:'data/cv-v2-real-diagnostics'});
       sample.status=sample.cv.status;
       console.log(JSON.stringify({event:'diagnostic_cv_complete',job_id:id,cv_id:sample.cv.cv_id,status:sample.status,claims_pass:sample.cv.qa.claims.pass,error:sample.cv.qa.error}));
     }catch(error){sample.status='FAILED';sample.error=error.message;console.log(JSON.stringify({event:'diagnostic_cv_failed',job_id:id,error:error.message}));}

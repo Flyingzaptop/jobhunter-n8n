@@ -38,7 +38,7 @@ test('dashboard real HTTP boundary rejects unauthorized and unsafe operations', 
   });
   let cookie, csrf, sessionHash;
   await t.test('unauthenticated API and event stream return401 without persisted reads', async () => {
-    for (const route of ['/api/overview', '/api/jobs', '/api/facts', '/api/events/stream', '/api/control/pause']) {
+    for (const route of ['/api/overview', '/api/jobs', '/api/facts', '/api/browser-sessions', '/api/events/stream', '/api/control/pause']) {
       const response = await request(route); assert.equal(response.status, 401);
       const body = await response.json(); assert.equal(body.error, 'Authentication required');
     }

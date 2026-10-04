@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,buildTailoredCv,renderCvV2Html,verifyCvEntailment} from '../services/core/cv-v2.mjs';
+import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,buildTailoredCv,renderCvV2Html,verifyCvEntailment,resolveCvLlm} from '../services/core/cv-v2.mjs';
+import {OllamaClient} from '../services/core/llm.mjs';
 
 // MOCK / REGRESSION only. No gateway response here is real-world acceptance.
 const profile={onboarding:{legal_name:'UNKNOWN',email:'UNKNOWN',phone:'UNKNOWN'},education:[{id:'education',institution:'A university',field:'Mechanical Engineering',status:'degree_in_progress',provenance:'EDUCATION'}],experience:[{id:'it',role:'IT Specialist',provenance:'PROFESSIONAL',duration_approx_years:1.5,statements:['Supported Windows workstations.'],skills:['Windows']}],projects:[{id:'cad',title:'Cycloidal gearbox',provenance:'ACADEMIC',statements:['Designed a cycloidal gearbox in CAD.'],skills:['CAD']},{id:'web',title:'Web applications',provenance:'PERSONAL_PROJECT',statements:['Built web applications using React and Python/Django.'],skills:['React','Python','Django']}],languages:[{id:'pl',language:'Polish',level:'fluent'}]};
@@ -88,4 +89,21 @@ test('degree in progress does not establish an unspecified BSc or MSc qualificat
 
 test('academic/personal projects cannot silently become independent R&D in a summary',()=>{
   const document=draft();document.summary=[claim('Independent R&D designing cycloidal gearboxes.','cad')];assert(deterministicCvQa(document,profile).errors.some(e=>e.reason==='RESEARCH_PROJECT_SCOPE_MISMATCH'));
+});
+
+test('scoped CV models preserve the global fit client and explicit injected gateways',()=>{
+  const client=new OllamaClient({baseUrl:'http://127.0.0.1:11434',model:'qwen3.5:4b',strongModel:'qwen3.5:4b'});
+  const selected=resolveCvLlm(client,{CV_WRITER_MODEL:'gemma4:e2b-it-qat',CV_VERIFIER_MODEL:'gemma4:e2b-it-qat'});
+  assert.equal(selected.model,'gemma4:e2b-it-qat');assert.equal(selected.strongModel,'gemma4:e2b-it-qat');assert.equal(selected.baseUrl,client.baseUrl);
+  assert.equal(client.model,'qwen3.5:4b');assert.equal(client.strongModel,'qwen3.5:4b');assert.equal(resolveCvLlm(client,{}),client);
+  const injected=gateway(draft());assert.equal(resolveCvLlm(injected,{CV_WRITER_MODEL:'gemma4:e2b-it-qat'}),injected);
+});
+
+test('writer omits undocumented RL policy clauses while authoritative fact map retains original evidence',async()=>{
+  const original='Ran supervised, unsupervised and self-supervised learning experiments; reinforcement-learning work may be referenced only where documented in project evidence.';
+  const source={...profile,projects:[...profile.projects,{id:'research',provenance:'INDEPENDENT_R_AND_D',title:'Research',statements:[original],skills:['Python']}]};
+  const root=await mkdtemp(path.join(tmpdir(),'cv-v2-policy-'));const llm=gateway(draft());const invoke=llm.json;
+  llm.json=async args=>{if(args.strong){const facts=JSON.parse(args.prompt).facts;assert.equal(facts.find(f=>f.id==='research').statements[0],'Ran supervised, unsupervised and self-supervised learning experiments');}return invoke(args);};
+  const manifest=await buildTailoredCv({job:{job_id:'policy',availability_status:'OPEN'},profile:source,analysis:{},llm,outputRoot:root});
+  const map=JSON.parse(await readFile(manifest.source_map_path,'utf8'));assert.equal(map.facts.find(f=>f.id==='research').statements[0],original);assert.equal(source.projects.at(-1).statements[0],original);
 });

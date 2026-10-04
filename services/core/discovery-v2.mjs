@@ -3,6 +3,12 @@ import { randomUUID } from 'node:crypto';
 import YAML from 'yaml';
 import { safeFetch, parseSourcePayload, sourceEndpoint, extractJobPostings, decodeEntities } from './discovery.mjs';
 import { normalizeRaw, duplicateConfidence } from './normalization.mjs';
+const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html']);
+const validateRobotsPayload = text => {
+  if (/^\s*(?:<!doctype|<html|<head)/i.test(text) || !/(?:user-agent|sitemap|allow|disallow)\s*:/i.test(text))
+    throw new Error('INVALID_ROBOTS_PAYLOAD');
+  return text;
+};
 
 export const MARKET_REGISTRY = 'config/market_sources.yaml';
 export async function loadMarketSources(registryPath = MARKET_REGISTRY) {
@@ -64,9 +70,17 @@ const iso = value => {
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 };
 const list = value => Array.isArray(value) ? value : value ? [value] : [];
+const canonicalSnapshot = job => {
+  const { metadata, ...columns } = job;
+  const snapshot = { ...(metadata ?? {}), ...columns };
+  delete snapshot.metadata;
+  return snapshot;
+};
 const xmlTag = (xml, name) => decodeEntities((xml.match(new RegExp(`<${name}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${name}>`, 'i'))?.[1] ?? '').replace(/^<!\[CDATA\[|\]\]>$/g, ''));
 
 export function parseMarketPayload(source, text, fetchedUrl = marketEndpoint(source)) {
+  if (publicHtmlAdapters.has(source.adapter)) return parseMarketPayload({ ...source, adapter: 'html' }, text, fetchedUrl)
+    .map(raw => ({ ...raw, adapter: source.adapter }));
   if (['greenhouse', 'lever', 'ashby', 'html', 'rss'].includes(source.adapter)) {
     if (source.adapter === 'html') text = { jobs: extractJobPostings(text).map(item => ({ ...item, url: item.url ?? fetchedUrl })) };
     const parsed = parseSourcePayload(source.adapter === 'html' ? { ...source, adapter: 'json' } : source, text, fetchedUrl);
@@ -104,6 +118,27 @@ export function parseMarketPayload(source, text, fetchedUrl = marketEndpoint(sou
     default: throw new Error(`UNSUPPORTED_MARKET_ADAPTER_${source.adapter}`);
   }
   return parseSourcePayload({ ...source, adapter: 'json' }, { jobs: items }, fetchedUrl).map(raw => ({ ...raw, adapter: source.adapter }));
+}
+
+export async function verifyPublicJobPosting({ source, url, fetchOptions = {}, listingText, robotsText }) {
+  const robots = validateRobotsPayload(robotsText ?? (await safeFetch(source.robots_url, source, fetchOptions)).text);
+  if (!robotsAllows(robots, url) || !robotsAllows(robots, source.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
+  const listing = listingText ?? (await safeFetch(source.url, source, fetchOptions)).text;
+  const expected = new URL(url); const listed = [...listing.matchAll(/href\s*=\s*["']([^"']+)["']/gi)]
+    .some(([, href]) => { try { const found = new URL(decodeEntities(href), source.url); return found.origin === expected.origin && found.pathname === expected.pathname; } catch { return false; } });
+  if (!listed) return { status: 'UNKNOWN', reason: 'POSTING_NOT_IN_CURRENT_PUBLIC_LISTING' };
+  const response = await safeFetch(url, source, fetchOptions);
+  const records = parseMarketPayload(source, response.text, response.url);
+  const valid = records.filter(raw => {
+    const normalized = normalizeRaw(raw);
+    const found = new URL(normalized.canonical_url);
+    return found.origin === expected.origin && found.pathname === expected.pathname && normalized.description_text.length >= 80;
+  });
+  if (valid.length !== 1) return { status: 'UNKNOWN', reason: 'EXACT_PUBLIC_JOBPOSTING_NOT_CONFIRMED' };
+  const raw = valid[0]; const normalized = normalizeRaw(raw);
+  if (normalized.availability_status === 'CLOSED') return { status: 'CLOSED', raw };
+  raw.raw_payload.status = 'OPEN';
+  return { status: 'OPEN', raw, method: 'OFFICIAL_PUBLIC_LISTING_AND_JOBPOSTING_GET' };
 }
 
 export function queryEvidence(job) {
@@ -196,7 +231,8 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
   const existing = normalizationIndex(await repository.listCanonicalJobs());
   const seen = new Set(); const newIds = new Set(); const jobs = new Map(); const results = [];
   const emit = async (source, details) => observer({ run_id: runId, source_id: source?.name, platform: source?.platform,
-    query: source?.current_query ?? (source?.source_class === 'employer_ats' ? 'All published employer vacancies' : 'Broad public market feed'),
+    query: source?.current_query ?? (publicHtmlAdapters.has(source?.adapter) ? 'Bounded public employer JobPosting details'
+      : source?.source_class === 'employer_ats' ? 'All published employer vacancies' : 'Broad public market feed'),
     geography: source?.current_geography ?? (source?.source_class === 'poland_board' ? 'Poland' : 'Global / Europe / Poland; eligibility unverified'), ...details });
   const checkAbort = () => { if (signal?.aborted) throw new Error('DISCOVERY_CANCELLED'); };
   let cancelled = false;
@@ -227,7 +263,11 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
         metrics.status = 'RATE_LIMIT_WAIT'; metrics.next_request_at = new Date(new Date(prior.last_success_at).getTime() + source.min_scan_interval_ms).toISOString();
       } else {
         let robots = null;
-        if (source.robots_url) robots = (await safeFetch(source.robots_url, source, fetchOptions)).text;
+        if (source.robots_url) {
+          metrics.policy_attempted = true; metrics.last_request_at = new Date().toISOString();
+          const policyResponse = await safeFetch(source.robots_url, source, fetchOptions);
+          metrics.policy_requests = 1; robots = validateRobotsPayload(policyResponse.text);
+        }
         const read = async url => {
           checkAbort();
           if (robots && new URL(url).hostname === new URL(source.robots_url).hostname && !robotsAllows(robots, url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
@@ -244,7 +284,8 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
               const job = normalizeRaw(raw); job.query_role_evidence = queryEvidence(job);
               job.adapter = raw.adapter; job.source_board = raw.source_board;
               if (source.source_class === 'employer_ats' && job.availability_status === 'OPEN') {
-                job.discovery_open_verification = { method: 'OFFICIAL_PUBLISHED_ATS_FEED_GET', source_id: source.name,
+                job.discovery_open_verification = { method: publicHtmlAdapters.has(source.adapter)
+                  ? 'OFFICIAL_PUBLIC_LISTING_AND_JOBPOSTING_GET' : 'OFFICIAL_PUBLISHED_ATS_FEED_GET', source_id: source.name,
                   verified_at: new Date().toISOString() };
               }
               if (job.query_role_evidence.length) metrics.query_evidence_count++;
@@ -280,7 +321,17 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
             errors: metrics.normalization_errors.length,
             message: `${source.platform}: ${metrics.raw_count} vacancies, ${sourceNew} new, page ${metrics.pages}` });
         };
-        if (source.adapter === 'sitemap_html') {
+        if (publicHtmlAdapters.has(source.adapter)) {
+          const listing = await read(source.url);
+          metrics.listing_url = listing.url;
+          metrics.bounded_job_urls = source.job_urls.length;
+          for (const url of source.job_urls.slice(0, source.max_pages)) {
+            const verification = await verifyPublicJobPosting({ source, url, fetchOptions, listingText: listing.text, robotsText: robots });
+            metrics.pages++; metrics.last_request_at = new Date().toISOString();
+            if (!verification.raw) metrics.normalization_errors.push({ source_url: url, error: verification.reason });
+            else await ingest([verification.raw]);
+          }
+        } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();
           while (queue.length && visited.size < 12) {
             const url = queue.shift(); if (visited.has(url)) continue; visited.add(url);
@@ -342,6 +393,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
       metrics.error_code = /^[A-Z0-9_]+$/.test(error.message) ? error.message : 'SOURCE_TRANSPORT_ERROR';
       if (error.message === 'DISCOVERY_CANCELLED') { metrics.status = 'CANCELLED'; cancelled = true; }
       else metrics.status = /SOURCE_HTTP_40[1369]|ROBOTS/.test(error.message) ? 'ACCESS_BLOCKED' : 'FAILED';
+      if (error.message === 'INVALID_ROBOTS_PAYLOAD') { metrics.status = 'MANUAL_DISCOVERY_FALLBACK'; metrics.reason = 'Public robots endpoint did not return a usable policy; no protected/API fallback attempted.'; }
       // Failed access never triggers a stealth browser/alternate authenticated API.
     }
     metrics.latency_ms = Math.round(performance.now() - t); metrics.unique_count = sourceUnique.size;
@@ -361,7 +413,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
   const report = { run_id: runId, started_at: started, completed_at: new Date().toISOString(),
     status: cancelled ? 'CANCELLED' : required.every(source => operational.some(result => result.source_id === source.name)) ? 'PASS' : 'PARTIAL',
     scope: 'REAL_WORLD_PUBLIC_READ_ONLY', selection_scope: sources.length === catalog.length ? 'FULL_CATALOG' : 'SOURCE_SUBSET', real_employer_submissions: 0,
-    catalog_sources: catalog.length, sources_selected: sources.length, platforms_attempted: [...new Set(results.filter(result => result.pages > 0 || result.error_code?.startsWith('SOURCE_HTTP')).map(result => result.platform))],
+    catalog_sources: catalog.length, sources_selected: sources.length, platforms_attempted: [...new Set(results.filter(result => result.pages > 0 || result.policy_attempted || result.error_code?.startsWith('SOURCE_HTTP')).map(result => result.platform))],
     platforms_operational: [...new Set(operational.map(result => result.platform))],
     platforms_requiring_auth: [...new Set(results.filter(result => /AUTH_REQUIRED|USER_SESSION_REQUIRED/.test(result.status)).map(result => result.platform))],
     platforms_access_blocked: [...new Set(results.filter(result => result.status === 'ACCESS_BLOCKED').map(result => result.platform))],
@@ -396,7 +448,29 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
   const mappings = repository.pool ? (await repository.pool.query('SELECT * FROM job_sources WHERE job_id=$1', [job.job_id])).rows : [];
   for (const mapping of mappings) {
     const source = sources.find(item => item.name === mapping.source_name);
-    if (!source?.enabled || !source.permitted_access || !['greenhouse', 'lever', 'ashby', 'smartrecruiters'].includes(source.adapter)) continue;
+    if (!source?.enabled || !source.permitted_access) continue;
+    if (publicHtmlAdapters.has(source.adapter)) {
+      try {
+        const verified = await verifyPublicJobPosting({ source, url: mapping.source_url, fetchOptions });
+        if (verified.raw) {
+          const refreshed = { ...canonicalSnapshot(job), ...normalizeRaw(verified.raw), job_id: job.job_id, canonical_url: job.canonical_url,
+            adapter: source.adapter, last_open_verification: { source: source.name, status: verified.status,
+              method: verified.method ?? 'OFFICIAL_PUBLIC_JOBPOSTING_GET', verified_at: new Date().toISOString() } };
+          await repository.insertRaw?.(verified.raw); await repository.upsertCanonicalJob?.(refreshed, { source: verified.raw });
+          if (repository.pool) await repository.pool.query(`UPDATE jobs SET availability_status=$2,last_verified_open_at=CASE WHEN $2='OPEN' THEN now() ELSE last_verified_open_at END,
+            closed_at=CASE WHEN $2='CLOSED' THEN COALESCE(closed_at,now()) ELSE NULL END WHERE job_id=$1`, [job.job_id, verified.status]);
+          return { status: verified.status, source_id: source.name, method: verified.method ?? 'OFFICIAL_PUBLIC_JOBPOSTING_GET',
+            verified_at: new Date().toISOString(), job: refreshed };
+        }
+      } catch (error) {
+        if (error.message === 'SOURCE_HTTP_404') {
+          if (repository.pool) await repository.pool.query("UPDATE jobs SET availability_status='CLOSED',closed_at=COALESCE(closed_at,now()) WHERE job_id=$1", [job.job_id]);
+          return { status: 'CLOSED', source_id: source.name, method: 'OFFICIAL_PUBLIC_POSTING_NOT_FOUND', verified_at: new Date().toISOString() };
+        }
+      }
+      continue;
+    }
+    if (!['greenhouse', 'lever', 'ashby', 'smartrecruiters'].includes(source.adapter)) continue;
     try {
       let endpoint = marketEndpoint(source);
       if (source.adapter === 'greenhouse') endpoint = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(source.board)}/jobs/${encodeURIComponent(mapping.source_item_id)}`;
@@ -416,7 +490,7 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
         const records = parseMarketPayload(source, { content: [found] }, endpoint);
         const raw = records[0];
         await repository.insertRaw?.(raw);
-        refreshedJob = { ...job, ...normalizeRaw(raw), job_id: job.job_id, canonical_url: job.canonical_url };
+        refreshedJob = { ...canonicalSnapshot(job), ...normalizeRaw(raw), job_id: job.job_id, canonical_url: job.canonical_url };
         await repository.upsertCanonicalJob?.(refreshedJob, { source: raw });
       }
       if (repository.pool) await repository.pool.query(`UPDATE jobs SET availability_status=$2,last_verified_open_at=CASE WHEN $2='OPEN' THEN now() ELSE last_verified_open_at END,

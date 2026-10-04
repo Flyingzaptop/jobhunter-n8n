@@ -11,6 +11,8 @@ npm run dashboard
 
 Open http://127.0.0.1:3020. Set `DASHBOARD_PASSWORD` in the ignored `.env` to a private value of at least 16 characters. Sessions use HttpOnly cookies and CSRF protection. The server binds to localhost and rejects unexpected Host and Origin headers.
 
+CV generation supports separate `CV_WRITER_MODEL` and `CV_VERIFIER_MODEL` settings. This machine's ignored environment uses installed `gemma4:e2b-it-qat` for both after its bounded factual QA comparison; global fit analysis remains `qwen3.5:4b`. Blank settings inherit the global writer/verifier models. Restart core after changing model settings. A model QA pass does not override identity, suitability or PDF gates.
+
 PostgreSQL, core, browser service, n8n and Ollama must be running for their corresponding views/actions. Missing services and unknown onboarding facts appear explicitly. Data comes from persisted real jobs, analyses, CV drafts, events and operation runs. Diagnostic rejected CV drafts remain marked ineligible. Empty application timelines are expected until genuine application preparation exists.
 
 Stage controls run published `CC-WF-01` through `CC-WF-06` copies of the existing n8n workflows. The first trigger provisions these copies with manual/subworkflow triggers and published child dependencies, without schedule or public webhook nodes. This fixes n8n's refusal to execute unpublished child workflows. Original workflow scheduling remains separately configured. Pause blocks new pipeline stage work; reporting remains available. Real submission cannot be enabled from the dashboard. Keep `DRY_RUN=true`, `ALLOW_REAL_SUBMIT=false`, `READINESS_REAL_SUBMIT_LOCK=true` for readiness runs.

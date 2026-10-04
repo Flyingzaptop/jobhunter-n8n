@@ -6,7 +6,11 @@ The caller must reverify the real posting OPEN before calling it. No employer
 submission occurs here. Existing v1 compatibility is managed by the core caller.
 
 The strong Ollama writer uses `LLM_STRONG_MODEL`; the separate fast Ollama verifier
-uses `LLM_FAST_MODEL`. Both are real local Ollama calls in production. Fact IDs
+uses `LLM_FAST_MODEL` by default. Explicit `CV_WRITER_MODEL` and `CV_VERIFIER_MODEL`
+override those roles only for CV generation, preserving the global fit model and
+explicit injected regression gateways. This workstation sets both scoped models
+to the installed `gemma4:e2b-it-qat` after a real-world comparison. Both are real
+local Ollama calls in production. Fact IDs
 constrain the writer grammar. Each generated claim is checked against only its
 cited facts. A separate verifier judges entailment, followed by fail-closed
 deterministic checks for technology labels, numbers, seniority, employers,

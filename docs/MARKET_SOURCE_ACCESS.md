@@ -33,7 +33,9 @@ Wrong/retired board tokens remain visible as FAILED/404, not invented vacancies.
 | Lever | Official published-postings REST API; documentation permits third-party access to published postings | Public board list and singular GET; global/EU hosting configurable |
 | Ashby | Documented public Job Postings API | Board GET; unlisted entries excluded; fresh snapshot reverification |
 | SmartRecruiters | Documented public Posting API | Public company postings GET; listing descriptions absent until separate official detail GET |
-| Workday, SuccessFactors, Workable, Teamtailor | Account/site-specific permission or credentials needed; no approved account integration supplied | Disabled/auth/manual capability visible |
+| Workday, SuccessFactors, Workable, Teamtailor APIs | Account/site-specific permission or credentials needed; no approved account API integration supplied | Disabled/auth/manual capability visible |
+| Teamtailor actual public career index/details | Public robots permits job pages; three exact currently listed JobPosting details fetched | Bounded public HTML discovery and fresh listing/detail reverification; no account API |
+| NVIDIA Workday actual public target | Ordinary robots GET returns HTML shell; vacancy HTML lacks JobPosting | MANUAL_DISCOVERY_FALLBACK / INVALID_ROBOTS_PAYLOAD, zero vacancy imports; no protected API fallback |
 | Recruitee | Official documentation now requires Careers API token, enforcement deadline February 2027 | AUTH_REQUIRED; do not rely on older third-party no-auth descriptions |
 | Personio | Employer opt-in XML feed requires known approved tenant | Visible unsupported/manual capability until configured |
 
@@ -41,6 +43,10 @@ The sitemap redirects for JJIT/RocketJobs go to `public.justjoin.com`. That exac
 host was observed from the public redirect and explicitly added to the allowlist.
 Each individual offer is checked against the platform's robots rules. A prohibited
 URL or access-block response stops that source; there is no alternate hidden API.
+
+The bounded Teamtailor/NVIDIA extension is documented separately in
+`docs/REAL_ATS_DISCOVERY_EXTENSION.md`. Public HTML permission is distinct from
+an authenticated account API capability; robots must return a usable policy.
 
 Polish mandatory-source and LinkedIn acceptance remains **PARTIAL** while these
 restrictions prevent collecting all mandatory sources. Catalog breadth or ATS

@@ -7,13 +7,18 @@ ambiguities in `docs/MASTER_SPEC_v2.md`.
 
 ## Current verification scope
 
-Three public ATS adapters (Greenhouse, Lever, Ashby), RSS and structured official
-pages are implemented. Raw discoveries and deduplication have PostgreSQL tests.
-Fit analysis uses schema-validated local Ollama with deterministic scores and
-fact IDs. The browser service has a complex local mock site and isolated human
-CAPTCHA test adapter. PDF generation currently uses exact factual statements.
+Readiness v2 adds a broad real-market catalog, official freshness checks,
+grounded CV rewrites with independent claim verification, durable Telegram
+processing and an authenticated React Control Center. The 2026-10-04 snapshot
+contains 13,911 actual canonical vacancies. Real Greenhouse and Teamtailor forms
+were inspected; other ATS and mandatory-platform limitations remain explicit.
+Fit analysis uses schema-validated local Ollama, deterministic scores and fact IDs.
 
-All six workflows and the complete mock Stage 7 have passed with real n8n, PostgreSQL, local Ollama and Chromium. See docs/STAGE_7_E2E_REPORT.md for exact source fingerprints and tests. Production readiness remains partial: real candidate onboarding, Telegram delivery and Docker deployment are not verified.
+See [real-world readiness report](docs/REAL_WORLD_READINESS_V2_REPORT.md) and
+[Control Center setup](docs/CONTROL_CENTER_SETUP.md). Run `npm run dashboard`
+after building its frontend. Local dashboard: http://127.0.0.1:3020.
+
+All six baseline workflows and mock Stage 7 passed with real n8n, PostgreSQL, local Ollama and Chromium; mocks remain regression evidence only. See docs/STAGE_7_E2E_REPORT.md. A real Control Center n8n invocation also passed through stages 2→3→4→5 with filling disabled. Production readiness remains partial: real identity/PDF readiness, complete platform/ATS compatibility, live Telegram delivery and Docker deployment are not verified.
 Do not enable real submission. No successful unit test implies Stage 7 PASS.
 
 ## Requirements

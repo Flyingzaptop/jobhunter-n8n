@@ -10,9 +10,11 @@ Run `node --env-file=.env scripts/ats-real-benchmark.mjs`. Evidence is saved loc
 | Lever | Official posting and 17 visible fields detected | CAPTCHA requires manual takeover; no bypass |
 | Ashby | Discovered official posting opened | Application form not reached under the current safe navigation policy |
 | SmartRecruiters | Discovered official posting opened | Application form not reached under the current safe navigation policy |
-| Teamtailor | No discovered official posting available for this run | Compatibility unverified |
-| Workday | No discovered official posting available for this run | Compatibility unverified |
+| Teamtailor | Three current public postings imported; one documented public application form reached with 14 visible fields | Identity/CV missing; zero uploads or filled fields |
+| Workday | NVIDIA public URL/robots attempted; returned an invalid robots HTML shell | Manual discovery fallback; no verified OPEN posting imported |
 
 No candidate fields were filled in this run. No PDF was uploaded. Real employer submissions: **0**. `DRY_RUN=true`, `ALLOW_REAL_SUBMIT=false`, and the readiness lock remain enforced. A page opening alone is never counted as a compatible end-to-end application.
 
 The browser permits only GET navigation and a narrowly validated Workday public vacancy-search POST. Candidate-data writes continue to require the final submission gate. Tests reject cross-origin navigation, required-field navigation, unreviewed payload keys and host suffix impersonation. Live observer images are masked and returned in memory without creating screenshot files.
+
+Teamtailor form navigation uses the public `/jobs/{posting}/applications/new` URL documented in its [official API documentation](https://docs.teamtailor.com/). The initial posting was independently verified by exact JobPosting ID and current public index membership. Its initial `type=submit` Apply button was never clicked. Opening that public form does not establish permission to submit candidate data.

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob } from '../services/core/discovery-v2.mjs';
+import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting } from '../services/core/discovery-v2.mjs';
 import { normalizeRaw } from '../services/core/normalization.mjs';
 
 test('robots wildcard, query patterns and specific agent groups cannot be bypassed', () => {
@@ -100,7 +100,8 @@ test('SmartRecruiters detail is hydrated from official sections before fit/CV', 
   let hydrated = null;
   const repository = { pool: { async query(sql) { return { rows: sql.startsWith('SELECT') ? [{ source_name: 'smartrecruiters-BoschGroup', source_item_id: '42' }] : [] }; } },
     async insertRaw(raw) { return raw; }, async upsertCanonicalJob(job) { hydrated = job; return { job_id: job.job_id }; } };
-  const verification = await reverifyMarketJob({ job: { job_id: 'existing-job', canonical_url: 'https://jobs.smartrecruiters.com/BoschGroup/42' }, repository,
+  const verification = await reverifyMarketJob({ job: { job_id: 'existing-job', canonical_url: 'https://jobs.smartrecruiters.com/BoschGroup/42',
+    metadata: { adapter: 'smartrecruiters', discovery_open_verification: { method: 'OFFICIAL_PUBLISHED_ATS_FEED_GET' } } }, repository,
     fetchOptions: { lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {},
       fetchImpl: async (url, options) => { assert.equal(options.method, 'GET'); assert.equal(url.hostname, 'api.smartrecruiters.com');
         return new Response(JSON.stringify({ id: '42', name: 'Simulation Engineer', company: { name: 'Bosch' },
@@ -108,6 +109,8 @@ test('SmartRecruiters detail is hydrated from official sections before fit/CV', 
   assert.equal(verification.status, 'OPEN'); assert.equal(verification.job.job_id, 'existing-job');
   assert.match(hydrated.description_text, /Qualifications\nPython and CFD experience required/);
   assert.equal(hydrated.company, 'Bosch'); assert.equal(hydrated.country, 'pl');
+  assert.equal(Object.hasOwn(hydrated, 'metadata'), false); assert.equal(hydrated.adapter, 'smartrecruiters');
+  assert.equal(hydrated.discovery_open_verification.method, 'OFFICIAL_PUBLISHED_ATS_FEED_GET');
 });
 test('official access errors, malformed detail and wrong IDs cannot claim vacancy OPEN', async () => {
   let writes = 0;
@@ -132,4 +135,37 @@ test('inactive official SmartRecruiters detail is CLOSED despite a reachable URL
   const [raw] = parseMarketPayload({ name: 'bosch', adapter: 'smartrecruiters', company: 'Bosch', board: 'BoschGroup' },
     { content: [{ id: '42', name: 'Inactive role', active: false }] });
   assert.equal(normalizeRaw(raw).availability_status, 'CLOSED');
+});
+const publicSource = { name: 'public-employer-regression', platform: 'Teamtailor', adapter: 'teamtailor_public_html',
+  url: 'https://career.teamtailor.com/jobs', robots_url: 'https://career.teamtailor.com/robots.txt',
+  allowed_hosts: ['career.teamtailor.com'], rate_limit_ms: 250 };
+const publicUrl = 'https://career.teamtailor.com/jobs/42-engineer';
+const publicPage = extra => '<script type="application/ld+json">' + JSON.stringify({ '@type': 'JobPosting',
+  title: 'Regression Engineer', hiringOrganization: { name: 'Regression Employer' }, description: 'Detailed public job description '.repeat(8), ...extra }) + '</script>';
+const publicFetchOptions = text => ({ lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {}, fetchImpl: async () => new Response(text) });
+test('official public JobPosting is OPEN only with fresh permitted index membership and exact detail', async () => {
+  const result = await verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nAllow: /',
+    listingText: `<a href="${publicUrl}">Open role</a>`, fetchOptions: publicFetchOptions(publicPage()) });
+  assert.equal(result.status, 'OPEN'); assert.equal(result.method, 'OFFICIAL_PUBLIC_LISTING_AND_JOBPOSTING_GET');
+  assert.equal(normalizeRaw(result.raw).canonical_url, publicUrl); assert.equal(normalizeRaw(result.raw).availability_status, 'OPEN');
+  const expired = await verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nAllow: /',
+    listingText: `<a href="${publicUrl}">Open role</a>`, fetchOptions: publicFetchOptions(publicPage({ validThrough: '2000-01-01T00:00:00Z' })) });
+  assert.equal(expired.status, 'CLOSED');
+});
+test('public HTML verification fails closed for forbidden/unusable robots without fetching job details', async () => {
+  let fetched = 0;
+  const options = { ...publicFetchOptions('<html>Application shell</html>'), fetchImpl: async url => {
+    fetched++; assert.equal(url.pathname, '/robots.txt'); return new Response('<!DOCTYPE html><html>Application shell</html>'); } };
+  await assert.rejects(verifyPublicJobPosting({ source: publicSource, url: publicUrl, fetchOptions: options }), /INVALID_ROBOTS_PAYLOAD/);
+  assert.equal(fetched, 1);
+  await assert.rejects(verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nDisallow: /jobs',
+    fetchOptions: { ...options, fetchImpl: () => { throw new Error('Forbidden detail fetched'); } } }), /ROBOTS_ACCESS_BLOCKED/);
+});
+test('missing current listing or mismatched JobPosting identity stays UNKNOWN', async () => {
+  const missing = await verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nAllow: /',
+    listingText: '<a href="/jobs/99-other-role">Other</a>', fetchOptions: { ...publicFetchOptions(''), fetchImpl: () => { throw new Error('Unlisted detail fetched'); } } });
+  assert.equal(missing.status, 'UNKNOWN');
+  const mismatch = await verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nAllow: /',
+    listingText: `<a href="${publicUrl}">Open role</a>`, fetchOptions: publicFetchOptions(publicPage({ url: 'https://career.teamtailor.com/jobs/99-other-role' })) });
+  assert.equal(mismatch.status, 'UNKNOWN');
 });

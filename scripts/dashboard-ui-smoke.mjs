@@ -59,7 +59,7 @@ try {
   const after = await page.locator('.pagination>span').innerText(); assert.notEqual(after, before); record('Server-side vacancy pagination', `${before} → ${after}; ${jobs.total} persisted vacancies`);
   await page.getByRole('button', { name: '← Previous', exact: true }).click(); await ready();
   await page.getByRole('textbox', { name: 'Search vacancies' }).fill(realJob.company); await ready();
-  await page.locator('.jobs-table').getByRole('button').filter({ hasText: realJob.title }).first().click(); await page.getByRole('dialog').waitFor();
+  await page.locator(`.jobs-table tr[data-job-id="${realJob.job_id}"] .role-cell button`).click(); await page.getByRole('dialog').waitFor();
   const detail = (await get('/jobs/' + realJob.job_id)).data; assert.ok(real(detail.job));
   await page.waitForFunction(title => document.querySelector('.modal-head h2')?.textContent.includes(title), realJob.title);
   assert.ok((await page.getByRole('dialog').innerText()).includes(realJob.title));
@@ -68,7 +68,7 @@ try {
   const analyzed = (await get('/jobs?analyzed=true&limit=100')).data.filter(real);
   if (analyzed.length) {
     const selected = analyzed.find(job => (job.analysis?.requirements ?? job.analysis_json?.requirements ?? []).some(req => req.candidate_evidence_fact_ids?.length)) ?? analyzed[0]; await page.getByRole('textbox', { name: 'Search vacancies' }).fill(selected.title); await ready();
-    await page.locator('.jobs-table').getByRole('button').filter({ hasText: selected.title }).first().click(); await page.getByRole('dialog').waitFor();
+    await page.locator(`.jobs-table tr[data-job-id="${selected.job_id}"] .role-cell button`).click(); await page.getByRole('dialog').waitFor();
     await page.getByRole('tab', { name: 'Analysis', exact: true }).click(); await shot('06-real-analysis');
     const recordData = (await get('/jobs/' + selected.job_id)).data;
     record('Real structured analysis rendering', { job_id: selected.job_id, requirements: recordData.analysis?.requirements?.length ?? recordData.analysis?.analysis_json?.requirements?.length ?? 0 });
@@ -83,8 +83,20 @@ try {
   else report.unavailable.push('No actual employer application timeline exists; regression-only applications excluded from real-world evidence');
   await go('CVs'); await shot('10-cv-ledger');
   const cvs = (await get('/cvs')).data; let actualCv;
-  for (const cv of cvs) { const job = (await get('/jobs/' + cv.job_id)).data.job; if (real(job)) { actualCv = cv; break; } }
-  if (actualCv) { await page.locator('tbody .role-cell button').filter({ hasText: actualCv.title }).first().click(); await page.getByRole('dialog').waitFor(); await shot('11-real-cv-draft'); record('Real vacancy CV inspection', { cv_id: actualCv.cv_id, qa: actualCv.qa_json?.status ?? actualCv.status ?? 'No summary status recorded' }); await page.keyboard.press('Escape'); }
+  for (const cv of cvs) { if (process.env.DASHBOARD_CV_ID && cv.cv_id !== process.env.DASHBOARD_CV_ID) continue; const job = (await get('/jobs/' + cv.job_id)).data.job; if (real(job)) { actualCv = cv; break; } }
+  if (actualCv) {
+    await page.locator(`tbody tr[data-record-id="${actualCv.cv_id}"] .role-cell button`).click(); await page.getByRole('dialog').waitFor(); await shot('11-real-cv-draft', '.modal');
+    const recordData = (await get('/cvs/' + actualCv.cv_id)).data, qa = recordData.qa ?? recordData.qa_json ?? recordData.manifest?.qa ?? recordData.manifest_json?.qa;
+    assert.ok((await page.locator('.modal-head').innerText()).includes(actualCv.cv_id));
+    if (process.env.DASHBOARD_CV_ID) {
+      assert.equal(qa?.claims?.pass, true); assert.equal(qa?.identity?.status, 'BLOCKED_IDENTITY');
+      assert.equal(await page.locator('.qa-summary .badge').nth(0).innerText(), 'PASS');
+      assert.ok((await page.locator('.qa-summary .badge').nth(1).innerText()).includes('BLOCKED'));
+      assert.equal(await page.locator('.pdf-preview').count(), 0);
+      record('Independent CV claims QA separate from blocked identity/PDF', { cv_id: actualCv.cv_id, claims_pass: qa.claims.pass, identity: qa.identity.status, pdf: qa.pdf.status });
+    }
+    record('Real vacancy CV inspection', { cv_id: actualCv.cv_id, qa: actualCv.qa_json?.status ?? actualCv.status ?? 'No summary status recorded' }); await page.keyboard.press('Escape');
+  }
   else report.unavailable.push('No real-vacancy CV/draft exists in this snapshot');
   await go('Human review'); await shot('12-hitl-onboarding');
   const hitlResponse = await context.request.get(base + '/api/hitl');
@@ -93,30 +105,43 @@ try {
     if (onboarding.missing_fields?.length) { assert.ok((await page.locator('.hitl-grid').innerText()).includes(onboarding.missing_fields[0])); record('Unknown onboarding blockers rendered', `${onboarding.missing_fields.length} persisted unknown fields`); }
   } else report.unavailable.push(`Backend /api/hitl returned ${hitlResponse.status()}; blockers remain unavailable, not clear`);
   await go('Browser'); await shot('13-browser-observer');
-  if (process.env.DASHBOARD_BROWSER_SESSION_ID) {
-    const retainedSessionImages = async () => (await readdir(path.resolve(process.env.BROWSER_STATE_DIR ?? 'data/browser')).catch(() => [])).filter(file => file.startsWith(process.env.DASHBOARD_BROWSER_SESSION_ID) && file.endsWith('.png')).sort();
+  const recordedBenchmarks = (await get('/browser-sessions')).data;
+  if (recordedBenchmarks.length) {
+    const optionLabels = await page.locator('.observer-picker select option').allTextContents();
+    assert.ok(optionLabels.some(label => label.startsWith('ATS compatibility')));
+    record('Actual ATS compatibility session catalog', { records: recordedBenchmarks.length, labeled_scope: 'ATS compatibility; distinct from applications' });
+  }
+  const catalogSession = recordedBenchmarks.find(row => row.session_id ?? row.browser_session_id);
+  const targetSession = process.env.DASHBOARD_BROWSER_SESSION_ID ?? catalogSession?.session_id ?? catalogSession?.browser_session_id;
+  if (targetSession) {
+    const retainedSessionImages = async () => (await readdir(path.resolve(process.env.BROWSER_STATE_DIR ?? 'data/browser')).catch(() => [])).filter(file => file.startsWith(targetSession) && file.endsWith('.png')).sort();
     const retainedBefore = await retainedSessionImages();
-    await page.getByLabel('Observe an existing session ID', { exact: true }).fill(process.env.DASHBOARD_BROWSER_SESSION_ID);
-    await page.getByRole('button', { name: 'Observe session', exact: true }).click();
-    await page.waitForTimeout(3200); await shot('14-active-browser');
-    const observed = await context.request.get(`${base}/api/browser/${encodeURIComponent(process.env.DASHBOARD_BROWSER_SESSION_ID)}`);
+    const recordedSession = recordedBenchmarks.find(row => (row.session_id ?? row.browser_session_id) === targetSession);
+    if (recordedSession) {
+      await page.locator('.observer-picker select').selectOption(targetSession);
+      record('Recorded benchmark session selected through real catalog', { session_id: targetSession, scope: recordedSession.scope ?? 'ATS_COMPATIBILITY', manual_id_supplied: Boolean(process.env.DASHBOARD_BROWSER_SESSION_ID) });
+    } else {
+      await page.getByLabel('Observe an existing session ID', { exact: true }).fill(targetSession);
+      await page.getByRole('button', { name: 'Observe session', exact: true }).click();
+    }
+    await page.waitForTimeout(3200); await shot('14-active-browser', null, false);
+    const observed = await context.request.get(`${base}/api/browser/${encodeURIComponent(targetSession)}`);
     assert.equal(observed.ok(), true, 'Provided observer session must exist');
     const state = (await observed.json()).data;
     const protectedFields = (state.fields ?? []).filter(field => field.type === 'password' || /token|otp|password|auth.*code/i.test(field.name ?? ''));
     assert.ok(protectedFields.every(field => field.value === '[redacted]'));
     assert.ok(report.observer_image_responses >= 2, 'Actual observer must fetch successive screenshots while viewed');
-    record('Actual direct observer session', { session_id: process.env.DASHBOARD_BROWSER_SESSION_ID, fields: state.fields?.length, url: state.url, protected_fields_redacted: protectedFields.length, actual_image_responses: report.observer_image_responses });
-    const image = await context.request.get(`${base}/api/browser/${encodeURIComponent(process.env.DASHBOARD_BROWSER_SESSION_ID)}/image`);
+    record('Actual observer session', { session_id: targetSession, fields: state.fields?.length, url: state.url, protected_fields_redacted: protectedFields.length, actual_image_responses: report.observer_image_responses });
+    const image = await context.request.get(`${base}/api/browser/${encodeURIComponent(targetSession)}/image`);
     assert.equal(image.headers()['content-type'], 'image/png'); assert.equal(image.headers()['cache-control'], 'no-store');
     assert.equal((await image.body()).subarray(1, 4).toString(), 'PNG');
     assert.deepEqual(await retainedSessionImages(), retainedBefore);
     record('Observer screenshot transport', 'Actual PNG bytes, Cache-Control:no-store; screenshots refresh while viewed');
     record('No observer image persistence', 'No new session PNG file in configured browser state directory during repeated observation; QA screenshot is a separate explicit artifact');
   }
-  const picker = page.locator('.observer-picker select'), options = await picker.locator('option').allTextContents();
-  if (options.length > 1) { const available = await picker.locator('option').nth(1).getAttribute('value'); const observed = await context.request.get(`${base}/api/browser/${encodeURIComponent(available)}`); if (observed.ok()) { await picker.selectOption(available); await page.waitForTimeout(2600); await shot('14-active-browser'); record('Actual observer session', available); } else report.unavailable.push('Persisted browser session is currently closed/unavailable'); }
-  else if (!process.env.DASHBOARD_BROWSER_SESSION_ID) report.unavailable.push('No active session ID in persisted application state; no browser screenshot fabricated');
+  else report.unavailable.push('No active session returned by actual application/ATS catalog; no browser screenshot fabricated');
   await go('Runs'); await shot('15-runs');
+  if (targetSession) { const settledImages = report.observer_image_responses; await page.waitForTimeout(2400); assert.equal(report.observer_image_responses, settledImages); record('Observer polling stops after navigation', 'No screenshot responses after leaving the actively viewed observer'); }
   await go('Sources'); await shot('16-sources', null, false);
   const sources = (await get('/sources')).data; assert.ok(sources.some(s => /LinkedIn/i.test(s.platform))); assert.ok(sources.some(s => /Pracuj/i.test(s.platform))); record('Real source catalog and access states', `${sources.length} actual configured sources; LinkedIn and Pracuj visible`);
   await go('Analytics'); await shot('17-analytics');

@@ -9,7 +9,7 @@ import {factIndex} from './fit.mjs';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {observe,operationContext} from './observability.mjs';
 
-export const CV_V2_VERSION = 'cv-factory-v2.0';
+export const CV_V2_VERSION = 'cv-factory-v2.1';
 const ajv = new Ajv({strict:true, allErrors:true});
 const str = {type:'string', minLength:1};
 const obj = properties => ({type:'object', additionalProperties:false, properties, required:Object.keys(properties)});
@@ -17,6 +17,7 @@ const array = (items, maxItems) => ({type:'array', items, maxItems});
 const normalize = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/gi,'l').replace(/_/g,' ').toLowerCase();
 const known = value => typeof value === 'string' && value.trim() && !/^(unknown|null|n\/a)$/i.test(value.trim());
 const cleanFact = fact => Object.fromEntries(Object.entries(fact).filter(([,value]) => value !== 'UNKNOWN' && value !== null));
+const writerFact = fact => ({...fact,...(fact.statements?{statements:fact.statements.map(s=>typeof s==='string' ? s.replace(/;\s*reinforcement-learning work may be referenced only where documented in project evidence\.?/gi,'') : s)}:{})});
 const hash = value => createHash('sha256').update(value).digest('hex');
 const safeSlug = value => String(value ?? '').replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80) || 'unidentified';
 // YAML permits `- Blender: limited experience` as a one-entry object. Preserve
@@ -30,6 +31,16 @@ const skillText = value => {
   throw new Error('Invalid verified skill format');
 };
 const escape = value => String(value ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+export function resolveCvLlm(llm,environment=process.env) {
+  // An explicitly injected gateway is a regression/integration seam. Scoped
+  // production configuration must not replace that test seam or global fit LLM.
+  if(llm && !(llm instanceof OllamaClient))return llm;
+  const original=llm??new OllamaClient();
+  if(!environment.CV_WRITER_MODEL && !environment.CV_VERIFIER_MODEL)return original;
+  return new OllamaClient({baseUrl:original.baseUrl,timeoutMs:original.timeoutMs,fetchImpl:original.fetch,
+    model:environment.CV_VERIFIER_MODEL||original.model,strongModel:environment.CV_WRITER_MODEL||original.strongModel});
+}
 
 export function cvIdentityQa(profile) {
   const identity = profile.onboarding ?? {};
@@ -153,8 +164,9 @@ export async function verifyCvEntailment(document, profile, llm) {
     const batch=claims.slice(offset,offset+6);
     const schema = obj({checks:{type:'array', minItems:batch.length, maxItems:batch.length,
       items:obj({claim_id:{enum:batch.map(c=>c.claim_id)}, verdict:{enum:['SUPPORTED','UNSUPPORTED','UNCERTAIN']}, reason:{type:'string',maxLength:180}})}});
+    const verifierSystem=await readFile(new URL('../../prompts/cv_verify_v2.md',import.meta.url),'utf8');
     const checks = await llm.json({strong:false, numPredict:1800, schema,
-      system:await readFile(new URL('../../prompts/cv_verify_v2.md',import.meta.url),'utf8'),
+      system:verifierSystem,
       prompt:JSON.stringify({verification_date:new Date().toISOString().slice(0,10),verified_skill_null_provenance_means_no_employment_scope:true,evidence_bundles:batch.map(c=>({...c,
       presentation_scope:c.kind==='bullet' ? index.get(c.section_fact_id)?.provenance : c.kind==='skill' ? 'VERIFIED_SKILL_NO_EMPLOYMENT_OR_EXPERTISE_IMPLIED' : 'CANDIDATE_PROFILE_WITH_SOURCE_PROVENANCE',
       source_facts:c.source_fact_ids.map(id=>cleanFact(index.get(id)))}))}),
@@ -162,7 +174,7 @@ export async function verifyCvEntailment(document, profile, llm) {
       validate:result=>{const ids=result.checks.map(c=>c.claim_id); if (new Set(ids).size !== batch.length || batch.some(c=>!ids.includes(c.claim_id))) throw new StructuredOutputError('Entailment verifier omitted or duplicated claim IDs');}});
     if (!ajv.compile(schema)(checks) || new Set(checks.checks.map(c=>c.claim_id)).size!==batch.length || batch.some(c=>!checks.checks.some(check=>check.claim_id===c.claim_id)))
       throw new StructuredOutputError('Entailment verifier malformed, omitted or duplicated claim IDs');
-    allChecks.push(...checks.checks);batches.push({claim_ids:batch.map(c=>c.claim_id),stats:structuredClone(llm.lastStats??null)});
+    allChecks.push(...checks.checks);batches.push({claim_ids:batch.map(c=>c.claim_id),prompt_sha256:hash(verifierSystem),stats:structuredClone(llm.lastStats??null)});
   }
   return {pass:allChecks.every(c=>c.verdict==='SUPPORTED'), model:llm.model ?? 'injected-gateway', checks:allChecks,batches};
 }
@@ -200,6 +212,7 @@ async function renderPdf(html, target) {
 }
 
 export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2'}) {
+  llm=resolveCvLlm(llm);
   if (job.availability_status!=='OPEN') throw new Error('Vacancy not verified OPEN');
   const catalog=selectCatalog(profile,analysis,job);
   const language=/^(pl|polish)$/i.test(job.language ?? job.metadata?.language ?? '') ? 'Polish' : 'English';
@@ -221,10 +234,11 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     const schema=cvWriterSchema(profile);
     const validate=ajv.compile(schema);
     const writerStarted=performance.now();
+    const writerSystem=await readFile(new URL('../../prompts/cv_writer_v2.md',import.meta.url),'utf8');manifest.writer_prompt_sha256=hash(writerSystem);
     if(repository?.pool)await observe(repository,{event:'CV_WRITER_STARTED',entity_type:'job',entity_id:job.job_id,message:'Grounded CV writer running',model:manifest.model});
-    document=await llm.json({strong:true,numPredict:5000,schema,system:await readFile(new URL('../../prompts/cv_writer_v2.md',import.meta.url),'utf8'),
+    document=await llm.json({strong:true,numPredict:5000,schema,system:writerSystem,
       prompt:JSON.stringify({current_date:new Date().toISOString().slice(0,10),language,application_text_requested:applicationRequested,target:{title:job.title,description:job.description_text,role_family:analysis?.role_family},
-        priority_fact_ids:analysis?.cv_focus_fact_ids ?? [],facts:catalog.facts,allowed_skills:catalog.skills}),
+        priority_fact_ids:analysis?.cv_focus_fact_ids ?? [],facts:catalog.facts.map(writerFact),allowed_skills:catalog.skills}),
       repairInstruction:'Use only supplied source IDs and supported facts. Keep provenance, qualifiers and degree status. No seniority or skills inferred from target title. Fix unsupported claims.',
       validate:value=>{if (!validate(value)) throw new StructuredOutputError('CV writer schema invalid');
         if (!applicationRequested && value.application_text.length) throw new StructuredOutputError('Unrequested application text');

@@ -22,6 +22,10 @@ The named SSE `update` event refreshes visible records with a short debounce.
 A 30-second fallback refreshes when the document is visible. Browser observation
 refreshes metadata and an in-memory image every 2 seconds only while the observer
 is mounted and the document is visible. No screenshots are saved by the frontend.
+The observer reads actual application sessions and the authenticated
+`/api/browser-sessions` ATS compatibility ledger. Benchmark entries are labeled
+`ATS compatibility`, never turned into application records. A known active
+guarded session can also be observed by its exact UUID.
 
 The dashboard observes persisted HITL questions and onboarding blockers. Answers
 continue through the existing Telegram/candidate-profile workflow. There is no
