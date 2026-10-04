@@ -1,0 +1,25 @@
+version: market-query-v2
+purpose: Broad search plans and observer metadata. ATS catalogs fetch all published jobs without title prefiltering.
+role_families:
+  MECHANICAL_RD:
+    en: [mechanical engineer, junior mechanical engineer, graduate mechanical engineer, R&D engineer, research engineer, product development engineer, mechanical design engineer, CAD engineer, CAE engineer, simulation engineer, FEA engineer, CFD engineer, prototype engineer, test engineer, validation engineer, automotive engineer, aerospace engineer]
+    pl: [inżynier mechanik, konstruktor, młodszy konstruktor, inżynier R&D, inżynier badań i rozwoju, inżynier symulacji, inżynier testów, inżynier walidacji]
+  AUTOMATION_ROBOTICS:
+    en: [automation engineer, junior automation engineer, robotics engineer, controls engineer, PLC engineer, mechatronics engineer, embedded engineer, test automation engineer]
+    pl: [inżynier automatyki, automatyk, programista PLC, inżynier robotyki, mechatronik]
+  PYTHON_ML_DATA:
+    en: [Python developer, Python engineer, research engineer Python, machine learning engineer, junior ML engineer, data scientist, junior data scientist, ML researcher, AI engineer, scientific software engineer, technical software engineer, simulation software engineer]
+    pl: [programista Python, inżynier uczenia maszynowego, analityk danych, badacz AI]
+  CROSS_DISCIPLINARY:
+    en: [digital engineering, engineering software, Python mechanical engineering, Python simulation, robotics software, embedded mechanical, computer vision robotics, graphics engineer, performance engineer, C++ graphics, GPU performance, technical R&D]
+    pl: [inżynieria cyfrowa, oprogramowanie inżynierskie, symulacja Python, robotyka oprogramowanie]
+  IT_SYSTEMS_SUPPORT:
+    en: [IT specialist, IT support, technical support engineer, junior system administrator, Windows administrator, deployment engineer, IT automation, Python automation]
+    pl: [administrator IT, informatyk, wsparcie techniczne, administrator systemów, automatyzacja IT]
+geographies:
+  - {id: worldwide_remote, label: Worldwide remote, remote_eligibility: VERIFY_POLAND}
+  - {id: europe_remote, label: Europe EU EEA EMEA remote, remote_eligibility: VERIFY_POLAND}
+  - {id: poland_remote, label: Poland remote, country: PL}
+  - {id: wroclaw, label: Wrocław ±30 km, country: PL, radius_km: 30}
+  - {id: poland_hybrid, label: Poland rare-travel hybrid, country: PL, travel: USER_REVIEW}
+  - {id: europe, label: Germany Czechia Netherlands Austria France Belgium Denmark Sweden Finland Norway Switzerland UK Ireland Spain Italy Europe, relocation: REVIEW_UNLESS_APPROVED}

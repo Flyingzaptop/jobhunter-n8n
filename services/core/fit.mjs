@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
-export const PROMPT_VERSION = 'fit-analysis-v2.6-compact';
+export const PROMPT_VERSION = 'fit-analysis-v2.7-compact';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -127,6 +127,7 @@ function workFormatStatement(text) {
   // legal/location conditions remain available for requirement mapping.
   if (/\b(?:must|required|requirement|essential|willingness|authorization|authorized|permit|visa|clearance|citizen(?:ship)?|residen(?:t|cy))\b/i.test(text)) return false;
   return /^(?:the (?:employer|company)|we)\b.*\b(?:can|will|are able to)\s+(?:hire|employ)\b/i.test(text)
+    || /^note\s*:.*\b(?:remote|hybrid|on[- ]?site)\b/i.test(text)
     || /^work(?:ing)?\b.*\bremot(?:e|ely)\b/i.test(text)
     || /^(?:(?:this|the)\s+)?(?:role|position|job)\b.*\b(?:remote|hybrid|on[- ]?site)\b/i.test(text)
     || /^(?:remote|hybrid|on[- ]?site)(?:[\s:.,-]|$)/i.test(text)
@@ -141,35 +142,55 @@ function employerContextStatement(text) {
     || /^(?:full[- ]time|part[- ]time)[.!]?$/i.test(text);
 }
 
+function standaloneQualificationHeading(text) {
+  // Bounded section names only. Matching "qualifications" or "skills" inside
+  // employer prose would manufacture candidate obligations. Keep source text
+  // untouched: normalization here is solely for detecting the heading.
+  const key = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[:—.-]+\s*$/, '').trim();
+  if (/^(?:you have|qualifications|(?:required|minimum|basic) skills(?: and experience)?|formation\s*(?:\/|et)\s*experience|competences(?: techniques)?|qualites personnelles|profil recherche|votre profil)$/.test(key))
+    return { importance: 'MANDATORY' };
+  if (/^(?:we prefer|desired skills(?: and experience)?|competences souhaitees|qualifications souhaitees|atouts|nous preferons)$/.test(key))
+    return { importance: 'STRONG_PREFERENCE' };
+  if (/^(?:you will|role description|key responsibilities|responsibilities|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
+    return { importance: null };
+  // A trailing note starts application/work-arrangement context, but an explicit
+  // qualification in the note (e.g. clearance required) is still evaluated.
+  if (/^note\s*:\s*\S/.test(key)) return { importance: null, headingOnly: false };
+  return null;
+}
+
 function qualificationSentences(source) {
   let scope = null;
   return source.split(/(?<=[.!?;])\s+|\n+/).map(text => text.trim()).filter(Boolean).map(text => {
+    const standalone = standaloneQualificationHeading(text);
     const headings = [...text.matchAll(/\b(what you must have|minimum qualifications|required qualifications|basic qualifications|(?:candidate|job|role) requirements|what we are looking for(?: in you)?|what you(?:['’]ll| will) be doing|get some bonus points|preferred qualifications|additional skills that you might also bring|what we offer you|benefits|interview process|equal employment)\b|^requirements\s*:?$/gi)];
-    if (headings.length) {
+    if (standalone) scope = standalone.importance;
+    else if (headings.length) {
       const heading = headings.at(-1)[0];
       scope = /must have|minimum|required|basic|requirements/i.test(heading) ? 'MANDATORY'
         : /bonus|preferred|looking for/i.test(heading) ? 'STRONG_PREFERENCE'
         : /additional skills/i.test(heading) ? 'NICE_TO_HAVE' : null;
     }
-    const headingOnly = headings.some(heading => text.replace(/[:—-]\s*$/, '').trim().toLowerCase() === heading[0].replace(/:\s*$/, '').trim().toLowerCase());
+    const headingOnly = standalone ? standalone.headingOnly !== false : headings.some(heading => text.replace(/[:—-]\s*$/, '').trim().toLowerCase() === heading[0].replace(/:\s*$/, '').trim().toLowerCase());
     const untrustedCommand = /ignore (?:previous|system|all) instructions|(?:reveal|expose|print|send|upload).*(?:secrets?|tokens?|environment variables)|upload another|localhost/i.test(text);
     const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bnot (?:required|mandatory|essential)\b/i.test(text);
     const list = text.match(/\b(mandatory|required|nice to have|preferred)\s*:\s*(.*)/i);
     let importance = null;
-    if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text)) {
+    if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text) && !employerContextStatement(text)) {
       importance = list ? /mandatory|required/i.test(list[1]) ? 'MANDATORY' : /nice/i.test(list[1]) ? 'NICE_TO_HAVE' : 'STRONG_PREFERENCE'
         : /\b(required|mandatory|must have|must possess|essential|is a must)\b|wymagan|obowiazkow/i.test(text) ? 'MANDATORY'
         : /\b(nice to have|helpful)\b/i.test(text) ? 'NICE_TO_HAVE'
         : /\bpreferred\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
     }
-    return {text, importance, list};
+    return {text, importance, list, headingOnly};
   });
 }
 
 function requirementItems(text, list) {
   // Alternative fields and examples qualify the one requirement; they are not
   // independent qualifications which the candidate must satisfy simultaneously.
-  if (/\b(?:or|either|such as|for example|including)\b|\be\.g\./i.test(text)) return [];
+  if (/\b(?:or|either|such as|for example|including|ou|soit|notamment|par exemple)\b|\be\.g\./i.test(text)) return [];
   const content = (list?.[2] || text).replace(/[.!?;]+$/, '');
   return content.split(/,|\s+and\s+/i).map(item => item.trim()).filter(Boolean);
 }
@@ -195,7 +216,7 @@ export function sourceFragmentCatalog(job) {
     seen.set(text, entry.id); catalog.push(entry);
   };
   for (const {text: sentence, importance: hint, list, metadataOnly, contextOnly} of sources.flatMap(source =>
-    qualificationSentences(source.text).map(sentence => ({...sentence, metadataOnly: source.work_format_only, contextOnly: source.context_only})))) {
+    qualificationSentences(source.text).map(sentence => ({...sentence, metadataOnly: source.work_format_only, contextOnly: source.context_only || sentence.headingOnly})))) {
     const compound = hint && !list && /,|\s+and\s+/i.test(sentence);
     const items = list || compound ? requirementItems(sentence, list) : [];
     add(sentence, hint, items.length > 0, metadataOnly, contextOnly);

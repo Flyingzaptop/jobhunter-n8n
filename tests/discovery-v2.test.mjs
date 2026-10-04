@@ -1,0 +1,135 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import YAML from 'yaml';
+import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob } from '../services/core/discovery-v2.mjs';
+import { normalizeRaw } from '../services/core/normalization.mjs';
+
+test('robots wildcard, query patterns and specific agent groups cannot be bypassed', () => {
+  const text = 'User-agent: Googlebot\nAllow: /\nUser-agent: *\nDisallow: /api/\nDisallow: /*?*\nAllow: /feed?*\n';
+  assert.equal(robotsAllows(text, 'https://board.example/api/jobs'), false);
+  assert.equal(robotsAllows(text, 'https://board.example/search?q=python'), false);
+  assert.equal(robotsAllows(text, 'https://board.example/feed?page=2'), true);
+  assert.equal(robotsAllows('User-agent: *\nDisallow: /\nUser-agent: JobHunter\nDisallow: /secret\nAllow: /', 'https://board.example/secret'), false);
+  assert.equal(robotsAllows('User-agent: *\nDisallow: /', 'https://linkedin.com/jobs'), false);
+});
+test('catalog covers real source classes without presenting unverified boards as operational', async () => {
+  const sources = await loadMarketSources();
+  assert.ok(sources.filter(source => source.source_class === 'employer_ats').length >= 100);
+  for (const name of ['pracuj', 'olx', 'justjoin', 'nofluff', 'rocketjobs', 'linkedin']) assert.ok(sources.some(source => source.name === name));
+  assert.equal(sources.some(source => source.profile === 'mock'), false);
+  assert.equal(sources.find(source => source.name === 'linkedin').permitted_access, false);
+  assert.equal(sources.find(source => source.name === 'nofluff').permitted_access, false);
+});
+test('remote board metadata preserves restrictions and unknown employer freshness', () => {
+  const source = { name: 'remotive', adapter: 'remotive', url: 'https://remotive.com/api/remote-jobs' };
+  const raws = parseMarketPayload(source, { jobs: [{ id: 2, title: 'Python developer', company_name: 'Employer',
+    url: 'https://remotive.com/remote-jobs/2', candidate_required_location: 'United States', description: 'Python for scientific simulation', publication_date: '2026-10-03' }] });
+  const job = normalizeRaw(raws[0]);
+  assert.equal(job.location, 'United States'); assert.equal(job.work_mode, 'REMOTE');
+  assert.equal(job.availability_status, 'UNKNOWN'); assert.equal(job.country, null);
+  assert.ok(queryEvidence(job).includes('PYTHON_ML_DATA'));
+});
+test('HTML JobPosting without URL uses fetched vacancy URL rather than sitemap URL', () => {
+  const source = { name: 'justjoin', adapter: 'html', url: 'https://justjoin.it/sitemaps/active-jobs.xml' };
+  const html = '<script type="application/ld+json">{"@type":"JobPosting","title":"Engineer","hiringOrganization":{"name":"Employer"}}</script>';
+  const [raw] = parseMarketPayload(source, html, 'https://justjoin.it/job-offer/employer-engineer');
+  assert.equal(normalizeRaw(raw).canonical_url, 'https://justjoin.it/job-offer/employer-engineer');
+});
+test('Ashby unlisted jobs excluded and SmartRecruiters description absence explicit', () => {
+  const ashby = parseMarketPayload({ name: 'a', adapter: 'ashby', board: 'a' }, { jobs: [
+    { id: '1', title: 'Listed', jobUrl: 'https://jobs.ashbyhq.com/a/1', isListed: true },
+    { id: '2', title: 'Unlisted', jobUrl: 'https://jobs.ashbyhq.com/a/2', isListed: false },
+  ] });
+  assert.equal(ashby.length, 1);
+  const [raw] = parseMarketPayload({ name: 's', adapter: 'smartrecruiters', board: 'employer', company: 'Employer' }, {
+    content: [{ id: '3', name: 'Validation engineer', location: { city: 'Wrocław', country: 'pl' } }],
+  });
+  const job = normalizeRaw(raw); assert.equal(job.country, 'pl'); assert.equal(job.availability_status, 'OPEN');
+  assert.equal(job.description_text, ''); assert.equal(raw.raw_payload.description_status, 'DETAIL_NOT_FETCHED');
+});
+test('bounded discovery persists broad vacancies, preserves cross-source mappings, reports blocked access truthfully', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'jobhunter-market-'));
+  const path = join(dir, 'registry.yaml');
+  const base = { platform: 'Greenhouse', adapter: 'greenhouse', company: 'Employer', source_class: 'employer_ats', profile: 'real',
+    permitted_access: true, allowed_hosts: ['boards-api.greenhouse.io'], rate_limit_ms: 250 };
+  await writeFile(path, YAML.stringify({ sources: [{ ...base, name: 'one', board: 'one' }, { ...base, name: 'two', board: 'two' },
+    { name: 'linkedin', platform: 'LinkedIn Jobs', adapter: 'policy_probe', profile: 'real', permitted_access: false,
+      url: 'https://www.linkedin.com/robots.txt', allowed_hosts: ['www.linkedin.com'], discovery_capability: 'USER_SESSION_REQUIRED', required: true }] }));
+  const stored = new Map(); const mappings = []; const events = []; let requests = 0;
+  const repository = { async listCanonicalJobs() { return []; }, async insertRaw(raw) { return { ...raw, raw_id: 'raw' }; },
+    async upsertCanonicalJob(job, { source }) { const is_new = !stored.has(job.canonical_url); stored.set(job.canonical_url, job); mappings.push(source.source_name); return { job_id: job.job_id, is_new }; } };
+  try {
+    const report = await runMarketDiscovery({ repository, registryPath: path, observer: event => { events.push(event); }, fetchOptions: {
+      lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {},
+      fetchImpl: async (url, options) => { assert.equal(options.method, 'GET'); requests++;
+        if (url.hostname === 'www.linkedin.com') return new Response('User-agent: *\nDisallow: /');
+        return new Response(JSON.stringify({ jobs: [{ id: '42', title: 'Unusual position without matching title keywords',
+          absolute_url: 'https://job-boards.greenhouse.io/employer/jobs/42', content: 'Broad role description', location: { name: 'Europe' } }] })); },
+    } });
+    assert.equal(report.raw_vacancies, 2); assert.equal(report.unique_vacancies, 1); assert.equal(report.new_vacancies, 1);
+    assert.deepEqual(mappings, ['one', 'two']); assert.equal(report.relevant_vacancies, null); assert.equal(report.status, 'PARTIAL');
+    assert.equal(requests, 3); assert.equal(report.sources[2].status, 'USER_SESSION_REQUIRED');
+    assert.equal(report.real_employer_submissions, 0); assert.ok(events.some(event => event.event === 'source_progress'));
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test('downstream freshness verification uses official posting GET and treats expired/404 as closed', async () => {
+  const updates = [];
+  const repository = { pool: { async query(sql, args) {
+    if (sql.startsWith('SELECT')) return { rows: [{ source_name: 'greenhouse-canonical', source_item_id: '123' }] };
+    updates.push({ sql, args }); return { rows: [] };
+  } } };
+  const fetchOptions = { lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {},
+    fetchImpl: async (url, options) => {
+      assert.equal(options.method, 'GET'); assert.equal(url.hostname, 'boards-api.greenhouse.io');
+      assert.ok(url.pathname.endsWith('/jobs/123'));
+      return new Response(JSON.stringify({ id: 123, application_deadline: '2000-01-01T00:00:00Z' }));
+    } };
+  const closed = await reverifyMarketJob({ job: { job_id: 'job' }, repository, fetchOptions });
+  assert.equal(closed.status, 'CLOSED'); assert.ok(updates.length);
+  const missing = await reverifyMarketJob({ job: { job_id: 'job' }, repository,
+    fetchOptions: { ...fetchOptions, fetchImpl: async () => new Response('', { status: 404 }) } });
+  assert.equal(missing.status, 'CLOSED');
+  const unknown = await reverifyMarketJob({ job: { job_id: 'job' }, repository: { pool: { async query() { return { rows: [{ source_name: 'remoteok' }] }; } } },
+    fetchOptions: { ...fetchOptions, fetchImpl: async () => { throw new Error('Aggregator must not be fetched as official employer proof'); } } });
+  assert.equal(unknown.status, 'UNKNOWN');
+});
+test('SmartRecruiters detail is hydrated from official sections before fit/CV', async () => {
+  let hydrated = null;
+  const repository = { pool: { async query(sql) { return { rows: sql.startsWith('SELECT') ? [{ source_name: 'smartrecruiters-BoschGroup', source_item_id: '42' }] : [] }; } },
+    async insertRaw(raw) { return raw; }, async upsertCanonicalJob(job) { hydrated = job; return { job_id: job.job_id }; } };
+  const verification = await reverifyMarketJob({ job: { job_id: 'existing-job', canonical_url: 'https://jobs.smartrecruiters.com/BoschGroup/42' }, repository,
+    fetchOptions: { lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {},
+      fetchImpl: async (url, options) => { assert.equal(options.method, 'GET'); assert.equal(url.hostname, 'api.smartrecruiters.com');
+        return new Response(JSON.stringify({ id: '42', name: 'Simulation Engineer', company: { name: 'Bosch' },
+          location: { city: 'Wrocław', country: 'pl' }, jobAd: { sections: { qualifications: { title: 'Qualifications', text: '<p>Python and CFD experience required.</p>' } } } })); } } });
+  assert.equal(verification.status, 'OPEN'); assert.equal(verification.job.job_id, 'existing-job');
+  assert.match(hydrated.description_text, /Qualifications\nPython and CFD experience required/);
+  assert.equal(hydrated.company, 'Bosch'); assert.equal(hydrated.country, 'pl');
+});
+test('official access errors, malformed detail and wrong IDs cannot claim vacancy OPEN', async () => {
+  let writes = 0;
+  const repository = { pool: { async query(sql) {
+    if (sql.startsWith('SELECT')) return { rows: [{ source_name: 'greenhouse-canonical', source_item_id: '42' }] };
+    writes++; return { rows: [] };
+  } } };
+  const fetchOptions = { lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {} };
+  for (const response of [new Response('', { status: 403 }), new Response(JSON.stringify({ error: 'temporary error' })), new Response(JSON.stringify({ id: '99' }))]) {
+    const result = await reverifyMarketJob({ job: { job_id: 'existing-job' }, repository,
+      fetchOptions: { ...fetchOptions, fetchImpl: async () => response } });
+    assert.equal(result.status, 'UNKNOWN');
+  }
+  assert.equal(writes, 0);
+});
+test('inactive official SmartRecruiters detail is CLOSED despite a reachable URL', async () => {
+  const repository = { pool: { async query(sql) { return { rows: sql.startsWith('SELECT') ? [{ source_name: 'smartrecruiters-BoschGroup', source_item_id: '42' }] : [] }; } } };
+  const result = await reverifyMarketJob({ job: { job_id: 'existing-job' }, repository,
+    fetchOptions: { lookupImpl: async () => [{ address: '8.8.8.8', family: 4 }], sleepImpl: async () => {},
+      fetchImpl: async () => new Response(JSON.stringify({ id: '42', active: false })) } });
+  assert.equal(result.status, 'CLOSED');
+  const [raw] = parseMarketPayload({ name: 'bosch', adapter: 'smartrecruiters', company: 'Bosch', board: 'BoschGroup' },
+    { content: [{ id: '42', name: 'Inactive role', active: false }] });
+  assert.equal(normalizeRaw(raw).availability_status, 'CLOSED');
+});

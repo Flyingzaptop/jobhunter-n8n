@@ -1,0 +1,2836 @@
+version: market-v2
+schedule_minutes: 60
+defaults:
+  timeout_ms: 12000
+  rate_limit_ms: 1500
+  max_response_bytes: 15000000
+  max_pages: 1
+sources:
+  - name: pracuj
+    platform: Pracuj.pl
+    adapter: policy_probe
+    url: https://www.pracuj.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.pracuj.pl
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.pracuj.pl/praca
+    required: true
+  - name: olx
+    platform: OLX Praca
+    adapter: policy_probe
+    url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.olx.pl
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.olx.pl/praca/
+    required: true
+  - name: justjoin
+    platform: Just Join IT
+    adapter: sitemap_html
+    url: https://justjoin.it/sitemaps/active-jobs.xml
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_SITEMAP_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - justjoin.it
+      - public.justjoin.com
+    robots_url: https://justjoin.it/robots.txt
+    documentation: https://justjoin.it/robots.txt
+    max_pages: 32
+    min_scan_interval_ms: 3600000
+    required: true
+  - name: rocketjobs
+    platform: RocketJobs.pl
+    adapter: sitemap_html
+    url: https://rocketjobs.pl/sitemaps/active-jobs.xml
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_SITEMAP_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - rocketjobs.pl
+      - public.justjoin.com
+    robots_url: https://rocketjobs.pl/robots.txt
+    documentation: https://rocketjobs.pl/robots.txt
+    max_pages: 32
+    min_scan_interval_ms: 3600000
+    required: true
+  - name: nofluff
+    platform: No Fluff Jobs
+    adapter: policy_probe
+    url: https://nofluffjobs.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - nofluffjobs.com
+    reason: Live robots disallows /api/ and all country /posting/ paths. Manual
+      discovery or operator-authorized feed required.
+    search_url: https://nofluffjobs.com/pl
+    required: true
+  - name: linkedin
+    platform: LinkedIn Jobs
+    adapter: policy_probe
+    url: https://www.linkedin.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: USER_SESSION_REQUIRED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.linkedin.com
+    reason: LinkedIn robots explicitly prohibits unapproved automated access. Manual
+      user discovery / approved integration only; never automate login or copy
+      cookies.
+    authentication_required: true
+    search_url: https://www.linkedin.com/jobs/
+    required: true
+  - name: indeed
+    platform: Indeed
+    adapter: policy_probe
+    url: https://www.indeed.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.indeed.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.indeed.com/jobs
+  - name: wellfound
+    platform: Wellfound
+    adapter: policy_probe
+    url: https://wellfound.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - wellfound.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://wellfound.com/jobs
+    authentication_required: true
+  - name: welcome-jungle
+    platform: Welcome to the Jungle
+    adapter: policy_probe
+    url: https://www.welcometothejungle.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.welcometothejungle.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.welcometothejungle.com/en/jobs
+  - name: remoteok
+    platform: Remote OK
+    adapter: remoteok
+    url: https://remoteok.com/api
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - remoteok.com
+    documentation: https://remoteok.com/api
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+  - name: wwr
+    platform: We Work Remotely
+    adapter: wwr_rss
+    url: https://weworkremotely.com/remote-jobs.rss
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - weworkremotely.com
+    documentation: https://weworkremotely.com/remote-job-rss-feed
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+  - name: remotive
+    platform: Remotive
+    adapter: remotive
+    url: https://remotive.com/api/remote-jobs
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - remotive.com
+    documentation: https://github.com/remotive-com/remote-jobs-api
+    min_scan_interval_ms: 21600000
+    rate_limit_ms: 31000
+    attribution_required: true
+  - name: himalayas
+    platform: Himalayas
+    adapter: himalayas
+    url: https://himalayas.app/jobs/api?limit=20
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - himalayas.app
+    documentation: https://himalayas.app/api
+    max_pages: 12
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+  - name: workingnomads
+    platform: Working Nomads
+    adapter: policy_probe
+    url: https://www.workingnomads.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.workingnomads.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.workingnomads.com/jobs
+  - name: jobgether
+    platform: Jobgether
+    adapter: jobgether
+    url: https://jobgether.com/astroapi/ai/jobs.json
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts: &a1
+      - jobgether.com
+    documentation: https://jobgether.com/astroapi/ai/jobs/docs
+    robots_url: https://jobgether.com/robots.txt
+    max_pages: 6
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+  - name: jobgether-query-matrix
+    platform: Jobgether
+    adapter: jobgether
+    url: https://jobgether.com/astroapi/ai/jobs.json
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts: *a1
+    documentation: https://jobgether.com/astroapi/ai/jobs/docs
+    robots_url: https://jobgether.com/robots.txt
+    max_pages: 2
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+    query_plans:
+      - query: All current listings
+        geography: Worldwide
+        parameters:
+          limit: 25
+      - query: mechanical engineer
+        geography: Europe / Poland / worldwide
+        parameters:
+          keyword: mechanical
+          locations: europe,anywhere
+          includeHybrid: true
+          limit: 25
+      - query: automation robotics
+        geography: Worldwide
+        parameters:
+          keyword: robotics
+          includeHybrid: true
+          limit: 25
+      - query: Python ML data
+        geography: Europe / Poland / worldwide
+        parameters:
+          keyword: Python
+          locations: europe,anywhere
+          limit: 25
+      - query: scientific research engineering
+        geography: Worldwide
+        parameters:
+          keyword: research engineer
+          includeHybrid: true
+          limit: 25
+      - query: IT systems support
+        geography: Europe / Poland / worldwide
+        parameters:
+          keyword: technical support
+          locations: europe,anywhere
+          limit: 25
+  - name: yc-jobs
+    platform: Y Combinator Jobs
+    adapter: policy_probe
+    url: https://www.ycombinator.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.ycombinator.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.ycombinator.com/jobs
+  - name: eures
+    platform: EURES
+    adapter: policy_probe
+    url: https://eures.europa.eu/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - eures.europa.eu
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://eures.europa.eu/jobseekers_en
+  - name: eurotechjobs
+    platform: EuroTechJobs
+    adapter: policy_probe
+    url: https://www.eurotechjobs.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.eurotechjobs.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.eurotechjobs.com/jobs
+  - name: eu-startups
+    platform: EU Startups Jobs
+    adapter: policy_probe
+    url: https://www.eu-startups.com/robots.txt
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - www.eu-startups.com
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://www.eu-startups.com/jobs/
+  - name: arbeitnow
+    platform: Arbeitnow
+    adapter: arbeitnow
+    url: https://www.arbeitnow.com/api/job-board-api
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.arbeitnow.com
+    documentation: https://www.arbeitnow.com/blog/job-board-api
+    max_pages: 3
+    min_scan_interval_ms: 21600000
+    attribution_required: true
+  - name: jobicy
+    platform: Jobicy
+    adapter: jobicy
+    url: https://jobicy.com/api/v2/remote-jobs?count=100
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - jobicy.com
+    documentation: https://github.com/Jobicy/remote-jobs-api
+    max_pages: 3
+    min_scan_interval_ms: 21600000
+    rate_limit_ms: 10000
+    attribution_required: true
+  - name: bulldogjob
+    platform: Bulldogjob
+    adapter: policy_probe
+    url: https://bulldogjob.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - bulldogjob.pl
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://bulldogjob.pl/companies/jobs
+  - name: theprotocol
+    platform: theprotocol.it
+    adapter: policy_probe
+    url: https://theprotocol.it/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: false
+    allowed_hosts:
+      - theprotocol.it
+    reason: No documented permitted automatic vacancy feed configured. Only
+      robots/access policy is inspected; no protected search request.
+    search_url: https://theprotocol.it/filtry
+  - name: greenhouse-canonical
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/canonical
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: canonical
+    company: Canonical
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-gitlab
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/gitlab
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: gitlab
+    company: GitLab
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-datadog
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/datadog
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: datadog
+    company: Datadog
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-cloudflare
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/cloudflare
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: cloudflare
+    company: Cloudflare
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-spacex
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/spacex
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: spacex
+    company: SpaceX
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-andurilindustries
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/andurilindustries
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: andurilindustries
+    company: Anduril Industries
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-zipline
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/zipline
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: zipline
+    company: Zipline
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-figureai
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/figureai
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: figureai
+    company: Figure AI
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-agilityrobotics
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/agilityrobotics
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: agilityrobotics
+    company: Agility Robotics
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-skydio
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/skydio
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: skydio
+    company: Skydio
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-shieldai
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/shieldai
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: shieldai
+    company: Shield AI
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-formlabs
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/formlabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: formlabs
+    company: Formlabs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-relativity
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/relativity
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: relativity
+    company: Relativity Space
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-rocketlab
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/rocketlab
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: rocketlab
+    company: Rocket Lab
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-planetlabs
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/planetlabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: planetlabs
+    company: Planet Labs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-astranis
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/astranis
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: astranis
+    company: Astranis
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-lumafield
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/lumafield
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: lumafield
+    company: Lumafield
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-verkada
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/verkada
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: verkada
+    company: Verkada
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-aurorainnovation
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/aurorainnovation
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: aurorainnovation
+    company: Aurora Innovation
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-cruise
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/cruise
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: cruise
+    company: Cruise
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-rivian
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/rivian
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: rivian
+    company: Rivian
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-neuralink
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/neuralink
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: neuralink
+    company: Neuralink
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-nuro
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/nuro
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: nuro
+    company: Nuro
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-samsara
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/samsara
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: samsara
+    company: Samsara
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-appliedintuition
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/appliedintuition
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: appliedintuition
+    company: Applied Intuition
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-waymo
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/waymo
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: waymo
+    company: Waymo
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-zoox
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/zoox
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: zoox
+    company: Zoox
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-robinhood
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/robinhood
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: robinhood
+    company: Robinhood
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-stripe
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/stripe
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: stripe
+    company: Stripe
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-coinbase
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/coinbase
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: coinbase
+    company: Coinbase
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-discord
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/discord
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: discord
+    company: Discord
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-reddit
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/reddit
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: reddit
+    company: Reddit
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-dropbox
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/dropbox
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: dropbox
+    company: Dropbox
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-duolingo
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/duolingo
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: duolingo
+    company: Duolingo
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-elastic
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/elastic
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: elastic
+    company: Elastic
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-grafanalabs
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/grafanalabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: grafanalabs
+    company: Grafana Labs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-hashicorp
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/hashicorp
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: hashicorp
+    company: HashiCorp
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-confluent
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/confluent
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: confluent
+    company: Confluent
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-cockroachlabs
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/cockroachlabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: cockroachlabs
+    company: Cockroach Labs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-databricks
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/databricks
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: databricks
+    company: Databricks
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-snowflake
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/snowflake
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: snowflake
+    company: Snowflake
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-dbtlabsinc
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/dbtlabsinc
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: dbtlabsinc
+    company: dbt Labs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-huggingface
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/huggingface
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: huggingface
+    company: Hugging Face
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-anthropic
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/anthropic
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: anthropic
+    company: Anthropic
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-scaleai
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/scaleai
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: scaleai
+    company: Scale AI
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-runwayml
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/runwayml
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: runwayml
+    company: Runway
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-elevenlabs
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/elevenlabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: elevenlabs
+    company: ElevenLabs
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-deepmind
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/deepmind
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: deepmind
+    company: Google DeepMind
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-unity3d
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/unity3d
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: unity3d
+    company: Unity
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-epicgames
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/epicgames
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: epicgames
+    company: Epic Games
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-cloudimperiumgames
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/cloudimperiumgames
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: cloudimperiumgames
+    company: Cloud Imperium Games
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-cdprojektred
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/cdprojektred
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: cdprojektred
+    company: CD PROJEKT RED
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-sentinelone
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/sentinelone
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: sentinelone
+    company: SentinelOne
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-affirm
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/affirm
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: affirm
+    company: Affirm
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-remote
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/remote
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: remote
+    company: Remote
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: greenhouse-automatticcareers
+    platform: Greenhouse
+    adapter: greenhouse
+    url: https://job-boards.greenhouse.io/automatticcareers
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - boards-api.greenhouse.io
+    board: automatticcareers
+    company: Automattic
+    documentation: https://docs.greenhouse.io/job-board.html
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-rivr
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/rivr
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: rivr
+    company: RIVR
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-spotify
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/spotify
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: spotify
+    company: Spotify
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-netflix
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/netflix
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: netflix
+    company: Netflix
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-palantir
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/palantir
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: palantir
+    company: Palantir
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-boston-dynamics
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/boston-dynamics
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: boston-dynamics
+    company: Boston Dynamics
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-intrinsic
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/intrinsic
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: intrinsic
+    company: Intrinsic
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-1x
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/1x
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: 1x
+    company: 1X Technologies
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-anybotics
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/anybotics
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: anybotics
+    company: ANYbotics
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-auterion
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/auterion
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: auterion
+    company: Auterion
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-quantinuum
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/quantinuum
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: quantinuum
+    company: Quantinuum
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-rigetti
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/rigetti
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: rigetti
+    company: Rigetti
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-ionq
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/ionq
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: ionq
+    company: IonQ
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-cohere
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/cohere
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: cohere
+    company: Cohere
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-mistral
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/mistral
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: mistral
+    company: Mistral AI
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-perplexity
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/perplexity
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: perplexity
+    company: Perplexity
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-wandb
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/wandb
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: wandb
+    company: Weights & Biases
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-postman
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/postman
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: postman
+    company: Postman
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-linear
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/linear
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: linear
+    company: Linear
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-volta
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/volta
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: volta
+    company: Volta
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-welocalize
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/welocalize
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: welocalize
+    company: Welocalize
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-plaid
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/plaid
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: plaid
+    company: Plaid
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-atlassian
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/atlassian
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: atlassian
+    company: Atlassian
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-canva
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/canva
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: canva
+    company: Canva
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-ledger
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/ledger
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: ledger
+    company: Ledger
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-complexio
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/complexio
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: complexio
+    company: Complexio
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-improbable
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/improbable
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: improbable
+    company: Improbable
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-roblox
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/roblox
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: roblox
+    company: Roblox
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: lever-hudl
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/hudl
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: GUARDED_DRY_RUN
+    permitted_access: true
+    allowed_hosts:
+      - api.lever.co
+    board: hudl
+    company: Hudl
+    documentation: https://github.com/lever/postings-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-ashby
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/ashby
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: ashby
+    company: Ashby
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-openai
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/openai
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: openai
+    company: OpenAI
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-notion
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/notion
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: notion
+    company: Notion
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-ramp
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/ramp
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: ramp
+    company: Ramp
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-deel
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/deel
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: deel
+    company: Deel
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-linear
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/linear
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: linear
+    company: Linear
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-vercel
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/vercel
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: vercel
+    company: Vercel
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-replit
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/replit
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: replit
+    company: Replit
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-cursor
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/cursor
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: cursor
+    company: Cursor
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-quora
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/quora
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: quora
+    company: Quora
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-elevenlabs
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/elevenlabs
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: elevenlabs
+    company: ElevenLabs
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-cohere
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/cohere
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: cohere
+    company: Cohere
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-perplexity
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/perplexity
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: perplexity
+    company: Perplexity
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-mistral
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/mistral
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: mistral
+    company: Mistral AI
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-supabase
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/supabase
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: supabase
+    company: Supabase
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-neon
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/neon
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: neon
+    company: Neon
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-railway
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/railway
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: railway
+    company: Railway
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-render
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/render
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: render
+    company: Render
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-modal
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/modal
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: modal
+    company: Modal
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-together-ai
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/together-ai
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: together-ai
+    company: Together AI
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-baseten
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/baseten
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: baseten
+    company: Baseten
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-vllm
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/vllm
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: vllm
+    company: vLLM
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-poolside
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/poolside
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: poolside
+    company: Poolside
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-harvey
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/harvey
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: harvey
+    company: Harvey
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-decagon
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/decagon
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: decagon
+    company: Decagon
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-distyl
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/distyl
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: distyl
+    company: Distyl AI
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-cognition
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/cognition
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: cognition
+    company: Cognition
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-pylon
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/pylon
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: pylon
+    company: Pylon
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-dust
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/dust
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: dust
+    company: Dust
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-lovable
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/lovable
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: lovable
+    company: Lovable
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: ashby-remote
+    platform: Ashby
+    adapter: ashby
+    url: https://jobs.ashbyhq.com/remote
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.ashbyhq.com
+    board: remote
+    company: Remote
+    documentation: https://developers.ashbyhq.com/docs/public-job-posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-BoschGroup
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/BoschGroup
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: BoschGroup
+    company: Bosch Group
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-Siemens
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/Siemens
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: Siemens
+    company: Siemens
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-Ubisoft2
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/Ubisoft2
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: Ubisoft2
+    company: Ubisoft
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-CDPROJEKTRED
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/CDPROJEKTRED
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: CDPROJEKTRED
+    company: CD PROJEKT RED
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-ALTEN
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/ALTEN
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: ALTEN
+    company: ALTEN
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-SEGULA
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/SEGULA
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: SEGULA
+    company: SEGULA Technologies
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-ABBGROUP
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/ABBGROUP
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: ABBGROUP
+    company: ABB Group
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: smartrecruiters-SmartRecruiters
+    platform: SmartRecruiters
+    adapter: smartrecruiters
+    url: https://careers.smartrecruiters.com/SmartRecruiters
+    profile: real
+    enabled: true
+    source_class: employer_ats
+    discovery_capability: PUBLIC_ATS_FEED
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - api.smartrecruiters.com
+    board: SmartRecruiters
+    company: SmartRecruiters
+    documentation: https://developers.smartrecruiters.com/docs/posting-api
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    catalog_state: SEED_UNVERIFIED
+    max_response_bytes: 15000000
+  - name: workday
+    platform: Workday
+    adapter: manual
+    url: https://www.workday.com/
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: No unauthenticated documented global jobs API; employer-scoped public
+      forms require site-specific policy review.
+  - name: teamtailor
+    platform: Teamtailor
+    adapter: manual
+    url: https://docs.teamtailor.com/
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: API requires employer API key.
+  - name: successfactors
+    platform: SuccessFactors
+    adapter: manual
+    url: https://help.sap.com/docs/SAP_SUCCESSFACTORS_PLATFORM
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: Employer-specific API access and policy review required.
+  - name: workable
+    platform: Workable
+    adapter: manual
+    url: https://workable.readme.io/reference
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: Account API authentication required; no arbitrary account API probing.
+  - name: recruitee
+    platform: Recruitee
+    adapter: manual
+    url: https://docs.recruitee.com/reference/authentication-1
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: Official careers API documentation now requires token (enforcement
+      deadline February 2027); use operator-authorized feed only.
+  - name: personio
+    platform: Personio
+    adapter: manual
+    url: https://support.personio.de/hc/en-us/articles/360000025725
+    source_class: ats_capability
+    profile: real
+    enabled: false
+    permitted_access: false
+    discovery_capability: AUTH_REQUIRED
+    authentication_required: true
+    application_capability: MANUAL_TAKEOVER
+    reason: Employer-specific opt-in XML feed; no approved employer tenant supplied.
