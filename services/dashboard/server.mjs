@@ -93,7 +93,7 @@ export function createDashboard({
           "SELECT paused FROM runtime_control WHERE id=true",
         ),
         q.load("search_policy"),
-        q.load("candidate_profile"),
+        profileProvider(),
         health(),
         q.pipeline(repository),
         repository.pool.query(
@@ -212,7 +212,7 @@ export function createDashboard({
     if (p === "/api/overview" || p === "/api/system")
       return send({
         ...(await overview()),
-        ...(p === "/api/system" ? { onboarding: await q.onboarding() } : {}),
+        ...(p === "/api/system" ? { onboarding: await q.onboarding(await profileProvider()) } : {}),
       });
     if (p === "/api/pipeline") return send(await q.pipeline(repository));
     if (p === "/api/jobs") {
@@ -330,7 +330,7 @@ export function createDashboard({
       const questions=(await repository.pool.query(`SELECT q.*,j.company,j.title,a.status AS application_status,a.candidate_profile_id,a.last_state FROM application_questions q JOIN applications a USING(application_id) JOIN jobs j USING(job_id) WHERE q.answered_at IS NULL ORDER BY q.created_at`)).rows.map(row=>{const {last_state,candidate_profile_id,...visible}=row;const denied=questionEligibility(row,{status:row.application_status,candidate_profile_id,last_state},profile.profile_id);return {...visible,dashboard_answer_allowed:!denied,answer_blocked_reason:denied};});
       return send({
         questions,
-        onboarding: await q.onboarding(),
+        onboarding: await q.onboarding(profile),
         manual: (
           await repository.pool.query(
             "SELECT a.*,j.company,j.title FROM applications a JOIN jobs j USING(job_id) WHERE a.status='MANUAL_TAKEOVER'",

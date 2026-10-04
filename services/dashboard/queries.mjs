@@ -15,7 +15,7 @@ export function pageParams(params) {
 export async function pipeline(repo) {
   const runs = (
     await repo.pool.query(
-      "SELECT DISTINCT ON(stage) * FROM operation_runs WHERE mode=$1 ORDER BY stage,started_at DESC",
+      "SELECT DISTINCT ON(stage) * FROM operation_runs WHERE mode=$1 ORDER BY stage,CASE WHEN status='RUNNING' AND heartbeat_at>now()-interval '15 minutes' THEN 0 ELSE 1 END,started_at DESC",
       ["REAL"],
     )
   ).rows;
@@ -44,8 +44,8 @@ export async function pipeline(repo) {
     };
   });
 }
-export async function onboarding() {
-  const profile = await load("candidate_profile");
+export async function onboarding(providedProfile) {
+  const profile = providedProfile??await load("candidate_profile");
   const missing = [];
   function walk(object, prefix = "") {
     for (const [key, value] of Object.entries(object ?? {})) {
