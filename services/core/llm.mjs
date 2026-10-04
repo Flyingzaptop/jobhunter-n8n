@@ -3,7 +3,7 @@ import Ajv from 'ajv';
 const ajv = new Ajv({allErrors: true, strict: true});
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 const CLOUD_IDENTITY_KEYS = new Set(['name','legal_name','full_name','first_name','last_name','email','phone','phone_number']);
-export const LLM_GATEWAY_VERSION = 'llm-json-v4-openrouter-free';
+export const LLM_GATEWAY_VERSION = 'llm-json-v5-lmstudio-local';
 const OPENROUTER_ENDPOINT = 'https://openrouter.ai/api/v1';
 const OPENROUTER_DEFAULT_MODEL = 'google/gemma-4-26b-a4b-it:free';
 const freeModel = name => typeof name === 'string' && name.length <= 150
@@ -66,21 +66,31 @@ export class OllamaClient {
   #relayRemoteModels = {};
   #openRouterVerified = false;
   #openRouterModels = {};
+  #lmStudioVerified = false;
   constructor({provider = process.env.OLLAMA_PROVIDER || 'local',
-    baseUrl = (provider === 'openrouter' ? process.env.OPENROUTER_BASE_URL : process.env.OLLAMA_BASE_URL)
-      || (provider === 'openrouter' ? OPENROUTER_ENDPOINT : provider === 'cloud' ? 'https://ollama.com' : 'http://127.0.0.1:11434'),
+    baseUrl = (provider === 'lmstudio' ? process.env.LM_STUDIO_BASE_URL || process.env.LMSTUDIO_BASE_URL : provider === 'openrouter' ? process.env.OPENROUTER_BASE_URL : process.env.OLLAMA_BASE_URL)
+      || (provider === 'lmstudio' ? 'http://127.0.0.1:1234/v1' : provider === 'openrouter' ? OPENROUTER_ENDPOINT : provider === 'cloud' ? 'https://ollama.com' : 'http://127.0.0.1:11434'),
     apiKey = provider === 'openrouter' ? process.env.OPENROUTER_API_KEY : process.env.OLLAMA_API_KEY,
     model = process.env.LLM_FAST_MODEL || (provider === 'openrouter' ? OPENROUTER_DEFAULT_MODEL : provider === 'cloud' ? 'gemma4:31b' : provider === 'cloud-relay' ? 'gemma4:cloud' : 'qwen3.5:4b'),
     strongModel = process.env.LLM_STRONG_MODEL || model, timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 240000),
+    contextLimit = Number(process.env.LM_STUDIO_CONTEXT_LENGTH || process.env.LMSTUDIO_CONTEXT_LIMIT || 32768),
+    structuredFormat = process.env.LMSTUDIO_STRUCTURED_FORMAT || 'json_schema',
+    tokenCounter,
     fetchImpl = globalThis.fetch} = {}) {
-    if (!['local','cloud','cloud-relay','openrouter'].includes(provider)) throw new Error('Invalid Ollama provider');
+    if (!['local','cloud','cloud-relay','openrouter','lmstudio'].includes(provider)) throw new Error('Invalid Ollama provider');
     let url;
     try { url = new URL(baseUrl); } catch { throw new Error('Invalid Ollama endpoint'); }
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
       throw new Error('Invalid Ollama endpoint');
     if (provider !== 'local' && ![model,strongModel].every(name => typeof name === 'string' && name.length <= 150
       && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(name))) throw new Error('Invalid Ollama cloud model name');
-    if (provider === 'openrouter') {
+    if (provider === 'lmstudio') {
+      if (!LOOPBACK_HOSTS.includes(url.hostname) || !['/v1','/v1/'].includes(url.pathname) || url.search || url.hash)
+        throw new Error('LM Studio requires a loopback /v1 endpoint');
+      if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 65536)
+        throw new Error('Invalid LM Studio loaded context limit');
+      if (!['json_schema','strict_json'].includes(structuredFormat)) throw new Error('Invalid LM Studio structured format');
+    } else if (provider === 'openrouter') {
       if (url.href !== OPENROUTER_ENDPOINT && url.href !== `${OPENROUTER_ENDPOINT}/`)
         throw new Error('OpenRouter requires exact https://openrouter.ai/api/v1 endpoint');
       if (typeof apiKey !== 'string' || !apiKey || /\s/.test(apiKey))
@@ -103,11 +113,13 @@ export class OllamaClient {
       .map(([key,value]) => [key,{value,enumerable:true}])));
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000) throw new Error('Invalid Ollama timeout');
     this.timeoutMs = timeoutMs; this.fetch = fetchImpl;
+    this.contextLimit = contextLimit; this.structuredFormat = structuredFormat;
+    this.tokenCounter = tokenCounter;
   }
 
   withModels({model = this.model, strongModel = this.strongModel} = {}) {
     return new OllamaClient({provider:this.provider, baseUrl:this.baseUrl, apiKey:this.#apiKey,
-      model,strongModel,timeoutMs:this.timeoutMs,fetchImpl:this.fetch});
+      model,strongModel,timeoutMs:this.timeoutMs,contextLimit:this.contextLimit,structuredFormat:this.structuredFormat,tokenCounter:this.tokenCounter,fetchImpl:this.fetch});
   }
 
   requestOptions(options = {}) {
@@ -117,7 +129,8 @@ export class OllamaClient {
 
   async json({system, prompt, schema, validate, strong = false, numCtx = 16384, numPredict, repairInstruction}) {
     const check = ajv.compile(schema);
-    const cloud = this.provider !== 'local';
+    const lmStudio = this.provider === 'lmstudio';
+    const cloud = !['local','lmstudio'].includes(this.provider);
     const redactedValues = [this.#apiKey];
     const selectedModel = strong ? this.strongModel : this.model;
     this.lastStats = {provider:this.provider, model:selectedModel,
@@ -131,6 +144,7 @@ export class OllamaClient {
       prompt = cloudPrompt(prompt,redactedValues);
       system = `${system}\nReturn exactly one JSON value satisfying the following JSON Schema. No Markdown, commentary or extra properties. Keep all original facts and source quotes intact.\nJSON Schema:\n${JSON.stringify(schema)}`;
     }
+    if (lmStudio) system = `${system}\nReturn exactly one JSON value satisfying this JSON Schema. No Markdown, commentary or extra properties. Preserve all facts and source quotes.\nJSON Schema:\n${JSON.stringify(schema)}`;
     let previous = '', retryReason = '', retryDetails = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       let failureCode = 'REQUEST_FAILED';
@@ -145,9 +159,37 @@ export class OllamaClient {
         const inputBytes = messages.reduce((total, message) => total + Buffer.byteLength(message.content, 'utf8'), 0);
         const neededContext = inputBytes + (numPredict || 4096) + 2048;
         let context = Math.max(numCtx, 2 ** Math.ceil(Math.log2(neededContext)));
+        let measuredInput = null;
         failureCode = 'INPUT_BUDGET_EXCEEDED';
-        if (context > 65536) throw new StructuredOutputError(`Structured request exceeds the validated 65536-token ${cloud ? 'cloud' : 'local'} context budget; no facts were truncated`);
+        if (!lmStudio && context > 65536) throw new StructuredOutputError(`Structured request exceeds the validated 65536-token ${cloud ? 'cloud' : 'local'} context budget; no facts were truncated`);
+        if (lmStudio) {
+          let completeInputBudget = neededContext;
+          // Native tokenizer is read-only and resolves an already loaded instance.
+          // A byte bound is sufficient for small requests; use native templating
+          // and tokenization when that bound alone cannot establish room.
+          if (neededContext > this.contextLimit) {
+            failureCode = 'NATIVE_TOKEN_COUNT_UNVERIFIED';
+            const measured = this.tokenCounter ? await this.tokenCounter({model:selectedModel,messages,baseUrl:this.baseUrl})
+              : this.fetch === globalThis.fetch ? await this.#measureLMStudioInput(selectedModel,messages) : null;
+            if (measured && Number.isSafeInteger(measured.inputTokens) && measured.inputTokens > 0
+              && Number.isSafeInteger(measured.contextLength) && measured.contextLength > 0) {
+              measuredInput = measured.inputTokens;
+              completeInputBudget = measuredInput + (numPredict || 4096) + 2048;
+              context = Math.min(this.contextLimit,measured.contextLength);
+            } else throw new StructuredOutputError('LM Studio native token count unavailable; no facts were truncated');
+          } else context = this.contextLimit;
+          failureCode = 'INPUT_BUDGET_EXCEEDED';
+          if (!Number.isInteger(numCtx) || numCtx < 1024 || numCtx > this.contextLimit
+            || (numPredict !== undefined && (!Number.isInteger(numPredict) || numPredict < 1))
+            || completeInputBudget > context)
+            throw new StructuredOutputError('LM Studio request exceeds the configured loaded context budget; no facts were truncated');
+        }
         failureCode = 'REQUEST_FAILED';
+        if (lmStudio && !this.#lmStudioVerified) {
+          failureCode = 'LMSTUDIO_MODEL_UNVERIFIED';
+          if (!(await this.health()).ok) throw new StructuredOutputError('LM Studio configured model is not available');
+          failureCode = 'REQUEST_FAILED';
+        }
         if (this.provider === 'openrouter' && !this.#openRouterVerified) {
           failureCode = 'OPENROUTER_FREE_MODEL_UNVERIFIED';
           if (!(await this.health()).ok) throw new StructuredOutputError('OpenRouter free model catalog is not verified');
@@ -173,8 +215,7 @@ export class OllamaClient {
           failureCode = 'REQUEST_FAILED';
         }
         if (this.provider === 'cloud-relay') this.lastStats.remote_model = this.#relayRemoteModels[selectedModel];
-        let measuredInput = null;
-        if (!cloud && context > 32768) {
+        if (this.provider === 'local' && context > 32768) {
           // Exclusive local model use: clear its cache before trusting native
           // prompt_eval_count, so older runners cannot report cache misses only.
           const unload = await this.fetch(`${this.baseUrl}/api/chat`, this.requestOptions({method:'POST',
@@ -199,10 +240,13 @@ export class OllamaClient {
           measured_input_tokens:measuredInput});
         this.lastStats.semantic_attempts++;
         const openRouter = this.provider === 'openrouter';
-        const response = await this.fetch(`${this.baseUrl}${openRouter ? '/chat/completions' : '/api/chat'}`, this.requestOptions({
+        const response = await this.fetch(`${this.baseUrl}${openRouter || lmStudio ? '/chat/completions' : '/api/chat'}`, this.requestOptions({
           method: 'POST', headers: {'content-type': 'application/json'},
           signal: AbortSignal.timeout(this.timeoutMs),
-          body: JSON.stringify(openRouter ? {model:selectedModel, stream:false, temperature:0,
+          body: JSON.stringify(lmStudio ? {model:selectedModel, stream:false, temperature:0,
+            max_tokens:numPredict || 4096,
+            ...(this.structuredFormat === 'json_schema' ? {response_format:{type:'json_schema',json_schema:{name:'jobhunter_result',strict:true,schema}}} : {}),
+            messages} : openRouter ? {model:selectedModel, stream:false, temperature:0,
             max_tokens:numPredict || 4096, reasoning:{enabled:false,exclude:true},
             response_format:{type:'json_object'}, transforms:[],
             provider:{max_price:{prompt:0,completion:0}}, messages} : {model: selectedModel,
@@ -216,6 +260,13 @@ export class OllamaClient {
         }
         failureCode = 'INVALID_RESPONSE';
         const envelope = await response.json();
+        if (lmStudio) {
+          if (envelope?.error || envelope?.model !== selectedModel || !Array.isArray(envelope?.choices) || envelope.choices.length !== 1)
+            throw new StructuredOutputError('LM Studio returned an unexpected model or response envelope');
+          this.lastStats.requests.at(-1).usage = {
+            prompt_tokens:tokenCount(envelope.usage?.prompt_tokens), completion_tokens:tokenCount(envelope.usage?.completion_tokens),
+            total_tokens:tokenCount(envelope.usage?.total_tokens)};
+        }
         if (openRouter) {
           if (envelope?.error) {
             const status = Number(envelope.error.code);
@@ -239,12 +290,12 @@ export class OllamaClient {
             throw new StructuredOutputError('OpenRouter returned nonzero usage cost');
           }
         }
-        previous = openRouter ? envelope.choices[0]?.message?.content : envelope.message?.content ?? envelope.response ?? '';
-        if ((openRouter ? envelope.choices[0]?.finish_reason : envelope.done_reason) === 'length') {
+        previous = openRouter || lmStudio ? envelope.choices[0]?.message?.content : envelope.message?.content ?? envelope.response ?? '';
+        if ((openRouter || lmStudio ? envelope.choices[0]?.finish_reason : envelope.done_reason) === 'length') {
           failureCode = 'OUTPUT_BUDGET_EXHAUSTED';
           throw new StructuredOutputError(`LLM output token budget exhausted (${envelope.eval_count ?? 'unknown'} tokens)`);
         }
-        if (openRouter && (envelope.choices[0]?.finish_reason !== 'stop' || typeof previous !== 'string'))
+        if ((openRouter || lmStudio) && (envelope.choices[0]?.finish_reason !== 'stop' || typeof previous !== 'string'))
           throw new StructuredOutputError('OpenRouter returned an incomplete response');
         failureCode = 'JSON_PARSE_ERROR';
         if (cloud) {
@@ -272,7 +323,11 @@ export class OllamaClient {
           retryAfterSeconds ??= retryDelay(error?.metadata?.retry_after_seconds);
           if (retryAfterSeconds !== null) this.lastStats.retry_after_seconds = retryAfterSeconds;
         }
-        retryReason = cloud ? failureCode : error instanceof StructuredOutputError ? error.message : error.name || 'Error';
+        retryReason = cloud || lmStudio ? failureCode : error instanceof StructuredOutputError ? error.message : error.name || 'Error';
+        if (lmStudio) {
+          this.lastStats.validation_codes.push(failureCode);
+          retryDetails = repairDiagnostics(error instanceof StructuredOutputError ? error.message : '',redactedValues);
+        }
         if (cloud) {
           this.lastStats.validation_codes.push(failureCode);
           if (failureCode === 'SEMANTIC_VALIDATION_FAILED' && error instanceof StructuredOutputError)
@@ -288,8 +343,8 @@ export class OllamaClient {
           && ['HTTP_429','HTTP_401','HTTP_402','HTTP_403','OPENROUTER_NONFREE_USAGE'].includes(failureCode);
         if (attempt === 1 || defer) {
           const attempts = attempt + 1;
-          const failure = new StructuredOutputError(`${this.provider === 'openrouter' ? 'OpenRouter' : 'Ollama'} failed after ${attempts} attempt${attempts === 1 ? '' : 's'} (${retryReason})`);
-          if (cloud) failure.code = retryReason;
+          const failure = new StructuredOutputError(`${lmStudio ? 'LM Studio' : this.provider === 'openrouter' ? 'OpenRouter' : 'Ollama'} failed after ${attempts} attempt${attempts === 1 ? '' : 's'} (${retryReason})`);
+          if (cloud || lmStudio) failure.code = retryReason;
           if (retryAfterSeconds !== null) failure.metadata = {retry_after_seconds:retryAfterSeconds};
           throw failure;
         }
@@ -297,7 +352,33 @@ export class OllamaClient {
     }
   }
 
+  async #measureLMStudioInput(model,messages) {
+    const {LMStudioClient,Chat} = await import('@lmstudio/sdk');
+    const endpoint = new URL(this.baseUrl);
+    const sdk = new LMStudioClient({baseUrl:`${endpoint.protocol === 'https:' ? 'wss:' : 'ws:'}//${endpoint.host}`});
+    const loaded = await sdk.llm.listLoaded();
+    const handle = loaded.find(item => item.identifier === model);
+    if (!handle)
+      throw new StructuredOutputError('LM Studio exact configured instance is not already loaded');
+    const formatted = await handle.applyPromptTemplate(Chat.from(messages));
+    const inputTokens = await handle.countTokens(formatted);
+    const contextLength = await handle.getContextLength();
+    return {inputTokens,contextLength};
+  }
+
   async health() {
+    if (this.provider === 'lmstudio') {
+      this.#lmStudioVerified = false;
+      const response = await this.fetch(`${this.baseUrl}/models`,this.requestOptions({signal:AbortSignal.timeout(10000)}));
+      if (!response.ok) throw new Error(`LM Studio health HTTP ${response.status}`);
+      const {data} = await response.json();
+      if (!Array.isArray(data)) throw new Error('LM Studio health invalid response');
+      const configured = [...new Set([this.model,this.strongModel])];
+      const ok = configured.every(name => data.some(item => item?.id === name));
+      this.#lmStudioVerified = ok;
+      return {ok,provider:this.provider,fast_model:this.model,strong_model:this.strongModel,
+        available_models:ok ? configured : [],configured_context_limit:this.contextLimit};
+    }
     if (this.provider === 'openrouter') return this.#openRouterHealth();
     let response;
     try {

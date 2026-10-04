@@ -24,8 +24,8 @@ if($LASTEXITCODE){throw 'Migrations failed'}
 Start-JobhunterService 'core' 3000 'services/core/server.mjs'
 Start-JobhunterService 'browser' 3001 'services/browser-service/server.mjs'
 Start-JobhunterService 'n8n' 5678 'scripts/local-n8n.mjs'
-foreach($readyPort in @(3000,3001,5678)){for($readyAttempt=0; $readyAttempt -lt 30 -and -not(Test-JobhunterPort $readyPort);$readyAttempt++){Start-Sleep -Seconds 1};if(-not(Test-JobhunterPort $readyPort)){throw "Service port $readyPort did not become ready; see data/runtime logs"}}
+foreach($readyPort in @(3000,3001,5678)){$readyLimit=if($readyPort -eq 5678){120}else{30};for($readyAttempt=0; $readyAttempt -lt $readyLimit -and -not(Test-JobhunterPort $readyPort);$readyAttempt++){Start-Sleep -Seconds 1};if(-not(Test-JobhunterPort $readyPort)){throw "Service port $readyPort did not become ready; see data/runtime logs"}}
 if($WithTelegram){$telegramProcess=Start-Process -FilePath $nodeBinary -ArgumentList @('--env-file=.env','scripts/telegram-poll.mjs') -WorkingDirectory $jobhunterRoot -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtimeDir 'telegram.out.log') -RedirectStandardError (Join-Path $runtimeDir 'telegram.error.log');$launched+=@{name='telegram';pid=$telegramProcess.Id;entry='scripts/telegram-poll.mjs'}}
 $launched | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $runtimeDir 'processes.json') -Encoding utf8
-Write-Output 'Start local Ollama if needed: ollama serve'
+Write-Output 'Inference provider comes from .env; LM Studio resident model stays loaded independently.'
 Write-Output 'Workflows stay inactive and real submission disabled. Editor: http://127.0.0.1:5678'
