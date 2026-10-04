@@ -4,7 +4,7 @@ import {publishedNextPage} from './discovery-cursors.mjs';
 import {extractVisibleBoardJob} from './board-document.mjs';
 import {boardProfileStatus,openBoardProfile,exportBoardState} from './board-profiles.mjs';
 import {ordinaryChromeContext} from './ordinary-chrome.mjs';
-import {dismissPracujReadOverlays} from './pracuj-overlays.mjs';
+import {dismissPracujReadOverlays,pracujNextButton} from './pracuj-overlays.mjs';
 
 export const BOARD_TARGETS = Object.freeze({
   pracuj:{url:'https://www.pracuj.pl/praca',hostname:'www.pracuj.pl',jobPath:/^\/praca\/.+,oferta,\d+\/?$/},
@@ -70,7 +70,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
         result.job_link_count=result.job_links.length;
         if(!result.job_links.length)result.status='NO_PUBLIC_VACANCY_LINKS';
         if(name==='pracuj'&&!exactJobUrl&&!result.published_next_page_url){
-          const next=page.locator('[data-test="bottom-pagination-button-next"]');
+          const next=pracujNextButton(page);
           if(await next.count()&&await next.isVisible()&&await next.isEnabled()){
             const previous=page.url();await next.click({timeout:5000}).catch(error=>{result.pagination_observation_failed=true;result.pagination_error=String(error.message).slice(0,1000);});
             if(!result.pagination_observation_failed)await page.waitForURL(url=>url.href!==previous,{timeout:5000}).catch(()=>{});

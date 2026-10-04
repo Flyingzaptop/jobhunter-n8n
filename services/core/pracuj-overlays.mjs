@@ -1,3 +1,6 @@
+export function pracujNextButton(page){
+ return page.locator('[data-test="bottom-pagination-button-next"]:visible').first();
+}
 export async function dismissPracujReadOverlays(page){
  for(let attempt=0;attempt<6;attempt++){
  const customize=page.locator('[data-test="button-customizeCookie"]');

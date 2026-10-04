@@ -1,5 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {nextDetailState} from '../services/core/board-document.mjs';
+import {pracujNextButton} from '../services/core/pracuj-overlays.mjs';
+
+test('Pracuj responsive duplicate next buttons select one visible control',async()=>{
+ const browser=await chromium.launch({headless:true});try{
+  const page=await browser.newPage();
+  await page.setContent('<button data-test="bottom-pagination-button-next" style="display:none">Hidden</button><button data-test="bottom-pagination-button-next">Next</button><button data-test="bottom-pagination-button-next">Second visible copy</button>');
+  const next=pracujNextButton(page);
+  assert.equal(await next.count(),1);assert.equal(await next.isVisible(),true);
+  assert.equal(await next.innerText(),'Next');await next.click();
+ }finally{await browser.close();}
+});
 
 test('detail retries retain original listing provenance and normalization failures until proven read or closed',()=>{
  const now=new Date('2026-10-05T00:00:00Z');
