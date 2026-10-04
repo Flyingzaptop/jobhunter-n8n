@@ -9,10 +9,18 @@ export class Repository {
     this.pool = new pg.Pool({ connectionString, max });
   }
   async migrate() {
-    for (const name of (await readdir("db/migrations"))
-      .filter((n) => n.endsWith(".sql"))
-      .sort())
-      await this.pool.query(await readFile(`db/migrations/${name}`, "utf8"));
+    const client=await this.pool.connect();let locked=false;
+    try {
+      await client.query("SELECT pg_advisory_lock(hashtext('jobhunter.migrations'),hashtext(current_database()||':'||current_schema()))");
+      locked=true;
+      for (const name of (await readdir("db/migrations"))
+        .filter((n) => n.endsWith(".sql"))
+        .sort())
+        await client.query(await readFile(`db/migrations/${name}`, "utf8"));
+    } finally {
+      try {if(locked)await client.query("SELECT pg_advisory_unlock(hashtext('jobhunter.migrations'),hashtext(current_database()||':'||current_schema()))");}
+      finally {client.release();}
+    }
   }
   async insertRaw(raw) {
     const id = randomUUID();
