@@ -11,7 +11,7 @@ import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from '.
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
 import {verifySubmitCapability} from './submit-capability.mjs';
-import {reviewedUploadRequest} from './preparation-network.mjs';
+import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest} from './preparation-network.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -67,7 +67,8 @@ export async function createBrowserService(config = browserConfig()) {
           const reviewed=request.method()==='POST'&&reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed;
           const humanVerification=request.method()==='POST'&&reviewedHumanCaptchaPost(request.url(),session.humanCaptchaWindow,config);
           const upload=reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow});
-          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          const draft=reviewedDraftRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.draftWindow});
+          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !draft && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
         await route.fulfill(await pinnedRequest(request, destination));
@@ -94,7 +95,7 @@ export async function createBrowserService(config = browserConfig()) {
       const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => e.id ? '#' + CSS.escape(e.id) : e.name ? `${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]` : `[data-jh-index="${e.dataset.jhIndex}"]`;
       const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', max_length:e.maxLength>0?e.maxLength:null, pattern:e.pattern||null,autocomplete:e.autocomplete||null, disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /password|otp|totp|authentication|csrf|secret/i.test(e.type+' '+e.name)||e.autocomplete==='one-time-code'?'':/^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
-      const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link', final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
+      const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link',name:e.name??null,value:e.value??null,formAction:e.formAction??null,form_id:e.form?.id??null, final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
     const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
@@ -154,10 +155,12 @@ export async function createBrowserService(config = browserConfig()) {
       }
       else if (operation === 'click') {
         const safeEntry=button&&safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields});
+        const draftWindow=button?draftNavigationWindow(before,button):null;
         if (field || !button || button.final_submit || !safeEntry&&/submit|send application|apply now|pay|confirm application/i.test(button.text)) throw new Error('USE_GATED_SUBMIT');
-        if (button.type === 'submit') throw new Error('USE_GATED_SUBMIT');
+        if (button.type === 'submit'&&!draftWindow) throw new Error('USE_GATED_SUBMIT');
         if (!/^(next|continue|back|previous)(\s+step)?$|^(dalej|kontynuuj|wstecz|nastepny krok)$/i.test(button.text.normalize('NFD').replace(/[\u0300-\u036f]/g,''))&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
         if(safeEntry)session.readNavigationUntil=Date.now()+15000;
+        if(draftWindow)session.draftWindow=draftWindow;
         await locator.click();
       }
       else if (operation === 'submit') {

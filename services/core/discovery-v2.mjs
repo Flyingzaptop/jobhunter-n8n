@@ -492,6 +492,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           const pagePattern=source.listing_page_pattern?new RegExp(source.listing_page_pattern):null;
           const actualVacancy=url=>!pagePattern?.test(new URL(url).pathname+new URL(url).search);
           const jobUrls = source.adapter === 'public_listing_html' ? (oldSnapshot.length?oldSnapshot.filter(actualVacancy):publicListingJobUrls(source, listing.text)) : source.job_urls;
+          if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&!jobUrls.length&&listing.text.trim())throw new Error('GUEST_SEARCH_RESPONSE_UNVERIFIED');
           const oldOffset=Number(resume.next_listing_offset??0);
           const offset = source.adapter === 'public_listing_html' ? oldOffset-oldSnapshot.slice(0,oldOffset).filter(url=>!actualVacancy(url)).length : 0;
           const retryCounts=resume.listing_page_url===currentUrl?{...(resume.listing_retry_counts??{})}:{};
@@ -515,11 +516,13 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             }
           }
           if(source.adapter==='public_listing_html'){
-            const nextUrl=publishedNextPage(htmlPaginationLinks(listing.text),currentUrl,{pagePattern:source.listing_page_pattern});
+            let nextUrl=publishedNextPage(htmlPaginationLinks(listing.text),currentUrl,{pagePattern:source.listing_page_pattern});
+            if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&jobUrls.length){const next=new URL(currentUrl);next.searchParams.set('start',String(Number(next.searchParams.get('start')??0)+jobUrls.length));nextUrl=next.href;metrics.pagination_strategy=source.pagination_strategy;}
             Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl,total:jobUrls.length,offset,processed:bounded.length}));
             metrics.listing_root_url=source.url;metrics.listing_page_snapshot=metrics.listing_page_completed?[]:jobUrls;
             metrics.listing_retry_counts=metrics.listing_page_completed?{}:retryCounts;
             metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
+            if(source.pagination_strategy==='LINKEDIN_PUBLIC_GUEST_OFFSET'&&Number(new URL(currentUrl).searchParams.get('start')??0)>=1000){metrics.cycle_completed=false;metrics.coverage_status='PUBLIC_GUEST_RESULT_WINDOW_CAPPED';}
           }
         } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();

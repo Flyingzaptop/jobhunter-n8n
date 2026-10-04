@@ -71,7 +71,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
   }
   if(titleSignals.length){add('TARGET_TITLE_WEIGHT',Math.max(...titleSignals),title,'title');if(titleSignals.length>1)add('CROSS_DISCIPLINARY_TITLE',Math.min(8,4*(titleSignals.length-1)),roles.join(', '),'title');}
   const junior=title.match(/\b(?:junior|graduate|entry[- ]level|intern(?:ship)?|student|working student|werkstudent\w*|praktik(?:um|ant)\w*|trainee|mlodszy|alternan\w*|stagiaire)\b/);
-  const senior=title.match(/\b(?:senior|staff|principal|director|head|lead|teamleiter|manager|vp)\b/);
+  const senior=title.match(/\b(?:senior|starszy|starsza|staff|principal|director|head|lead|teamleiter|manager|vp)\b/);
   const seniority=junior?'JUNIOR_STUDENT':senior?'SENIOR_LEADERSHIP':'UNSPECIFIED';
   if(junior)add('JUNIOR_STUDENT_TITLE',22,junior[0],'title');
   if(senior)add('SENIOR_TITLE_DEPRIORITIZED',-26,senior[0],'title');
@@ -82,7 +82,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
   const localMechanical=nearby&&reasons.some(reason=>reason.signal==='TITLE_MECHANICAL_RD');
   let locationClass='UNKNOWN';
   if(localMechanical&&!remote){locationClass=j.work_mode==='HYBRID'?'MECHANICAL_WROCLAW_HYBRID_HINT':'MECHANICAL_WROCLAW_HINT';add('MECHANICAL_NEAR_WROCLAW_PREFERENCE',24,j.location,'location');if(j.work_mode==='HYBRID')add('LOCAL_MECHANICAL_HYBRID_SLIGHT_PREFERENCE',3,'Hybrid mechanical role near Wroclaw','work_mode');}
-  else if(remote){locationClass='REMOTE_ELIGIBILITY_UNKNOWN';add('WORLDWIDE_REMOTE_EQUAL_PRIORITY',24,`${j.country??''} ${j.location??''}; country restrictions require actual fit verification`,'country/location/work_mode');}
+  else if(remote){locationClass=/\b(?:worldwide|anywhere|global|europe|european union|eu|eea|emea|poland|polska|pl)\b/.test(location)?'REMOTE_COMPATIBLE_REGION_HINT':'REMOTE_ELIGIBILITY_UNKNOWN';add('WORLDWIDE_REMOTE_EQUAL_PRIORITY',24,`${j.country??''} ${j.location??''}; country restrictions require actual fit verification`,'country/location/work_mode');}
   else if(nearby){locationClass='WROCLAW_LOCATION_HINT';add('WROCLAW_PREFERENCE',4,j.location,'location');}
   else if(country==='pl'||country==='poland'||/\bpoland\b|warszawa|warsaw/.test(location)){locationClass='POLAND_LOCATION_HINT';add('POLAND_PREFERENCE',16,j.country||j.location,'country/location');}
   else if(europe.test(country)){locationClass='EUROPE_RELOCATION_REVIEW';add('EUROPE_DISCOVERY_PREFERENCE',10,j.country,'country');}
@@ -123,7 +123,7 @@ export async function listRelevanceCandidates(repository,{limit=500,minScore=40}
   return (await repository.pool.query(`SELECT j.*,q.relevance_score,q.role_hints,q.reasons,q.location_class,q.seniority_class,q.needs_hydration,q.status AS queue_status
     FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.relevance_score>=$1 AND q.status<>'CLOSED'
     ORDER BY CASE WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
-      WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 1 ELSE 2 END,
+      WHEN q.location_class='REMOTE_COMPATIBLE_REGION_HINT' THEN 1 WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 2 ELSE 3 END,
       q.relevance_score DESC,CASE WHEN q.seniority_class='JUNIOR_STUDENT' THEN 0 ELSE 1 END,j.first_seen_at,job_id LIMIT $2`,[minScore,limit])).rows.map(jobSnapshot);
 }
 

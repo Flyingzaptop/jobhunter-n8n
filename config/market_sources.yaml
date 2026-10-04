@@ -153,7 +153,7 @@ sources:
   - name: linkedin
     platform: LinkedIn Jobs
     adapter: public_listing_html
-    url: https://www.linkedin.com/jobs/search/?keywords=mechanical%20engineer&location=Wroc%C5%82aw
+    url: https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=mechanical+engineer&location=Wroc%C5%82aw&start=0
     profile: real
     enabled: true
     source_class: global_board
@@ -164,7 +164,7 @@ sources:
       - www.linkedin.com
       - pl.linkedin.com
     job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
-    listing_page_pattern: ^/jobs/search/.*$
+    listing_page_pattern: ^/jobs-guest/jobs/api/seeMoreJobPostings/search.*$
     max_pages: 4
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
@@ -172,12 +172,15 @@ sources:
     search_keyword: mechanical engineer
     search_scope: KEYWORD_SEARCH
     required: true
-    reason: User-authorized public keyword search and public JobPosting details
-      verified HTTP 200. Published search coverage only; authenticated routes
-      tested separately.
+    reason: Verified anonymous public guest results GET 200. Offset protocol
+      reviewed against pinned MIT JobSpy source; HTTP blocks remain explicit and
+      no login/private API bypass is used.
     regional_listing_hosts:
       - www.linkedin.com
       - pl.linkedin.com
+    search_url: https://www.linkedin.com/jobs/search/?keywords=mechanical%20engineer&location=Wroc%C5%82aw
+    pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
+    implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b
   - name: indeed
     platform: Indeed
     adapter: policy_probe
@@ -3166,7 +3169,7 @@ sources:
   - name: linkedin-remote-python
     platform: LinkedIn Jobs
     adapter: public_listing_html
-    url: https://www.linkedin.com/jobs/search/?keywords=Python&location=European+Union&f_WT=2
+    url: https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=Python&location=European+Union&f_WT=2&start=0
     profile: real
     enabled: true
     source_class: global_board
@@ -3177,7 +3180,7 @@ sources:
       - www.linkedin.com
       - pl.linkedin.com
     job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
-    listing_page_pattern: ^/jobs/search/.*$
+    listing_page_pattern: ^/jobs-guest/jobs/api/seeMoreJobPostings/search.*$
     max_pages: 4
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
@@ -3185,16 +3188,19 @@ sources:
     search_keyword: Python
     search_scope: KEYWORD_SEARCH
     required: false
-    reason: User-authorized public keyword search and public JobPosting details
-      verified HTTP 200. Published search coverage only; authenticated routes
-      tested separately.
+    reason: Verified anonymous public guest results GET 200. Offset protocol
+      reviewed against pinned MIT JobSpy source; HTTP blocks remain explicit and
+      no login/private API bypass is used.
     regional_listing_hosts:
       - www.linkedin.com
       - pl.linkedin.com
+    search_url: https://www.linkedin.com/jobs/search/?keywords=Python&location=European+Union&f_WT=2
+    pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
+    implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b
   - name: linkedin-remote-support
     platform: LinkedIn Jobs
     adapter: public_listing_html
-    url: https://www.linkedin.com/jobs/search/?keywords=technical+support&location=Worldwide&f_WT=2
+    url: https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=technical+support&location=Worldwide&f_WT=2&start=0
     profile: real
     enabled: true
     source_class: global_board
@@ -3205,7 +3211,7 @@ sources:
       - www.linkedin.com
       - pl.linkedin.com
     job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
-    listing_page_pattern: ^/jobs/search/.*$
+    listing_page_pattern: ^/jobs-guest/jobs/api/seeMoreJobPostings/search.*$
     max_pages: 4
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
@@ -3213,16 +3219,19 @@ sources:
     search_keyword: technical support
     search_scope: KEYWORD_SEARCH
     required: false
-    reason: User-authorized public keyword search and public JobPosting details
-      verified HTTP 200. Published search coverage only; authenticated routes
-      tested separately.
+    reason: Verified anonymous public guest results GET 200. Offset protocol
+      reviewed against pinned MIT JobSpy source; HTTP blocks remain explicit and
+      no login/private API bypass is used.
     regional_listing_hosts:
       - www.linkedin.com
       - pl.linkedin.com
+    search_url: https://www.linkedin.com/jobs/search/?keywords=technical+support&location=Worldwide&f_WT=2
+    pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
+    implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b
   - name: linkedin-local-automation
     platform: LinkedIn Jobs
     adapter: public_listing_html
-    url: https://www.linkedin.com/jobs/search/?keywords=automatyk&location=Wroclaw
+    url: https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=automatyk&location=Wroclaw&start=0
     profile: real
     enabled: true
     source_class: global_board
@@ -3233,7 +3242,7 @@ sources:
       - www.linkedin.com
       - pl.linkedin.com
     job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
-    listing_page_pattern: ^/jobs/search/.*$
+    listing_page_pattern: ^/jobs-guest/jobs/api/seeMoreJobPostings/search.*$
     max_pages: 4
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
@@ -3241,12 +3250,15 @@ sources:
     search_keyword: automatyk
     search_scope: KEYWORD_SEARCH
     required: false
-    reason: User-authorized public keyword search and public JobPosting details
-      verified HTTP 200. Published search coverage only; authenticated routes
-      tested separately.
+    reason: Verified anonymous public guest results GET 200. Offset protocol
+      reviewed against pinned MIT JobSpy source; HTTP blocks remain explicit and
+      no login/private API bypass is used.
     regional_listing_hosts:
       - www.linkedin.com
       - pl.linkedin.com
+    search_url: https://www.linkedin.com/jobs/search/?keywords=automatyk&location=Wroclaw
+    pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
+    implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b
   - name: pracuj-local-mechanical
     platform: Pracuj.pl
     adapter: public_headless_jobposting
