@@ -11,6 +11,10 @@
     "start": "node --env-file=.env services/core/server.mjs",
     "migrate": "node --env-file=.env scripts/migrate.mjs",
     "health": "node --env-file=.env scripts/healthcheck.mjs",
+    "dashboard": "node --env-file=.env services/dashboard/server.mjs",
+    "dashboard:build": "npm --prefix services/dashboard/web run build",
+    "discovery:real": "node --env-file=.env scripts/discovery-market.mjs",
+    "ats:real": "node --env-file=.env scripts/ats-real-benchmark.mjs",
     "workflows": "node scripts/generate-workflows.mjs"
   },
   "dependencies": {

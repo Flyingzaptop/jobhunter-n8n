@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { validateDestination, submitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
+import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from './ats-adapters.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
   return { token: env.BROWSER_SERVICE_TOKEN || '', port: Number(env.BROWSER_SERVICE_PORT || 3001), host: env.BIND_HOST || '127.0.0.1',
-    enabled: env.JOBHUNTER_ENABLED !== 'false', dryRun: env.DRY_RUN !== 'false', allowRealSubmit: env.ALLOW_REAL_SUBMIT === 'true', allowMockSubmit: env.ALLOW_MOCK_SUBMIT === 'true',
+    enabled: env.JOBHUNTER_ENABLED !== 'false', dryRun: env.READINESS_REAL_SUBMIT_LOCK==='true'||env.DRY_RUN !== 'false', allowRealSubmit: env.READINESS_REAL_SUBMIT_LOCK!=='true'&&env.ALLOW_REAL_SUBMIT === 'true', allowMockSubmit: env.ALLOW_MOCK_SUBMIT === 'true',
     allowMockNetwork: env.ALLOW_MOCK_NETWORK === 'true', mockHosts: (env.MOCK_ALLOWED_HOSTS || '127.0.0.1,localhost,mock-job-board').split(','),
     allowDomains: (env.APPLICATION_DOMAIN_ALLOWLIST || '').split(',').filter(Boolean), denyDomains: (env.APPLICATION_DOMAIN_DENYLIST || '').split(',').filter(Boolean),
     artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/cv'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
@@ -57,7 +58,9 @@ export async function createBrowserService(config = browserConfig()) {
         const request = route.request(), destination = await validateDestination(request.url(), config);
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
           const safeMockWrite = destination.mock && /^\/(draft|step|captcha)(\/|$)/.test(destination.url.pathname);
-          if (!safeMockWrite && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          const adapter=atsAdapterFor(session.page?.url()??request.url());
+          const reviewed=request.method()==='POST'&&reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed;
+          if (!safeMockWrite && !reviewed && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
         await route.fulfill(await pinnedRequest(request, destination));
@@ -71,20 +74,22 @@ export async function createBrowserService(config = browserConfig()) {
     const result = await session.page.evaluate(() => {
       const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => e.id ? '#' + CSS.escape(e.id) : e.name ? `${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]` : `[data-jh-index="${e.dataset.jhIndex}"]`;
-      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required, visible: visible(e), value: e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
+      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', visible: visible(e), value: e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link', final_submit: e.dataset.finalSubmit === 'true', href: e.href || null }; });
       return { url: location.href, title: document.title, current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
-    return { ...result, browser_session_id: session.id, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name, f.type, f.required]), step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
+    return { ...result, url:observerUrl(result.url), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name, f.type, f.required]), step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
   async function checkpoint(session) {
     const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
     await fs.writeFile(path.join(config.stateRoot, `${session.id}.json`), JSON.stringify(state), { mode: 0o600 }); return { ...view, checkpoint_saved: true };
   }
   async function action(session, operation, payload) {
+    session.current_action={operation,selector:payload.selector??null,started_at:new Date().toISOString()};
     if (operation === 'navigate') { await validateDestination(payload.url, config); await session.page.goto(payload.url, { waitUntil: 'domcontentloaded' }); }
     else if (operation === 'checkpoint') { session.pending_question = payload.pending_question ?? session.pending_question; return checkpoint(session); }
     else if (operation === 'screenshot') { const name = `${session.id}-${Date.now()}.png`, output = path.join(config.stateRoot, name); await session.page.screenshot({ path: output, fullPage: true }); return { path: output }; }
+    else if(operation==='observe-image'){const mask=session.page.frames().map(frame=>frame.locator('input[type=password],input[autocomplete=one-time-code],input[name*=token i],input[name*=otp i],input[name*=totp i],input[name*=authentication_code i]'));const png=await session.page.screenshot({fullPage:false,mask,maskColor:'#18212a'});return {png_base64:png.toString('base64'),captured_at:new Date().toISOString(),persisted:false};}
     else {
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);
       if (operation === 'submit' && session.submit_attempted) return { ...before, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_id: session.submission_confirmation?.confirmation_id || null };
@@ -113,7 +118,7 @@ export async function createBrowserService(config = browserConfig()) {
       else if (operation === 'click') {
         if (field || !button || button.final_submit || /submit|send application|apply now|pay|confirm application/i.test(button.text)) throw new Error('USE_GATED_SUBMIT');
         if (button.type === 'submit') throw new Error('USE_GATED_SUBMIT');
-        if (!/^(next|continue|back|previous)(\s+step)?$/i.test(button.text)) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
+        if (!/^(next|continue|back|previous)(\s+step)?$/i.test(button.text)&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
         await locator.click();
       }
       else if (operation === 'submit') {
@@ -167,3 +172,4 @@ export async function createBrowserService(config = browserConfig()) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const service = await createBrowserService(); await service.listen(); console.log(JSON.stringify({ event: 'browser_started', port: service.config.port })); for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await service.close(); process.exit(0); }); }
+

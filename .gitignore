@@ -13,3 +13,4 @@ playwright-report/
 test-results/
 AGENTS.md
 .tools/
+services/dashboard/web/dist/

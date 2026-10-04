@@ -1,5 +1,6 @@
 import pg from "pg";
 import { randomUUID } from "node:crypto";
+import {operationContext} from './observability.mjs';
 import { readFile, readdir } from "node:fs/promises";
 export class Repository {
   constructor(connectionString = process.env.DATABASE_URL) {
@@ -96,11 +97,14 @@ export class Repository {
     );
   }
   async event(type, id, event, payload = {}) {
+    const context=operationContext.getStore();
+    const contextual=context?{...payload,run_id:context.run_id,stage:context.stage}:payload;
     await this.pool.query(
       "INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)",
-      [randomUUID(), type, id, event, payload],
+      [randomUUID(), type, id, event, contextual],
     );
   }
+  async recordCvDraft(manifest){await this.pool.query(`INSERT INTO cv_drafts(cv_id,job_id,status,manifest_json) VALUES($1,$2,$3,$4) ON CONFLICT(cv_id) DO UPDATE SET status=EXCLUDED.status,manifest_json=EXCLUDED.manifest_json`,[manifest.cv_id,manifest.job_id,manifest.status,manifest]);}
   async close() {
     await this.pool.end();
   }

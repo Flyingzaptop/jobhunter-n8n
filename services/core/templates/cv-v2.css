@@ -1,0 +1,12 @@
+@page { size: A4; margin: 15mm; }
+body { font: 10pt Arial, sans-serif; color: #172935; line-height: 1.33; }
+h1 { font-size: 24pt; margin: 0; }
+h2 { font-size: 12pt; margin: 14px 0 5px; border-bottom: 1px solid #b3c0c8; padding-bottom: 3px; }
+h3 { font-size: 10.5pt; margin: 9px 0 2px; }
+p { margin: 4px 0; }
+.headline { font-size: 13pt; color: #28485b; }
+.contacts, .meta { color: #425460; font-size: 9pt; overflow-wrap: anywhere; }
+ul { padding-left: 18px; margin: 4px 0; }
+li { margin: 3px 0; }
+h2, h3 { break-after: avoid; }
+article { break-inside: avoid; }

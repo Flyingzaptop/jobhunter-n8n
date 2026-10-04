@@ -12,6 +12,9 @@ import { report } from "./reporting.mjs";
 import { Telegram } from "./telegram.mjs";
 import { runApplication, reverify, BrowserClient } from "./application.mjs";
 import {reconcile} from './reconciliation.mjs';
+import {runObserved,observe} from './observability.mjs';
+import {retryPlan} from './analysis-retry.mjs';
+import {computePriority} from './priority.mjs';
 const load = async (p) => YAML.parse(await readFile(p, "utf8"));
 const secretEqual = (a, b) => {
   const x = Buffer.from(a ?? ""),
@@ -34,12 +37,13 @@ export function createCore({
   cvOutputDir = "data/cv",
   requireCvReverification = !testMode,
 } = {}) {
+  if(!testMode&&process.env.READINESS_REAL_SUBMIT_LOCK==='true'&&(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT==='true'))throw new Error('Readiness run requires DRY_RUN=true and ALLOW_REAL_SUBMIT=false');
   if ((browserClient || applicationConfig || answerMemoryOverride) && !testMode)
     throw new Error("Test adapters forbidden in production");
   if (!token) throw new Error("CORE_SERVICE_TOKEN required");
   const telegram = new Telegram();
   const llm = new OllamaClient();
-  async function stage(number, body = {}) {
+  async function executeStage(number, body = {}) {
     if (number === 1) {
       if (body.fixture) {
         if (!testMode) throw new Error("Fixtures forbidden in production");
@@ -53,13 +57,17 @@ export function createCore({
         return { raw_ids: ids, discovered: ids.length, errors: [] };
       }
       const registry = await load(`${configDir}/source_registry.yaml`);
+      if(!testMode&&process.env.DISCOVERY_V2_ENABLED!=='false'){
+        const {runMarketDiscovery}=await import('./discovery-v2.mjs');
+        return runMarketDiscovery({repository,observer:event=>observe(repository,event)});
+      }
       const sourceProfile = body.profile ?? "real";
       if(sourceProfile !== "real" && !(testMode && sourceProfile === "mock"))
         throw new Error("Mock source profile forbidden in production");
       const sources = registry.sources
         .filter((s) => (s.profile ?? "real") === sourceProfile)
         .map((s) => ({ ...registry.defaults, ...s }));
-      return discoverSources({ sources, repository });
+      return discoverSources({ sources, repository,logger:event=>observe(repository,{...event,message:`Scanning ${event.source_name}`}).catch(()=>{}) });
     }
     if (number === 2)
       return normalizeRawRecords({
@@ -79,7 +87,7 @@ export function createCore({
       if(!Number.isInteger(limit))throw new Error("Invalid analysis batch limit");
       const jobs = (await repository.listCanonicalJobs()).filter(job =>
         (!body.job_ids || body.job_ids.includes(job.job_id)) &&
-        (body.reanalyze || job.status !== "ANALYSIS_FAILED"));
+        (body.reanalyze || (!['ANALYSIS_FAILED','ANALYSIS_DEAD_LETTER'].includes(job.status)&&(!job.next_analysis_retry_at||new Date(job.next_analysis_retry_at)<=new Date()))));
       const results = [];
       for (const job of jobs) {
         if(results.length >= limit)break;
@@ -90,19 +98,33 @@ export function createCore({
           )
         ).rowCount;
         if (exists && !body.reanalyze) continue;
+        await repository.pool.query('UPDATE jobs SET analysis_attempt_count=analysis_attempt_count+1 WHERE job_id=$1',[job.job_id]);
+        await observe(repository,{event:'FIT_ANALYSIS_STARTED',entity_type:'job',entity_id:job.job_id,message:`Reading requirements: ${job.company} — ${job.title}`,processed_count:results.length,total_count:Math.min(jobs.length,limit)});
         try {
+          if(!testMode&&/greenhouse|lever|ashby|smartrecruiters/i.test([job.ats_identity,job.metadata?.adapter,job.canonical_url].filter(Boolean).join(' '))){
+            const {reverifyMarketJob}=await import('./discovery-v2.mjs');const verification=await reverifyMarketJob({job,repository});
+            if(verification.job)Object.assign(job,verification.job);
+            if(verification.status==='CLOSED'){await repository.event('job',job.job_id,'SKIPPED_CLOSED');results.push({job_id:job.job_id,status:'CLOSED'});continue;}
+          }
           const analysis = await analyzeJob({ job, profile, policy, llm });
           analysis.model = llm.model;
           analysis.profile_version = profile.profile_version ?? createHash('sha256').update(JSON.stringify(profile)).digest('hex');
+          Object.assign(analysis,computePriority({job,analysis,policy}));
+          analysis.runtime_statistics=llm.lastStats??null;
+          analysis.profile_hash=createHash('sha256').update(JSON.stringify(profile)).digest('hex');
+          analysis.job_content_hash=job.content_hash;
           await repository.saveAnalysis(job.job_id, analysis);
-          await repository.pool.query("UPDATE jobs SET status='ANALYZED' WHERE job_id=$1",[job.job_id]);
+          await repository.pool.query("UPDATE jobs SET status='ANALYZED',last_analysis_error=NULL,next_analysis_retry_at=NULL,analysis_failure_kind=NULL WHERE job_id=$1",[job.job_id]);
+          await repository.event('job',job.job_id,'ANALYZED',{decision:analysis.decision,overall_fit:analysis.overall_fit,application_priority:analysis.application_priority,model:analysis.model,prompt_version:analysis.prompt_version,validation_state:'VALID',runtime_statistics:analysis.runtime_statistics});
           results.push({
             job_id: job.job_id,
             decision: analysis.decision,
             overall_fit: analysis.overall_fit,
           });
         } catch (e) {
-          await repository.pool.query("UPDATE jobs SET status='ANALYSIS_FAILED' WHERE job_id=$1",[job.job_id]);
+          const attempts=(await repository.pool.query('SELECT analysis_attempt_count FROM jobs WHERE job_id=$1',[job.job_id])).rows[0].analysis_attempt_count;
+          const plan=retryPlan(e,attempts);
+          await repository.pool.query("UPDATE jobs SET status=$2,last_analysis_error=$3,next_analysis_retry_at=$4,analysis_failure_kind=$5 WHERE job_id=$1",[job.job_id,plan.status,e.message.slice(0,240),plan.next_retry_at,plan.kind]);
           await repository.event("job", job.job_id, "ANALYSIS_FAILED", {
             error: e.name,
             ...(e.name === 'StructuredOutputError' ? {diagnostic:e.message.slice(0,240)} : {}),
@@ -111,14 +133,14 @@ export function createCore({
             ...(e.name === 'StructuredOutputError' ? {diagnostic:e.message.slice(0,240)} : {}) });
         }
       }
-      return { attempted: results.length, analyzed: results.filter(r=>!r.error).length, results };
+      return { attempted: results.length, analyzed: results.filter(r=>r.decision&&!r.error).length, results };
     }
-    if (number === 4) {
+      if (number === 4) {
       const profile = await load(
         testProfilePath ?? `${configDir}/candidate_profile.yaml`,
       );
       if (!body.job_id) {
-        if(!profile.onboarding?.legal_name || profile.onboarding.legal_name==='UNKNOWN')
+        if((testMode||process.env.CV_FACTORY_V2_ENABLED==='false')&&(!profile.onboarding?.legal_name || profile.onboarding.legal_name==='UNKNOWN'))
           return {generated:0,blocked_reason:'ONBOARDING_REQUIRED',pending_fields:['legal_name']};
         const queued=(await repository.pool.query(`SELECT j.job_id FROM jobs j JOIN LATERAL
           (SELECT decision FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1) a ON true
@@ -134,7 +156,7 @@ export function createCore({
         (j) => j.job_id === body.job_id,
       );
       if (!job) throw new Error("Job missing");
-      if(requireCvReverification && process.env.VACANCY_REVERIFY_BEFORE_CV !== 'false'){
+      if(requireCvReverification && (testMode||process.env.CV_FACTORY_V2_ENABLED==='false') && process.env.VACANCY_REVERIFY_BEFORE_CV !== 'false'){
         const open = await reverify({browser:browserClient??new BrowserClient(),job,applicationId:`cv-${job.job_id}`});
         if(!open)throw new Error('Vacancy could not be reverified open before CV');
         await repository.pool.query('UPDATE jobs SET last_verified_open_at=now(),availability_status=\'OPEN\' WHERE job_id=$1',[job.job_id]);
@@ -145,6 +167,14 @@ export function createCore({
         [job.job_id],
       );
       if (!rows[0]) throw new Error("Job analysis missing");
+      if(!testMode&&process.env.CV_FACTORY_V2_ENABLED!=='false'){
+        const {reverifyMarketJob}=await import('./discovery-v2.mjs');const verified=await reverifyMarketJob({job,repository});
+        if(verified.status!=='OPEN')throw new Error('Current official vacancy is not verified OPEN');
+        if(verified.job)Object.assign(job,verified.job);
+        job.availability_status='OPEN';
+        await observe(repository,{event:'CV_WRITING',entity_type:'job',entity_id:job.job_id,message:`Tailoring verified facts for ${job.title}`});
+        const {buildTailoredCv}=await import('./cv-v2.mjs');return buildTailoredCv({job,profile,analysis:rows[0].analysis_json,llm,repository,outputRoot:'data/cv-v2'});
+      }
       return createCv({
         job,
         profile,
@@ -203,6 +233,10 @@ export function createCore({
       return {...summary,reconciliation};
     }
     throw new Error("Unknown stage");
+  }
+  async function stage(number,body={}){
+    if(!Number.isInteger(number)||number<1||number>6)throw new Error('Invalid stage');
+    return runObserved(repository,number,body,async()=>{if(number<6&&(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused)return {blocked_reason:'PAUSED',processed:0};return executeStage(number,body);},{trigger:'n8n',mode:testMode?'MOCK':'REAL'});
   }
   const server = http.createServer(async (req, res) => {
     const runId = randomUUID();
