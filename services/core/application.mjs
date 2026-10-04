@@ -4,6 +4,9 @@ import path from 'node:path';
 import { transition } from './state.mjs';
 import { browserConfig } from '../browser-service/server.mjs';
 import {persistPendingApplicationQuestion} from './hitl.mjs';
+import {employerAutomationPolicy} from './employer-policy.mjs';
+import {settleApplicationForm} from './form-settling.mjs';
+export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 
@@ -14,10 +17,6 @@ export class BrowserClient {
 const known = value => value !== undefined && value !== null && value !== '' && value !== 'UNKNOWN';
 const norm = value => String(value??'').toLowerCase().replace(/[_\W]+/g,' ').trim();
 const country = value => /^(pl|poland)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
-export function employerAutomationPolicy(view){
-  const text=`${view.text??''}\n${(view.fields??[]).map(f=>f.label??'').join('\n')}`;
-  return /(?:AI|artificial intelligence|generated content)[^.\n]{0,100}(?:disqualif|not permitted|prohibit)|(?:prohibit|not allowed|must not|do not)[^.\n]{0,100}(?:AI|artificial intelligence)|only my own words/i.test(text)?'HUMAN_AUTHORED_ONLY':null;
-}
 export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const identity=profile.onboarding??{},name=identity.legal_name;
   const values=(view.fields??[]).filter(f=>f.visible&&!['password','hidden','file'].includes(f.type)).map(f=>String(f.value??''));
@@ -121,7 +120,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(!evidence.pass){await repository.event('application',application.application_id,'PREPARATION_EVIDENCE_REJECTED',{reasons:evidence.reasons});return {application_id:application.application_id,status:application.status,started:false,reason:'CURRENT_EMPLOYER_READY_CV_REQUIRED'};}
     }
     let sessionId=application.last_state?.browser_session_id, view;
-    if(application.status==='QUEUED'||application.status==='OPENING') {if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=opened.snapshot;await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
+    if(application.status==='QUEUED'||application.status==='OPENING') {if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
     else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     if(['NEEDS_USER','CAPTCHA_WAIT'].includes(application.status)){
       const pending=application.last_state.pending_question, answerRow=(await repository.pool.query('SELECT * FROM application_questions WHERE application_id=$1 AND telegram_request_id=$2 AND answered_at IS NOT NULL',[application.application_id,pending?.request_id])).rows[0];

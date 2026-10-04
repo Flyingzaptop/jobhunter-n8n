@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { hitlError } from '../core/hitl.mjs';
+import {employerAutomationPolicy} from '../core/employer-policy.mjs';
 
 export const REVIEW_CAMPAIGN = 'MANUAL_REVIEW_V1';
 export const REVIEW_APPLICATION_LIMIT = 10;
@@ -29,8 +30,7 @@ export function validateReviewContext({ application, job, cv, profile, snapshot,
   if (!snapshot || snapshot.browser_session_id !== application.last_state?.browser_session_id || !snapshot.fingerprint || !Array.isArray(snapshot.fields) || snapshot.captcha || snapshot.validation_errors?.length || snapshot.fields.some(f => f.visible && (f.type === 'password' || /token|otp|totp|authentication.code/i.test(f.name ?? '') && f.type !== 'hidden'))) throw hitlError('BROWSER_REVIEW_REQUIRES_MANUAL_ASSISTANCE');
   if (!/^https:\/\//i.test(snapshot.url ?? '')) throw hitlError('HTTPS_APPLICATION_FORM_REQUIRED');
   if(!Array.isArray(snapshot.forms)||!Array.isArray(snapshot.buttons))throw hitlError('FORM_DESTINATION_METADATA_REQUIRED');
-  const policyText = `${snapshot.text ?? ''} ${(snapshot.fields ?? []).map(f=>f.label??'').join(' ')}`;
-  if (job.metadata?.employer_policy?.ai_content_disallowed === true || /(?:do not|must not|not permitted|not allowed|prohibit|without)[^.\n]{0,80}\b(?:AI|artificial intelligence)\b|\b(?:AI|artificial intelligence)\b[^.\n]{0,100}(?:disqualif|prohibit|not permitted|not allowed)|human[- ](?:written|only)/i.test(policyText)) throw hitlError('EMPLOYER_AI_ATTESTATION_REQUIRES_MANUAL_REVIEW');
+  if (job.metadata?.employer_policy?.ai_content_disallowed === true || employerAutomationPolicy(snapshot)) throw hitlError('EMPLOYER_AI_ATTESTATION_REQUIRES_MANUAL_REVIEW');
   if (snapshot.fields.some(f => f.visible && f.required && !f.disabled && (f.type === 'checkbox' ? f.checked !== true : f.type==='radio' ? f.checked!==true&&!snapshot.fields.some(other=>other.type==='radio'&&other.checked===true&&!other.disabled&&other.visible!==false&&Boolean(f.name)&&other.name===f.name&&(other.form_selector??other.form_id??other.form??null)===(f.form_selector??f.form_id??f.form??null)) : !f.value))) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
   if ((snapshot.uploaded_file_hashes?.length || snapshot.fields.some(f=>f.visible&&f.type==='file'&&/resume|\bcv\b/i.test(`${f.name??''} ${f.label??''}`))) && !snapshot.uploaded_file_hashes?.some(file=>file.sha256===cv.sha256)) throw hitlError('UPLOADED_CV_DOES_NOT_MATCH_REVIEW');
 }
