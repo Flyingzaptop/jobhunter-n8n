@@ -4,12 +4,14 @@ import {factIndex} from './fit.mjs';
 import {withExclusiveLocalGpu} from './gpu-lock.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 const hash=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
-const norm=value=>String(value??'').toLowerCase().replace(/[_\W]+/g,' ').trim();
+const norm=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[_\W]+/g,' ').trim();
 const labelOf=field=>field.label??field.field_label??field.question??'';
 export function isModelAnswerable(field){
  const type=field.type??field.field_type;
  if(!['text','textarea'].includes(type)||field.options)return false;
  const label=norm(labelOf(field)),name=norm(field.name??field.field_name);
+ if(/sms code|kod sms|kod.*(?:wiadomosci|mail|sms)|haslo|pesel|birthplace|place of birth|where.*born|urodze|adres zamieszkania|kod pocztowy|accommodation|niepelnospraw/.test(label+' '+name))return false;
+ if(/wynagrodzen|oczekiwania finansowe|okres wypowiedzenia|obywatelstw|prawo do pracy|pozwolenie na prace|relokac|miejsce zamieszkania|data urodzenia|numer telefonu|adres e mail|imie|nazwisko|aktualn.*pracodawc|ukonczon.*uczelni|ile lat.*doswiadczen|kiedy.*rozpocz/.test(label))return false;
  if(/^(?:current (?:or most recent )?(?:job )?title|current employer|most recent employer|education|degree|university|institution|graduation year)(?: required)?$/.test(label))return false;
  if(/^(?:what is|what s|please (?:provide|enter|give)|could you (?:provide|give)|enter|provide) (?:your )?(?:legal name|full name|first name|last name|email(?: address)?|phone(?: number)?|address|date of birth|current employer|current (?:job )?title)(?: required)?$/.test(label))return false;
  if(/(?:how|where) did you (?:hear about|find|learn about) (?:us|this (?:role|job|position|vacancy))/.test(label))return false;

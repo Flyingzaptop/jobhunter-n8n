@@ -6,6 +6,8 @@ test('salary answer scopes distinguish currency, period and gross/net, and vague
  assert.notDeepEqual(gross,answerIntent({label:'Expected net monthly salary in PLN'},{country:'PL'}));
  assert.notDeepEqual(gross,answerIntent({label:'Expected gross annual salary in EUR'},{country:'DE'}));
  assert.equal(answerIntent({label:'Expected salary'},{country:'PL'}),null);
+ assert.equal(answerIntent({label:'Right to work in Poland'},{country:'USA'}).scope.country,'PL');
+ assert.equal(answerIntent({label:'Do you need visa sponsorship?'},{country:'USA'}),null);
  for(const label of ['Privacy consent','Captcha','Password','Passport number'])assert.equal(answerIntent({label}),null);
 });
 test('reusable personal answers retain source/version and cannot fill an invalid numeric or date field',async()=>{

@@ -1,5 +1,6 @@
 import Ajv from 'ajv';
 import {persistModelProgress} from './model-progress.mjs';
+import {compactPromptSchema} from './prompt-schema.mjs';
 
 const ajv = new Ajv({allErrors: true, strict: true});
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
@@ -131,7 +132,16 @@ export class OllamaClient {
       ...(['cloud','openrouter'].includes(this.provider) ? {authorization:`Bearer ${this.#apiKey}`} : {})}};
   }
 
-  async json({system, prompt, schema, validate, strong = false, numCtx = 16384, numPredict, repairInstruction}) {
+  async json(input){
+    const controller=new AbortController();let timer;
+    const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{const error=new StructuredOutputError('Inference operation deadline exceeded');error.code='INFERENCE_TIMEOUT';
+      if(this.lastStats?.validation_codes&&!this.lastStats.validation_codes.includes('INFERENCE_TIMEOUT'))this.lastStats.validation_codes.push('INFERENCE_TIMEOUT');
+      const request=this.lastStats?.requests?.at(-1);if(request){request.stage='timeout';request.elapsed_ms=Date.now()-Date.parse(request.started_at??new Date().toISOString());if(this.fetch===globalThis.fetch&&!this.sdkPredict)persistModelProgress(this.lastStats.model,request);}
+      controller.abort(error);reject(error);},this.timeoutMs);});
+    try{return await Promise.race([this.#jsonOperation({...input,requestSignal:controller.signal}),timeout]);}
+    finally{clearTimeout(timer);}
+  }
+  async #jsonOperation({system, prompt, schema, validate, strong = false, numCtx = 16384, numPredict, repairInstruction,requestSignal}) {
     const check = ajv.compile(schema);
     const lmStudio = this.provider === 'lmstudio';
     const cloud = !['local','lmstudio'].includes(this.provider);
@@ -148,13 +158,14 @@ export class OllamaClient {
       prompt = cloudPrompt(prompt,redactedValues);
       system = `${system}\nReturn exactly one JSON value satisfying the following JSON Schema. No Markdown, commentary or extra properties. Keep all original facts and source quotes intact.\nJSON Schema:\n${JSON.stringify(schema)}`;
     }
-    if (lmStudio) system = `${system}\nReturn exactly one JSON value satisfying this JSON Schema. No Markdown, commentary or extra properties. Preserve all facts and source quotes.\nJSON Schema:\n${JSON.stringify(schema)}`;
+    if (lmStudio) system = `${system}\nReturn exactly one JSON value satisfying this JSON Schema. No Markdown, commentary or extra properties. Preserve all facts and source quotes. Resolve $ref against $defs.\nJSON Schema:\n${JSON.stringify(compactPromptSchema(schema))}`;
     let previous = '', retryReason = '', retryDetails = '';
     for (let attempt = 0; attempt < 2; attempt++) {
       let failureCode = 'REQUEST_FAILED';
       let failureDiagnostics = '';
       let retryAfterSeconds = null;
       try {
+        requestSignal.throwIfAborted();
         const messages = [{role: 'system', content: system}, {role: 'user', content: prompt},
           ...(attempt ? [{role: 'user', content: `Previous output did not pass validation: ${retryReason}${retryDetails ? `; ${retryDetails}` : ''}. Generate a fresh complete result using the ORIGINAL vacancy and facts. ${repairInstruction || 'source_quote must be copied EXACTLY from the vacancy, never paraphrased. Extract every mandatory requirement separately. Return valid schema JSON, supported IDs and honest provenance only.'}`}] : [])];
         // A token cannot encode less than one UTF-8 byte. This conservative
@@ -173,8 +184,11 @@ export class OllamaClient {
           // independently of configuration after a user reloads the model.
           if (this.tokenCounter || this.fetch === globalThis.fetch || neededContext > this.contextLimit) {
             failureCode = 'NATIVE_TOKEN_COUNT_UNVERIFIED';
-            const measured = this.tokenCounter ? await this.tokenCounter({model:selectedModel,messages,baseUrl:this.baseUrl})
-              : this.fetch === globalThis.fetch ? await this.#measureLMStudioInput(selectedModel,messages) : null;
+            const measuring=this.tokenCounter ? this.tokenCounter({model:selectedModel,messages,baseUrl:this.baseUrl})
+              : this.fetch === globalThis.fetch ? this.#measureLMStudioInput(selectedModel,messages) : Promise.resolve(null);
+            let probeTimer;
+            const measured=await Promise.race([measuring,new Promise((_,reject)=>{probeTimer=setTimeout(()=>{const failure=new StructuredOutputError('Native budget probe timed out');failure.code='NATIVE_TOKEN_COUNT_UNVERIFIED';reject(failure);},Math.min(30000,this.timeoutMs));})]).finally(()=>clearTimeout(probeTimer));
+            requestSignal.throwIfAborted();
             if (measured && Number.isSafeInteger(measured.inputTokens) && measured.inputTokens > 0
               && Number.isSafeInteger(measured.contextLength) && measured.contextLength > 0) {
               measuredInput = measured.inputTokens;
@@ -245,7 +259,8 @@ export class OllamaClient {
         this.lastStats.semantic_attempts++;
         const openRouter = this.provider === 'openrouter';
         const sdkInference = lmStudio && (this.sdkPredict || this.fetch === globalThis.fetch);
-        const response = sdkInference ? await this.#lmStudioSDKResponse({model:selectedModel,messages,schema,numPredict})
+        requestSignal.throwIfAborted();
+        const response = sdkInference ? await this.#lmStudioSDKResponse({model:selectedModel,messages,schema,numPredict,outerSignal:requestSignal})
           : await this.fetch(`${this.baseUrl}${openRouter || lmStudio ? '/chat/completions' : '/api/chat'}`, this.requestOptions({
           method: 'POST', headers: {'content-type': 'application/json'},
           signal: AbortSignal.timeout(this.timeoutMs),
@@ -333,7 +348,7 @@ export class OllamaClient {
         }
         retryReason = cloud || lmStudio ? failureCode : error instanceof StructuredOutputError ? error.message : error.name || 'Error';
         if (lmStudio) {
-          this.lastStats.validation_codes.push(failureCode);
+          if(failureCode!=='INFERENCE_TIMEOUT'||!this.lastStats.validation_codes.includes(failureCode))this.lastStats.validation_codes.push(failureCode);
           retryDetails = repairDiagnostics(error instanceof StructuredOutputError ? error.message : '',redactedValues);
         }
         if (cloud) {
@@ -361,10 +376,10 @@ export class OllamaClient {
     }
   }
 
-  async #lmStudioSDKResponse({model,messages,schema,numPredict}) {
+  async #lmStudioSDKResponse({model,messages,schema,numPredict,outerSignal}) {
     const request = this.lastStats.requests.at(-1);
     const started = Date.now();
-    const signal = AbortSignal.timeout(this.timeoutMs);
+    const signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs),outerSignal]);
     Object.assign(request,{stage:'awaiting_inference',started_at:new Date(started).toISOString(),
       prompt_processing_progress:0,generated_fragments:0});
     const publish=()=>{if(this.fetch===globalThis.fetch&&!this.sdkPredict)persistModelProgress(model,request);};
@@ -389,6 +404,9 @@ export class OllamaClient {
     let result;
     let deadline;
     let pending;
+    let cancelled=false;
+    const cancel=()=>{if(cancelled)return;cancelled=true;if(typeof pending?.cancel==='function')try{Promise.resolve(pending.cancel()).catch(()=>{});}catch{}};
+    signal.addEventListener('abort',cancel,{once:true});
     try {
       pending = this.sdkPredict ? this.sdkPredict({model,messages,options,baseUrl:this.baseUrl})
         : this.#predictLMStudio(model,messages,options);
@@ -396,9 +414,7 @@ export class OllamaClient {
       // generating prediction. A separate deadline must end our wait reliably.
       const timeout = new Promise((_,reject)=>{
         deadline=setTimeout(()=>{
-          if(typeof pending?.cancel==='function') {
-            try { Promise.resolve(pending.cancel()).catch(()=>{}); } catch {}
-          }
+          cancel();
           const error=new StructuredOutputError('LM Studio inference timed out');
           error.code='INFERENCE_TIMEOUT';
           reject(error);
@@ -418,6 +434,7 @@ export class OllamaClient {
       throw error;
     } finally {
       clearTimeout(deadline);
+      signal.removeEventListener('abort',cancel);
     }
     request.stage='completed';request.elapsed_ms=Date.now()-started;
     publish();

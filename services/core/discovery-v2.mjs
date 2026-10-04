@@ -255,6 +255,12 @@ function normalizationIndex(jobs) {
   return { index, candidates: job => [...new Set([urls.get(job.canonical_url), job.ats_identity && ats.get(job.ats_identity),
     ...[...(identities.get(job.identity_key)?.values() ?? [])]])].filter(Boolean) };
 }
+export async function createDiscoveryNormalizationState(repository){
+ const jobs=repository.listNormalizationJobs?await repository.listNormalizationJobs():await repository.listCanonicalJobs();
+ const state=normalizationIndex(jobs);let pending=Promise.resolve();
+ state.serialize=operation=>{const result=pending.then(operation);pending=result.catch(()=>{});return result;};
+ return state;
+}
 
 export async function saveSourceHealth(repository, runId, source, metrics) {
   if (!repository.pool) return;
@@ -317,7 +323,7 @@ export async function runMarketDiscovery(options={}){
   }finally{if(acquired){if(sourceKey)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[sourceKey]);else await lock.query("SELECT pg_advisory_unlock(hashtext('jobhunter.market-discovery'))");}if(shared)await lock.query("SELECT pg_advisory_unlock_shared(hashtext('jobhunter.market-discovery'))");lock.release();}
 }
 async function performMarketDiscovery({ repository, observer = async () => {}, registryPath = MARKET_REGISTRY,
-  sourceIds, maxSources, signal, fetchOptions = {},continuousPolling=false } = {}) {
+  sourceIds, maxSources, signal, fetchOptions = {},continuousPolling=false,normalizationState } = {}) {
   if (!repository) throw new Error('POSTGRES_REPOSITORY_REQUIRED');
   const catalog = await loadMarketSources(registryPath);
   let sources = catalog;
@@ -332,7 +338,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
   }
   const runId = randomUUID(); const started = new Date().toISOString();
   if (repository.pool) await repository.pool.query('INSERT INTO market_discovery_runs(run_id,started_at) VALUES($1,$2)', [runId, started]);
-  const existing = normalizationIndex(await repository.listCanonicalJobs());
+  const existing = normalizationState??await createDiscoveryNormalizationState(repository);
   const seen = new Set(); const newIds = new Set(); const jobs = new Map(); const results = [];
   const emit = async (source, details) => observer({ run_id: runId, source_id: source?.name, platform: source?.platform,
     query: source?.current_query ?? (publicHtmlAdapters.has(source?.adapter) ? 'Bounded public listing and JobPosting details'
@@ -383,7 +389,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             metrics.policy_requests = 1; robots = validateRobotsPayload(policyResponse.text);
             metrics.policy_status = 'PUBLIC_ROBOTS_READABLE'; metrics.policy_error_code = null;
           } catch (error) {
-            if (source.adapter !== 'public_headless_jobposting' || !/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message)) throw error;
+            if (source.adapter !== 'public_headless_jobposting' || !/SOURCE_HTTP_40[36]|INVALID_ROBOTS_PAYLOAD/.test(error.message)) throw error;
             metrics.policy_requests = 1; metrics.policy_status = 'UNKNOWN_PUBLIC_ROBOTS_UNAVAILABLE';
             metrics.policy_error_code = error.message;
           }
@@ -395,7 +401,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           const response = await safeFetch(url, source, fetchOptions); metrics.pages++;
           return response;
         };
-        const ingest = async records => {
+        const ingestUnsafe = async records => {
           for (const record of records) {
             checkAbort(); metrics.raw_count++;
             try {
@@ -444,6 +450,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             errors: metrics.normalization_errors.length,
             message: `${source.platform}: ${metrics.raw_count} vacancies, ${sourceNew} new, page ${metrics.pages}` });
         };
+        const ingest=records=>existing.serialize?existing.serialize(()=>ingestUnsafe(records)):ingestUnsafe(records);
         if (source.adapter === 'public_headless_jobposting') {
           if (robots && !robotsAllows(robots,source.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
           const resume=prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
@@ -454,7 +461,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             detailOffset:retry?0:Number(resume.next_listing_offset??0),listingUrl:currentUrl,snapshotLinks:retry?undefined:resume.listing_page_snapshot,
             ...(retry?{exactJobUrl:retry.url}:{}),
             allowUrl:url=>!robots||robotsAllows(robots,url)});
-          const board=result.sources[0]; metrics.headless=true; metrics.gpu_disabled=true;
+          const board=result.sources[0]; metrics.headless=board.headless??true; metrics.gpu_disabled=true;metrics.access_mode=board.access_mode??'ISOLATED_PUBLIC_BROWSER';
           metrics.browser_status=board.status; metrics.listing_http_status=board.http_status;
           metrics.public_vacancy_links=board.job_link_count??0; metrics.listing_root_url=source.url;
           metrics.pages=1+board.details.length;
@@ -474,6 +481,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
             metrics.listing_page_snapshot=metrics.listing_page_completed?[]:board.job_links;}
           metrics.pending_details=nextDetailState(resume.pending_details,board.details);
           if(metrics.pending_details.length){metrics.cycle_completed=false;metrics.truncated=true;metrics.coverage_status='DETAIL_RETRIES_PENDING';}
+          if(board.pagination_observation_failed){metrics.cycle_completed=false;metrics.truncated=true;metrics.coverage_status='PAGINATION_OBSERVATION_PENDING';}
           metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
         } else if (publicHtmlAdapters.has(source.adapter)) {
           const resume=source.adapter==='public_listing_html'&&prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
@@ -645,7 +653,7 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
   for (const mapping of mappings) {
     const source = sources.find(item => item.name === mapping.source_name);
     if (!source?.enabled || !source.permitted_access) continue;
-    if(source.source_class==='poland_board'&&['public_listing_html','public_headless_jobposting'].includes(source.adapter)){
+    if(['poland_board','global_board'].includes(source.source_class)&&['public_listing_html','public_headless_jobposting'].includes(source.adapter)){
       try{
         const verified=await verifyPublicBoardPosting({source,url:mapping.source_url,fetchOptions});
         if(verified.raw){

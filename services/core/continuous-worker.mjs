@@ -65,7 +65,7 @@ export class ContinuousStore {
 }
 
 /** Independent lane ticks are injectable for deterministic scheduler tests. */
-export function createContinuousWorker({store,profile,policy={},loadConfiguration=async()=>({profile,policy}),discovery,buildQueue,fit,cv,prose,prepare,apply,notify,
+export function createContinuousWorker({store,profile,policy={},loadConfiguration=async()=>({profile,policy}),discovery,buildQueue,fit,cv,prose,prepare,apply,notify,modelBusy,
  enabled=process.env.CONTINUOUS_WORKER_ENABLED==='true',dryRun=process.env.DRY_RUN==='true',
  allowRealSubmit=process.env.ALLOW_REAL_SUBMIT==='true',intervalMs=60000,onError=()=>{}}){
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
@@ -89,6 +89,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    if(lane==='ingestion')await discovery(context);
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
+    if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
     if(prose&&proseTurn){proseTurn=false;const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
     const candidates=await store.cvCandidates(profile,policy);
     const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
@@ -128,6 +129,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
  const ensureCurrent=async snapshot=>{const current=await loadConfiguration();
   if(digest(current.profile)!==digest(snapshot.profile)||digest(current.policy)!==digest(snapshot.policy))throw new Error('CONFIGURATION_CHANGED_DURING_OPERATION');};
  return createContinuousWorker({store:new ContinuousStore(repository),loadConfiguration,intervalMs,
+  modelBusy:async()=>{const {localModelBusy}=await import('./model-busy.mjs');return localModelBusy(llm.model);},
   discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});return applyDeterministicHardRejects({repository,profile,policy});},
   prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
   fit:({profile,policy})=>runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:1,maxRuntimeMs:llm.timeoutMs+60000,inferenceAuthorized:true}),

@@ -1,4 +1,4 @@
-import {loadMarketSources,runMarketDiscovery} from './discovery-v2.mjs';
+import {loadMarketSources,runMarketDiscovery,createDiscoveryNormalizationState} from './discovery-v2.mjs';
 
 export async function runSourcePool(sources,operation,{concurrency=6,hostLimit=1}={}){
  if(!Number.isInteger(concurrency)||concurrency<1||concurrency>12||hostLimit!==1)throw new Error('INVALID_DISCOVERY_CONCURRENCY');
@@ -19,6 +19,7 @@ export async function runParallelDiscovery({repository,concurrency=6,signal,obse
  const due=sources.filter(s=>s.enabled!==false&&(
   ['public_listing_html','public_headless_jobposting'].includes(s.adapter)&&health.get(s.name)?.listing_root_url!==s.url
   ||!(Date.parse(health.get(s.name)?.next_request_at)>Date.now())));
- const results=await runSourcePool(due,source=>runMarketDiscovery({repository,sourceIds:[source.name],parallelSource:true,continuousPolling:true,signal,observer,registryPath}),{concurrency});
+ const normalizationState=due.length?await createDiscoveryNormalizationState(repository):null;
+ const results=await runSourcePool(due,source=>runMarketDiscovery({repository,sourceIds:[source.name],parallelSource:true,continuousPolling:true,signal,observer,registryPath,normalizationState}),{concurrency});
  return {configured:sources.length,due:due.length,waiting:sources.length-due.length,concurrency,results};
 }

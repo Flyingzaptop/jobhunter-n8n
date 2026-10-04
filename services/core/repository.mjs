@@ -48,6 +48,13 @@ export class Repository {
       await this.pool.query("SELECT * FROM jobs ORDER BY first_seen_at")
     ).rows.map((row) => ({ ...row.metadata, ...row }));
   }
+  async listNormalizationJobs(){
+    return (await this.pool.query(`SELECT job_id,canonical_url,application_url,company,title,location,country,work_mode,
+      description_text,content_hash,availability_status,metadata->>'identity_key' AS identity_key,
+      metadata->>'ats_identity' AS ats_identity,coalesce(metadata->>'profile','real') AS profile,
+      metadata->'employment_type' AS employment_type,metadata->>'published_at' AS published_at,
+      metadata->>'valid_through' AS valid_through,metadata->'salary' AS salary FROM jobs`)).rows;
+  }
   async upsertCanonicalJob(job, { source }) {
     const client = await this.pool.connect();
     try {

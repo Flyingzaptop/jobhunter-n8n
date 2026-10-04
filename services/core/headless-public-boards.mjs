@@ -3,6 +3,8 @@ import {extractJobPostings} from './discovery.mjs';
 import {publishedNextPage} from './discovery-cursors.mjs';
 import {extractVisibleBoardJob} from './board-document.mjs';
 import {boardProfileStatus,openBoardProfile,exportBoardState} from './board-profiles.mjs';
+import {ordinaryChromeContext} from './ordinary-chrome.mjs';
+import {dismissPracujReadOverlays} from './pracuj-overlays.mjs';
 
 export const BOARD_TARGETS = Object.freeze({
   pracuj:{url:'https://www.pracuj.pl/praca',hostname:'www.pracuj.pl',jobPath:/^\/praca\/.+,oferta,\d+\/?$/},
@@ -27,6 +29,7 @@ export function challengeState({status,title,text,captchaVisible=false}){
 export function publicBrowserRequestAllowed(url,method){
   if(!['GET','HEAD'].includes(method))return false;
   const parsed=new URL(url);const path=parsed.pathname;
+  if(parsed.protocol==='https:'&&parsed.hostname==='massachusetts.pracuj.pl'&&path==='/api/companies/metadata')return true;
   return !/^api\./i.test(parsed.hostname)&&!/^\/(?:api|graphql|ajax|auth|login|logout|konto)(?:\/|$)/i.test(path);
 }
 async function inspectPage(page,response){
@@ -43,17 +46,20 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
     const target=BOARD_TARGETS[name];const currentUrl=listingUrl??target.url;
     const parsedListing=new URL(currentUrl);const validPath=parsedListing.pathname===new URL(target.url).pathname
       ||name==='olx'&&/^\/praca\/q-[a-zA-Z0-9%_,+-]+\/$/.test(parsedListing.pathname)
-      ||name==='pracuj'&&/^\/praca\/[^/]+$/.test(parsedListing.pathname);
+      ||name==='pracuj'&&/^\/praca\/[^/]+(?:\/[^/]+;wp)?$/.test(parsedListing.pathname);
     if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
     const profile=await boardProfileStatus(name);
-    if(profile.manual_login_active){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
-    const context=profile.prepared?await openBoardProfile(name,{headless:profile.headless}):await browser.newContext();
+    if(profile.manual_login_active&&name!=='pracuj'){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
+    const ordinary=name==='pracuj';
+    const context=ordinary?await ordinaryChromeContext({directory:'data/board-diagnostics/pracuj-native',port:9127}):profile.prepared?await openBoardProfile(name,{headless:profile.headless}):await browser.newContext();
     // Discovery only: never transmit application forms or interact with authentication.
-    await context.route('**/*',route=>publicBrowserRequestAllowed(route.request().url(),route.request().method())?route.continue():route.abort());
-    const page=await context.newPage();const result={source:name,url:currentUrl,status:'UNKNOWN',job_links:[],details:[]};
+    const blockedRequests=[];
+    await context.route('**/*',route=>{const request=route.request();if(publicBrowserRequestAllowed(request.url(),request.method()))return route.continue();const target=new URL(request.url());blockedRequests.push({host:target.hostname,path:target.pathname,method:request.method()});return route.abort();});
+    const page=await context.newPage();const result={source:name,url:currentUrl,status:'UNKNOWN',job_links:[],details:[],blocked_requests:blockedRequests,headless:ordinary?false:profile.prepared?profile.headless:true,access_mode:ordinary?'ORDINARY_CHROME_CDP':profile.prepared?'USER_MANAGED_PROFILE':'ISOLATED_PUBLIC_BROWSER'};
     try{
       const response=await page.goto(currentUrl,{waitUntil:'domcontentloaded',timeout:navigationTimeoutMs});
       await page.waitForLoadState('load',{timeout:5000}).catch(()=>{});
+      if(name==='pracuj')await dismissPracujReadOverlays(page).catch(()=>{});
       const state=await inspectPage(page,response);Object.assign(result,state,{http_status:state.status,status:state.challenge??'PUBLIC_PAGE_READABLE'});
       if(!state.challenge){
         const links=await page.locator('a[href]').evaluateAll(items=>items.map(item=>({href:item.href,text:item.innerText,rel:item.rel})));
@@ -63,6 +69,16 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
         if(exactJobUrl){result.job_links=boardVacancyLinks(name,[{href:exactJobUrl}]);if(result.job_links.length!==1)throw new Error('INVALID_EXACT_PUBLIC_JOB_URL');}
         result.job_link_count=result.job_links.length;
         if(!result.job_links.length)result.status='NO_PUBLIC_VACANCY_LINKS';
+        if(name==='pracuj'&&!exactJobUrl&&!result.published_next_page_url){
+          const next=page.locator('[data-test="bottom-pagination-button-next"]');
+          if(await next.count()&&await next.isVisible()&&await next.isEnabled()){
+            const previous=page.url();await next.click({timeout:5000}).catch(error=>{result.pagination_observation_failed=true;result.pagination_error=String(error.message).slice(0,1000);});
+            if(!result.pagination_observation_failed)await page.waitForURL(url=>url.href!==previous,{timeout:5000}).catch(()=>{});
+            const observed=new URL(page.url());
+            if(observed.href!==previous&&observed.origin===parsedListing.origin)result.published_next_page_url=observed.href;
+            else result.pagination_observation_failed=true;
+          }else result.listing_end_observed=true;
+        }
         const offset=detailOffset%(result.job_links.length||1);result.next_listing_offset=offset+Math.min(maxDetails,result.job_links.length-offset);
         for(const job of result.job_links.slice(offset,offset+maxDetails)){
           if(!allowUrl(job.url)){result.status='PUBLIC_POLICY_DENIED';break;}
@@ -71,6 +87,11 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
             const detailState=await inspectPage(page,detailResponse);Object.assign(detail,{http_status:detailState.status,status:detailState.challenge??'PUBLIC_DETAIL_READABLE',title:detailState.title});
             if(!detailState.challenge){
               const html=await page.content();detail.job_postings=extractJobPostings(html);
+              if(name==='pracuj'&&detail.job_postings.length===1){
+                const badges=await page.locator('[data-test="offer-badge-title"]').allTextContents();
+                const formats=badges.map(text=>({quote:text.trim(),mode:/^praca stacjonarna$/i.test(text.trim())?'ONSITE':/^praca hybrydowa$/i.test(text.trim())?'HYBRID':/^praca zdalna$/i.test(text.trim())?'REMOTE':null})).filter(item=>item.mode);
+                if(formats.length===1){const posting=detail.job_postings[0];posting.work_mode=formats[0].mode;posting.description=(posting.description??'')+'\nWork format: '+formats[0].quote;posting.work_format_evidence={method:'VISIBLE_OFFER_BADGE',quote:formats[0].quote};}
+              }
               if(!detail.job_postings.length){const extracted=await extractVisibleBoardJob(page,name);if(extracted)detail.job_postings=[extracted];}
               detail.structured_job_count=detail.job_postings.length;
               if(!detail.job_postings.length)detail.status='PUBLIC_DETAIL_WITHOUT_JOBPOSTING';
@@ -80,7 +101,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
         }
       }
     }catch(error){result.status='BROWSER_TRANSPORT_ERROR';result.error=String(error.message).split('\n')[0].slice(0,250);}
-    finally{if(profile.prepared)await exportBoardState(context,name).catch(()=>{});await context.close();}
+    finally{if(profile.prepared&&!ordinary)await exportBoardState(context,name).catch(()=>{});await context.close();}
     report.sources.push(result);
   }}finally{await browser.close();}
   report.completed_at=new Date().toISOString();return report;

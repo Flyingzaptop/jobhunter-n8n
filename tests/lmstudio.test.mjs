@@ -4,6 +4,13 @@ import {OllamaClient,StructuredOutputError} from '../services/core/llm.mjs';
 
 const model = 'gemma4-26b-a4b-qat-uncensored-hauhaucs-balanced-mtp';
 const schema = {type:'object',properties:{quote:{type:'string'}},required:['quote'],additionalProperties:false};
+test('whole inference deadline bounds a stalled native budget probe and cannot start a late prediction',async()=>{
+ let resolveCounter;
+ const {client,calls}=harness([],{timeoutMs:1000,tokenCounter:()=>new Promise(resolve=>{resolveCounter=resolve;})});
+ await assert.rejects(client.json({system:'Extract',prompt:'Python',schema}),{code:'INFERENCE_TIMEOUT'});
+ resolveCounter({inputTokens:100,contextLength:32768});await new Promise(resolve=>setTimeout(resolve,30));
+ assert.equal(calls.length,0);
+});
 test('small prompts respect actual loaded context even when configured context is larger',async()=>{
   let measured=0;
   const {client,calls}=harness([],{contextLimit:32768,tokenCounter:async()=>{

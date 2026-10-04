@@ -23,8 +23,8 @@ export class BrowserClient {
   async call(endpoint, body, method = body ? 'POST' : 'GET') { if (!this.token) throw new Error('BROWSER_TOKEN_REQUIRED'); const response=await this.fetch(this.baseUrl+endpoint,{method,headers:{authorization:`Bearer ${this.token}`,'content-type':'application/json'},body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(45000)}); const result=await response.json();if(!response.ok)throw new Error(result.error||'BROWSER_ACTION_FAILED');return result; }
 }
 const known = value => value !== undefined && value !== null && value !== '' && value !== 'UNKNOWN';
-const norm = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[_\W]+/g,' ').trim();
-const country = value => /^(pl|poland)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
+const norm = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[^a-z0-9+#]+/g,' ').trim();
+const country = value => /^(pl|poland|polska)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
 export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const identity=profile.onboarding??{},name=identity.legal_name;
   const values=(view.fields??[]).filter(f=>f.visible&&!['password','hidden','file'].includes(f.type)).map(f=>String(f.value??''));
@@ -50,6 +50,7 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
+  if(/birth|born|urodze/.test(label)&&!['first_name','last_name','email','phone'].includes(field.name))return null;
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   if(/linkedin/i.test(label)&&known(identity.linkedin_url)&&['text','url'].includes(field.type))return {value:identity.linkedin_url,source:'PROFILE'};
@@ -63,6 +64,9 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
     else if(/^(?:nazwisko)$|last name|surname|family name/.test(label))value=direct.last_name;
     else if(/^(?:(?:e mail|email)(?: address)?|adres e mail)$/.test(label)&&['email','text'].includes(field.type))value=identity.email;
     else if(/^(?:phone|phone number|telephone|mobile(?: phone)?(?: number)?|telefon|numer telefonu)$/.test(label)&&['tel','text'].includes(field.type))value=identity.phone;
+    else if(/^(?:city|miasto|miejscowosc|miasto zamieszkania|miejscowosc zamieszkania)$/.test(label))value=candidate.base_location?.city;
+    else if(/^(?:country|country of residence|kraj|kraj zamieszkania)$/.test(label))value=candidate.base_location?.country;
+    else if(/^(?:current title|current job title|obecne stanowisko|aktualne stanowisko)$/.test(label))value=direct.current_title;
     else if(/^(?:how many )?(?:professional years of experience|years of professional experience|years of commercial experience)$/.test(label))value=professionalYears(profile);
     else if(field.multiple && /skills/.test(label))value=(field.options||[]).filter(o=>skills.includes(norm(o.value))||skills.includes(norm(o.label))).map(o=>o.value);
     else if(/fusion.*project/.test(label)) { const fact=facts.find(f=>(f.skills||[]).some(s=>norm(s)==='fusion 360'));if(fact?.statements?.length){value=`${fact.provenance}: ${fact.statements.join(' ')}`;source='VERIFIED_FACT';} }
@@ -73,7 +77,8 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
     if(entry){value=entry.value;source='ANSWER_MEMORY';}
   }
   if(!known(value)||(Array.isArray(value)&&!value.length))return null;
-  if(field.options && !field.multiple) { const option=field.options.find(o=>norm(o.value)===norm(value)||norm(o.label)===norm(value));if(!option)return null;value=option.value; }
+  if(field.options && !field.multiple) { const choice=v=>/^(?:yes|tak|true)$/.test(norm(v))?'YES':/^(?:no|nie|false)$/.test(norm(v))?'NO':country(v)==='PL'?'PL':norm(v);const option=field.options.find(o=>choice(o.value)===choice(value)||choice(o.label)===choice(value));if(!option)return null;value=option.value; }
+  if(value===identity.phone&&field.max_length===9&&country(job.country)==='PL'&&/^\+48\d{9}$/.test(value))value=value.slice(3);
   if(field.type==='radio' && norm(field.value)!==norm(value))return {skip:true};
   return {value,source};
 }
@@ -188,6 +193,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
             const draft=await readyProse(input);
             if(draft){view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:draft.text_answer,verified_facts:true});await consumeProse({repo:repository,draftId:draft.draft_id,appId:application.application_id});continue;}
             const queued=await enqueueProse(input);
+            if(queued.status==='REJECTED'&&field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});
+            if(queued.status==='REJECTED')continue;
             await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{prose_pending_question:{selector:field.selector,field_label:field.label,fingerprint:view.fingerprint,draft_id:queued.draft_id},pending_question:null}]);
             return {application_id:application.application_id,status:'FILLING',prose_pending:true,draft_id:queued.draft_id};
           }

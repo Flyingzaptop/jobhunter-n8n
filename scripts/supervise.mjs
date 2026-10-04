@@ -35,6 +35,7 @@ let stopped=false;process.on('SIGINT',()=>stopped=true);process.on('SIGTERM',()=
 const attempts=new Map();
 try{while(!stopped){const states=[];
  for(const service of services){
+  try{const maintenance=JSON.parse(await readFile(path.join(directory,'maintenance.json'),'utf8'));if(maintenance.services?.includes(service.name)){states.push({name:service.name,state:'UPDATING'});continue;}}catch{}
   try{const ids=await pids(service.entry);const ok=await healthy(service,ids);
    if(ok){attempts.delete(service.name);states.push({name:service.name,state:'RUNNING',pids:ids});continue;}
    if(ids.length){states.push({name:service.name,state:'UNHEALTHY_EXISTING_PROCESS',pids:ids});continue;}

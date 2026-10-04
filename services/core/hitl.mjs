@@ -16,7 +16,7 @@ export function questionEligibility(question, application, profileId) {
   const pending = application.last_state?.pending_question;
   if (!pending || pending.request_id !== question.telegram_request_id) return 'QUESTION_CORRELATION_STALE';
   const probe = `${pending.type ?? ''} ${pending.field_type ?? ''} ${pending.field_name ?? ''} ${question.raw_question ?? ''}`;
-  if (/captcha|password|passcode|\botp\b|\btotp\b|two.factor|2fa|authentication.code|auth.code|verification.code|one.time.code|\bpin\b|has[lł]o|kod.*(?:weryfik|uwierzyt|jednoraz|logowan)|social.security|passport.number|bank.account|credit.card|\biban\b|secret|api.?key|\btoken\b/i.test(probe)) return 'SECURITY_QUESTION_REQUIRES_MANUAL_TAKEOVER';
+  if (/captcha|password|passcode|sms.code|kod.*(?:sms|mail|wiadomo)|\botp\b|\btotp\b|two.factor|2fa|authentication.code|auth.code|verification.code|one.time.code|\bpin\b|has[lł]o|kod.*(?:weryfik|uwierzyt|jednoraz|logowan)|social.security|passport.number|bank.account|credit.card|\biban\b|secret|api.?key|\btoken\b/i.test(probe)) return 'SECURITY_QUESTION_REQUIRES_MANUAL_TAKEOVER';
   return null;
 }
 async function event(client, applicationId, kind, payload) {

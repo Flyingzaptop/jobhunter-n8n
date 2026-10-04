@@ -7,6 +7,7 @@ import { OllamaClient } from "../core/llm.mjs";
 import { BrowserClient } from "../core/application.mjs";
 import {productionGateStatus} from '../core/production-gate.mjs';
 import {executeConfirmedSubmit} from '../core/confirmed-submit.mjs';
+import {refreshReadyReview} from '../core/refresh-review.mjs';
 import {BOARD_PROFILES,boardProfileStatus} from '../core/board-profiles.mjs';
 import {spawn} from 'node:child_process';
 import { browserConfig } from "../browser-service/server.mjs";
@@ -377,7 +378,7 @@ export function createDashboard({
       }
       if (req.method!=='POST') throw hitlError('POST_REQUIRED',405);
       const input=await body(req);
-      if (action==='prepare') {if(Object.keys(input).length)throw hitlError('INVALID_REVIEW_REQUEST',400);return send(await prepareApplicationReview(repository,applicationId,profile,browser));}
+      if (action==='prepare') {if(Object.keys(input).length)throw hitlError('INVALID_REVIEW_REQUEST',400);await refreshReadyReview({repository,applicationId,profile});return send(await prepareApplicationReview(repository,applicationId,profile,browser));}
       if (!q.uuid(input.approval_id) || Object.keys(input).some(key=>!['approval_id','binding_digest','confirmed'].includes(key))) throw hitlError('INVALID_REVIEW_REQUEST',400);
       if(action==='revoke')return send(await revokeApplicationReview(repository,applicationId,input.approval_id,profile));
       if(input.confirmed!==true || !/^[0-9a-f]{64}$/.test(input.binding_digest??''))throw hitlError('EXPLICIT_REVIEW_CONFIRMATION_REQUIRED',400);

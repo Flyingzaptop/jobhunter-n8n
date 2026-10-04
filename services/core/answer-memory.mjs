@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 const fold=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[_\W]+/g,' ').trim();
 export function answerIntent(field,{country}={}){
  const text=fold(field.label??field.field_label??field.question),name=fold(field.name??field.field_name);
+ const jurisdiction=/\b(?:poland|polska|polsce)\b/.test(text)?'PL':/\b(?:germany|niemcy|niemczech)\b/.test(text)?'DE':/\b(?:united states|usa|u s a)\b/.test(text)?'USA':/\b(?:european union|unia europejska|unii europejskiej)\b/.test(text)?'EU':null;
  if(/captcha|password|passcode|otp|2fa|token|privacy|consent|agree|zgod|oswiadczen|passport|bank/.test(text+' '+name))return null;
  let key;
  const scope={};
@@ -14,8 +15,8 @@ export function answerIntent(field,{country}={}){
   Object.assign(scope,{currency:currency.toUpperCase(),period,basis,country:country??'UNKNOWN'});
  }else if(/earliest.*(?:start|date)|start date|when.*(?:start|join)|dostepnosc|kiedy.*rozpocz|termin.*rozpocz/.test(text+' '+name))key='start_date';
  else if(/notice period|okres wypowiedzenia/.test(text+' '+name))key='notice_period';
- else if(/work authori|right to work|prawo do pracy/.test(text)){if(!country)return null;key='work_authorization';scope.country=country;}
- else if(/sponsor|visa|wiza/.test(text)){if(!country)return null;key='visa_sponsorship';scope.country=country;}
+ else if(/work authori|right to work|prawo do pracy/.test(text)){if(!jurisdiction)return null;key='work_authorization';scope.country=jurisdiction;}
+ else if(/sponsor|visa|wiza/.test(text)){if(!jurisdiction)return null;key='visa_sponsorship';scope.country=jurisdiction;}
  else return null;
  return {key,scope};
 }

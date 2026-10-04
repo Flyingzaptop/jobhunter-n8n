@@ -670,6 +670,8 @@ export function deterministicHardReject({job,profile,policy={}}){
  const relocation=fragments.find(f=>!/\b(?:preferred|optional|not required|assistance|support|benefit)\b/i.test(f.text)&&/\b(?:must|requires?|mandatory|required|willingness)\b[^.!?]*\brelocat|\brelocation\s+(?:is\s+)?(?:required|mandatory)/i.test(f.text));
  if(loc.no_relocation===true&&relocation)add('NO_RELOCATION_USER_POLICY',relocation.text,'description_text',{policy_source:'work_location_policy.no_relocation',verified_policy_fact:true});
  const travel=mandatoryTravelQuote(job,fragments);
+ if(loc.forbid_mandatory_travel===true&&/\btravel[-\s]+required\b|\bmandatory[-\s]+travel\b/i.test(job.location??'')&&!/\bno\s+(?:business\s+)?travel|travel\s+(?:is\s+)?not\s+required/i.test(job.description_text??''))
+  add('MANDATORY_TRAVEL_INELIGIBLE',job.location,'location',{policy_source:'work_location_policy.forbid_mandatory_travel',verified_policy_fact:true});
  if(loc.forbid_mandatory_travel===true&&travel)add('MANDATORY_TRAVEL_INELIGIBLE',travel,'description_text',{policy_source:'work_location_policy.forbid_mandatory_travel',verified_policy_fact:true});
  const remoteRestriction=fragments.find(f=>{
   const text=normalize(f.text);const explicit=/\bmust\s+(?:reside|live|be based|be located|work from)\b|\b(?:only|exclusively)\s+(?:open|available|offered)\s+to\s+(?:applicants|candidates|residents)\b|\b(?:candidates|applicants|employees)\b[^.!?]*\b(?:resid(?:e|ing)|based|located)\b[^.!?]*\bonly\b|\b(?:remote|role|position|job)\b[^.!?]*\b(?:united states|usa|us|canada|germany|romania|uk|australia)\s+only\s*[.!?]?$/i.test(text)||
