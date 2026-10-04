@@ -4,6 +4,7 @@ import {mkdir,open,writeFile,unlink,readFile} from 'node:fs/promises';
 import path from 'node:path';
 const execute=promisify(execFile),root=process.cwd(),directory=path.resolve('data/runtime');
 const services=[
+ ...(process.env.OLLAMA_PROVIDER==='lmstudio'?[{name:'lmstudio',entry:'scripts/resident-lmstudio.mjs'}]:[]),
  {name:'postgres',entry:'scripts/local-postgres.mjs',url:'tcp:55432'},
  {name:'core',entry:'services/core/server.mjs',url:'http://127.0.0.1:3000/health'},
  {name:'browser',entry:'services/browser-service/server.mjs',url:'http://127.0.0.1:3001/health'},
