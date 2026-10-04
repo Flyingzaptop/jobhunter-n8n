@@ -12,7 +12,7 @@ export function retryPlan(
   { now = new Date(), maxAttempts = 3, baseMs = 60000 } = {},
 ) {
   const kind = classifyAnalysisFailure(error);
-  const retryable = kind === "TRANSIENT" && attempt < maxAttempts;
+  const retryable = kind === "TRANSIENT" && (error?.code==='HTTP_429'||attempt < maxAttempts);
   return {
     kind,
     retryable,
