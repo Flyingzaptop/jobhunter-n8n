@@ -6,6 +6,7 @@ import { browserConfig } from '../browser-service/server.mjs';
 import {persistPendingApplicationQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 import {settleApplicationForm} from './form-settling.mjs';
+import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
@@ -39,7 +40,7 @@ export function professionalYears(profile) {
 }
 
 export function resolveField(field, { profile, job, answerMemory = {} }) {
-  const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(field.label).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
+  const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
@@ -122,6 +123,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
     let sessionId=application.last_state?.browser_session_id, view;
     if(application.status==='QUEUED'||application.status==='OPENING') {if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
     else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
+    const initialScope=scopeApplicationForm(view);
+    if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
+    view=initialScope.view;
     if(['NEEDS_USER','CAPTCHA_WAIT'].includes(application.status)){
       const pending=application.last_state.pending_question, answerRow=(await repository.pool.query('SELECT * FROM application_questions WHERE application_id=$1 AND telegram_request_id=$2 AND answered_at IS NOT NULL',[application.application_id,pending?.request_id])).rows[0];
       if(!answerRow)return {application_id:application.application_id,status:application.status};
@@ -137,6 +141,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
     }
     if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
     for(let count=0;count<maxSteps;count++){
+      const stepScope=scopeApplicationForm(view);
+      if(!stepScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:stepScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:stepScope.reason};}
+      view=stepScope.view;
       const employerPolicy=employerAutomationPolicy(view);
       if(employerPolicy){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:employerPolicy,browser_session_id:sessionId,current_url:view.url});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:employerPolicy};}
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
@@ -156,7 +163,10 @@ export async function runApplication({ repository, jobId, applicationId, profile
         const operation=field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
-      const final=view.buttons.find(b=>b.final_submit||/submit application|send application/i.test(b.text));
+      const finalScope=scopeApplicationForm(view);
+      if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
+      view=finalScope.view;
+      const final=view.buttons.find(b=>b.final_submit||/submit(?: your)? application|send application/i.test(b.text));
       if(final){
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
