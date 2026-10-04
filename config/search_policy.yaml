@@ -74,3 +74,8 @@ work_location_policy:
   relocation: {assume_willing: false, allowed_countries: [], allowed_cities: []}
   unknown_work_format: {action: REVIEW}
 application_domains: {allow: [], deny: []}
+
+# User override: compensation never filters or ranks vacancies.
+compensation_filter:
+  enabled: false
+  minimum: null
