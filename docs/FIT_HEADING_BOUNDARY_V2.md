@@ -67,3 +67,20 @@ clauses remain requirements. `oder` alternatives/examples stay one clause.
 Two regression cases grounded in that observed vocabulary pass alongside all
 previous tests: 54/54 fit regressions. German language capability and completed
 degree truth are not assumed. Fresh actual Qwen reanalysis is separate evidence.
+
+## v2.9 ongoing education correction
+
+Assistant manual reference review exposed that the actual Waymo requirement
+`Currently pursuing a Bachelor's or Master's degree ... or a related technical
+field` was incorrectly treated by the deterministic education guard as requiring
+graduation. v2.9 applies the completion guard only to completed-degree demands.
+Ongoing/pursuing/enrolled/studying and multilingual study-status clauses retain
+their model-supported match and uncertainty. Related-field PARTIAL remains
+PARTIAL; missing level/enrollment evidence remains UNKNOWN. No BSc or graduation
+fact is introduced. Bare completed degree/BSc, French diplômé and German
+abgeschlossen requirements still cannot be satisfied by an incomplete degree.
+
+The trailing real Waymo multi-application direction is now explicitly context-only
+and excluded from score mapping. Three new regression cases plus all prior fit
+checks pass 57/57. The live queue was paused at a current-job boundary and then
+resumed with new prompt hashes; prior outputs remain audit evidence.

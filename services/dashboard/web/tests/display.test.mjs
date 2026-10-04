@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { text, safeUrl, duration, tone, onboardingRows, actionLabel, sessionOptions } from '../src/display.mjs';
+import { text, safeUrl, duration, tone, onboardingRows, actionLabel, sessionOptions,gateChecks,gateStatus } from '../src/display.mjs';
 test('unknown, zero and false remain distinct', () => {
   assert.equal(text(null), 'Not recorded'); assert.equal(text(0), '0'); assert.equal(text(false), 'No');
 });
@@ -38,4 +38,11 @@ test('duplicate session IDs prefer explicit benchmark scope without fabricating 
   const options = sessionOptions([{ last_state: { browser_session_id: id } }], [{ session_id: id, scope: 'ATS_COMPATIBILITY' }]);
   assert.equal(options.length, 1); assert.match(options[0][1], /^ATS compatibility/);
   assert.match(options[0][1], /Company unknown/);
+});
+test('production gate never invents checks or PASS from missing evidence',()=>{
+  assert.deepEqual(gateChecks(null),[]);assert.equal(gateStatus(undefined),'UNKNOWN');
+  assert.equal(gateStatus('PARTIAL'),'PARTIAL');assert.equal(gateStatus('BLOCKED'),'BLOCKED');
+  assert.deepEqual(gateChecks({gate_1:{status:'PASS',actual:3,target:3}}),[{id:'gate_1',status:'PASS',actual:3,target:3}]);
+  assert.equal(gateChecks([{label:'Recorded',status:'BLOCKED'}])[0].status,'BLOCKED');
+  assert.equal(gateStatus(true),'PASS');assert.equal(gateStatus(false),'BLOCKED');
 });

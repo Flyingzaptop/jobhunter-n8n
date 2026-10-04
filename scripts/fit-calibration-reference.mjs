@@ -26,7 +26,7 @@ const reference=[
  ['fca8777c-e5b4-5044-94e1-dd50174a8b78','You have a basic understanding of computer hardware and software','TECHNICAL','MANDATORY','YES',['exp_hospital_it'],'Professional hardware/software troubleshooting is direct evidence.'],
  ['fca8777c-e5b4-5044-94e1-dd50174a8b78','You have great communication skills in English (French is appreciated!)','LANGUAGE','MANDATORY','PARTIAL',['lang_english'],'English B2 is documented; great communication is not fully evidenced and French is only appreciated.'],
  ['a4c6c2d6-9b18-5bab-baf7-424b936caf43','Diplômé d’une école d’ingénieurs ou titulaire d’un Master (Bac+5) en conception mécanique, tuyauterie ou équivalent','EDUCATION','MANDATORY','NO',['edu_pwr_mechanical'],'French clause asks a completed engineering/Master qualification; incomplete degree cannot satisfy it.'],
- ['919fa93b-67a0-5b32-93b7-ccd7bd089bde','Proficient in Python','TECHNICAL','MANDATORY','PARTIAL',['rnd_xauusd_ml','web_apps'],'Strong practical Python project evidence exists; unspecified professional-level proficiency should be assessed cautiously.'],
+ ['919fa93b-67a0-5b32-93b7-ccd7bd089bde','Proficient in Python','TECHNICAL','MANDATORY','YES',['rnd_xauusd_ml','web_apps'],'Substantive Python ML and web project evidence supports proficiency; the clause does not demand professional employment years.'],
  ['c43179eb-f821-5fd4-b3be-42fd84d45f7f','BSc or higher in Telecommunications Engineering, Telematics Engineering, Electrical/Electronics Engineering, or Computer Science.','EDUCATION','MANDATORY','NO',['edu_pwr_mechanical'],'Incomplete Mechanical Engineering does not satisfy a completed BSc in the listed or related fields.'],
 ];
 const repository=new Repository();
@@ -37,7 +37,9 @@ try{
   if(fact_ids.some(id=>!facts.has(id)))throw new Error(`Calibration fact ID missing: ${job_id}`);
   const label={job_id,title:job.title,company:job.company,source_url:job.canonical_url,source_quote,category,importance,candidate_match,
    candidate_evidence_fact_ids:fact_ids,reason,author_type:'ASSISTANT_AGENT',review_method:'ASSISTANT_MANUAL_REVIEW',review_status:'AGENT_REVIEWED_USER_PENDING',
-   reference_partition:labels.length%4===0?'HELD_OUT':'DEVELOPMENT',profile_hash:profileHash,reviewed_at:new Date().toISOString()};
+   reference_partition:labels.length%4===0?'HELD_OUT':'DEVELOPMENT',profile_hash:profileHash,reviewed_at:new Date().toISOString(),
+   expectation_strength:category==='EDUCATION'&&candidate_match==='NO'||candidate_match==='UNKNOWN'&&fact_ids.length===0?'FIRM_FACT_GUARD':'ASSISTANT_JUDGMENT_REQUIRES_ADJUDICATION',
+   risk_focus:category==='EDUCATION'?'FALSE_COMPLETED_DEGREE_OR_RELATED_FIELD_BLOCKER':category==='LANGUAGE'?'UNSUPPORTED_LANGUAGE_OR_LEVEL':category==='LOCATION'?'UNCONFIRMED_RELOCATION_OR_REMOTE_ROUTE':/proficien|experience|years|familiar|knowledge/i.test(source_quote)?'SKILL_QUALIFIER_OR_PROVENANCE':'REQUIREMENT_MAPPING'};
   await saveAgentCalibrationLabel(repository,label);labels.push(label);
  }
  const comparisons=[];for(const label of labels){const latest=(await repository.pool.query('SELECT model,prompt_version,analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[label.job_id])).rows[0];

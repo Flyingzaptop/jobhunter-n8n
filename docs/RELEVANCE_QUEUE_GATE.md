@@ -65,6 +65,15 @@ attempts; UNKNOWN/closed skips do not consume that model budget. They are report
 separately from actual completed analyzed counts. A time budget or semantic
 failure can still prevent 200 validated outputs and must be reported honestly.
 
+Root's assistant manual adjudication identified a concrete ongoing-degree guard
+bug in the actual Waymo clause. The initial v2.8 run was paused at a job boundary
+after 7 actual analyses (8 queue records processed). It is retained as historical
+diagnostic evidence. v2.9 distinguishes currently pursuing/enrolled study from
+completed degree requirements and excludes multi-application instructions from
+scored requirements; degree-level/related-field uncertainty stays explicit.
+The resumed fresh run is `c50598b0-4bae-4dea-96ff-acde02191be8`; changed prompt
+hashes trigger appropriate reassessment, with no history deletion or forced scores.
+
 ## Curated reference calibration
 
 Twenty actual employer source clauses were separately inspected against verified

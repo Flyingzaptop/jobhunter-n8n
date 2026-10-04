@@ -51,3 +51,13 @@ export function sessionOptions(applications, benchmarks) {
   }
   return [...result.values()];
 }
+export function gateChecks(value) {
+  if (Array.isArray(value)) return value.map((check,index)=>({id:check.id??check.gate??String(index+1),...check}));
+  if (value && typeof value==='object') return Object.entries(value).map(([id,check])=>typeof check==='object'&&check?{id,...check}:{id,status:check});
+  return [];
+}
+export function gateStatus(value) {
+  if(value===true)return 'PASS';if(value===false)return 'BLOCKED';
+  const status=String(value??'UNKNOWN').toUpperCase();
+  return ['PASS','PASSED','SATISFIED','COMPLETE','COMPLETED'].includes(status)?'PASS':status;
+}

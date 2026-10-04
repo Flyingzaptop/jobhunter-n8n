@@ -37,6 +37,12 @@ real-submit enablement control, arbitrary code/URL control, or remote browser
 debugging interface. Vacancy descriptions are rendered as plain text. External
 links accept only HTTP(S) URLs.
 
+System also shows the actual production evidence checklist and relevance queue.
+These read `/api/production-gate` and `/api/relevance-queue` every five seconds
+while actively viewed, plus SSE updates. Queue scores/states are explicitly not
+candidate-fit qualification. UI checks and production readiness have separate
+statuses; no evidence/Submit enablement is inferred from a rendered checklist.
+
 API contracts: `docs/READINESS_V2_CONTRACTS.md`; current HITL/review additions:
 `docs/DASHBOARD_HITL_GATES.md`. Missing/null fields are presented
 as unknown or not recorded. A failed refresh explicitly marks previous records
