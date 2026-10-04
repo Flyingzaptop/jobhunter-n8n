@@ -11,7 +11,7 @@ import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from '.
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
 import {verifySubmitCapability} from './submit-capability.mjs';
-import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest} from './preparation-network.mjs';
+import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from './preparation-network.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -145,9 +145,9 @@ export async function createBrowserService(config = browserConfig()) {
         const receipt=async response=>{try{
           const request=response.request();
           if(!response.ok()||!reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow}))return;
-          const result=await response.json();const id=result.attachment_id??result.file_id??result.document_id??result.id;
-          if((typeof id==='string'||typeof id==='number')&&!result.error&&(!result.filename||result.filename===upload.filename)){
-            upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id=String(id).slice(0,200);
+          const result=verifiedUploadReceipt(await response.json(),upload.filename);
+          if(result){
+            upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id=result.receipt_id;
           }
         }catch{/* No receipt is inferred from an arbitrary successful response. */}};
         session.page.on('response',receipt);const cleanup=setTimeout(()=>session.page.off('response',receipt),30000);cleanup.unref();

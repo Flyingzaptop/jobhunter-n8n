@@ -1,4 +1,12 @@
 import {createHash} from 'node:crypto';
+export function verifiedUploadReceipt(result,filename){
+ if(!result||typeof result!=='object'||result.error||result.errors)return null;
+ const specific=result.attachment_id??result.file_id??result.document_id;
+ const named=result.filename??result.file_name??result.name;
+ const id=specific??(named===filename?result.id:null);
+ if(!['string','number'].includes(typeof id)||!String(id).trim()||named&&named!==filename)return null;
+ return {receipt_id:String(id).slice(0,200),filename:named??filename};
+}
 export function draftNavigationWindow(snapshot,button,now=Date.now()){
  const label=String(button.text??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
  if(button.final_submit||!button.name||!button.value||!/^(?:next|continue|dalej|kontynuuj|nastepny krok)$/.test(label)||!/next|continue|dalej|kontynuuj|save.?draft/i.test(button.value))return null;
@@ -29,6 +37,10 @@ export function reviewedUploadRequest({url,method,body,contentType,window,now=Da
   if(/filename=/i.test(headers)){
    const bytes=body.subarray(headerEnd+4,next-2);
    if(createHash('sha256').update(bytes).digest('hex')!==window.sha256)return false;found++;
+  }else{
+   const field=headers.match(/\bname="([^"]+)"/i)?.[1];
+   const value=body.subarray(headerEnd+4,next-2).toString('utf8').trim();
+   if(/^(?:action|operation|event|eventid|submit)$/i.test(field??'')&&/^(?:send|submit|apply|wyslij|confirm)$/i.test(value))return false;
   }
   start=next;
  }
