@@ -5,6 +5,7 @@ import { safeFetch, parseSourcePayload, sourceEndpoint, extractJobPostings, deco
 import { normalizeRaw, duplicateConfidence, descriptionContent } from './normalization.mjs';
 import {probeHeadlessBoards} from './headless-public-boards.mjs';
 import {publishedNextPage,htmlPaginationLinks,listingCursor} from './discovery-cursors.mjs';
+import {nextDetailState} from './board-document.mjs';
 const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html', 'public_listing_html']);
 
 export function publicListingJobUrls(source, text) {
@@ -15,7 +16,9 @@ export function publicListingJobUrls(source, text) {
   for (const [, href] of String(text).matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
     try {
       const url = new URL(decodeEntities(href), source.url);
-      if (url.origin !== new URL(source.url).origin || !pattern.test(url.pathname)) continue;
+      const sameOrigin=url.origin===new URL(source.url).origin;
+      const regional=source.regional_listing_hosts?.includes(url.hostname)&&url.protocol==='https:';
+      if ((!sameOrigin&&!regional) || !pattern.test(url.pathname)) continue;
       if(pagePattern?.test(url.pathname+url.search))continue;
       url.hash = ''; url.search = ''; urls.add(url.href);
     } catch { /* Invalid page links are not vacancy URLs. */ }
@@ -168,8 +171,8 @@ export function parseMarketPayload(source, text, fetchedUrl = marketEndpoint(sou
 }
 
 export async function verifyPublicJobPosting({ source, url, fetchOptions = {}, listingText, robotsText }) {
-  const robots = validateRobotsPayload(robotsText ?? (await safeFetch(source.robots_url, source, fetchOptions)).text);
-  if (!robotsAllows(robots, url) || !robotsAllows(robots, source.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
+  const robots = source.robots_url?validateRobotsPayload(robotsText ?? (await safeFetch(source.robots_url, source, fetchOptions)).text):null;
+  if (robots&&(!robotsAllows(robots, url) || !robotsAllows(robots, source.url))) throw new Error('ROBOTS_ACCESS_BLOCKED');
   const listing = listingText ?? (await safeFetch(source.url, source, fetchOptions)).text;
   const expected = new URL(url); const listed = [...listing.matchAll(/href\s*=\s*["']([^"']+)["']/gi)]
     .some(([, href]) => { try { const found = new URL(decodeEntities(href), source.url); return found.origin === expected.origin && found.pathname === expected.pathname; } catch { return false; } });
@@ -213,7 +216,7 @@ export function verifyPublicBoardPayload({source,url,postings,now=new Date()}){
 
 export async function verifyPublicBoardPosting({source,url,fetchOptions={}}){
   if(source.adapter==='public_headless_jobposting'){
-    let robots=null;try{robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);}catch(error){if(!/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message))throw error;}
+    let robots=null;if(source.robots_url)try{robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);}catch(error){if(!/SOURCE_HTTP_403|INVALID_ROBOTS_PAYLOAD/.test(error.message))throw error;}
     if(robots&&(!robotsAllows(robots,url)||!robotsAllows(robots,source.url)))throw new Error('ROBOTS_ACCESS_BLOCKED');
     const report=await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:1,exactJobUrl:url,allowUrl:input=>!robots||robotsAllows(robots,input)});
     const board=report.sources[0];const detail=board.details[0];
@@ -221,8 +224,8 @@ export async function verifyPublicBoardPosting({source,url,fetchOptions={}}){
     if(board.status!=='PUBLIC_PAGE_READABLE'||detail?.status!=='PUBLIC_DETAIL_READABLE')return{status:'UNKNOWN',reason:detail?.status??board.status};
     return verifyPublicBoardPayload({source,url,postings:detail.job_postings});
   }
-  const robots=validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text);
-  if(!robotsAllows(robots,url))throw new Error('ROBOTS_ACCESS_BLOCKED');
+  const robots=source.robots_url?validateRobotsPayload((await safeFetch(source.robots_url,source,fetchOptions)).text):null;
+  if(robots&&!robotsAllows(robots,url))throw new Error('ROBOTS_ACCESS_BLOCKED');
   const response=await safeFetch(url,source,fetchOptions);
   return verifyPublicBoardPayload({source,url,postings:extractJobPostings(response.text)});
 }
@@ -446,8 +449,10 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           const resume=prior?.metadata?.listing_root_url===source.url?prior.metadata:{};
           const currentUrl=resume.next_listing_page_url??source.url;
           if(robots&&!robotsAllows(robots,currentUrl))throw new Error('ROBOTS_ACCESS_BLOCKED');
-          const result = await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:source.max_pages,
-            detailOffset:Number(resume.next_listing_offset??0),listingUrl:currentUrl,snapshotLinks:resume.listing_page_snapshot,
+          const retry=(resume.pending_details??[]).find(item=>Date.parse(item.next_retry_at)<=Date.now());
+          const result = await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:retry?1:source.max_pages,
+            detailOffset:retry?0:Number(resume.next_listing_offset??0),listingUrl:currentUrl,snapshotLinks:retry?undefined:resume.listing_page_snapshot,
+            ...(retry?{exactJobUrl:retry.url}:{}),
             allowUrl:url=>!robots||robotsAllows(robots,url)});
           const board=result.sources[0]; metrics.headless=true; metrics.gpu_disabled=true;
           metrics.browser_status=board.status; metrics.listing_http_status=board.http_status;
@@ -463,9 +468,12 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
               .map(raw=>({...raw,adapter:source.adapter}));
             await ingest(records);
           }
-          Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl:board.published_next_page_url,
+          if(retry){for(const key of ['listing_page_url','listing_page_completed','cycle_completed','coverage_status','next_listing_page_url','next_listing_offset','truncated','listing_page_snapshot'])metrics[key]=resume[key];}
+          else {Object.assign(metrics,listingCursor({rootUrl:source.url,currentUrl,nextUrl:board.published_next_page_url,
             total:board.job_link_count,offset:Number(resume.next_listing_offset??0),processed:board.details.length}));
-          metrics.listing_page_snapshot=metrics.listing_page_completed?[]:board.job_links;
+            metrics.listing_page_snapshot=metrics.listing_page_completed?[]:board.job_links;}
+          metrics.pending_details=nextDetailState(resume.pending_details,board.details);
+          if(metrics.pending_details.length){metrics.cycle_completed=false;metrics.truncated=true;metrics.coverage_status='DETAIL_RETRIES_PENDING';}
           metrics.coverage_scope='PUBLISHED_PUBLIC_LISTING_PAGES_ONLY';
         } else if (publicHtmlAdapters.has(source.adapter)) {
           const resume=source.adapter==='public_listing_html'&&prior?.metadata?.listing_root_url===source.url?prior.metadata:{};

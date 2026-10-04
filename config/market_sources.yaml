@@ -53,22 +53,26 @@ sources:
       general boards.'
   - name: pracuj
     platform: Pracuj.pl
-    adapter: policy_probe
-    url: https://www.pracuj.pl/robots.txt
+    adapter: public_headless_jobposting
+    url: https://www.pracuj.pl/praca/konstruktor;kw
     profile: real
     enabled: true
     source_class: poland_board
-    discovery_capability: MANUAL_DISCOVERY_FALLBACK
+    discovery_capability: SESSION_PUBLIC_JOBPOSTING
     application_capability: MANUAL_TAKEOVER
-    permitted_access: false
+    permitted_access: true
     allowed_hosts:
       - www.pracuj.pl
-    reason: 2026-10-04 ordinary robots GET returns 200 and advertises current-offers
-      sitemap; ordinary search and advertised sitemap GET return 403 challenge.
-      Public page readable through search tooling; Node automatic discovery
-      remains blocked, manual fallback retained.
+    reason: User-managed ordinary Chrome profile; verified access required.
+      Challenges are never counted as an empty search.
     search_url: https://www.pracuj.pl/praca
     required: true
+    board_key: pracuj
+    robots_url: https://www.pracuj.pl/robots.txt
+    max_pages: 2
+    search_keyword: konstruktor
+    search_scope: KEYWORD_SEARCH
+    failure_backoff_ms: 300000
   - name: olx
     platform: OLX Praca
     adapter: public_headless_jobposting
@@ -148,22 +152,32 @@ sources:
     required: true
   - name: linkedin
     platform: LinkedIn Jobs
-    adapter: policy_probe
-    url: https://www.linkedin.com/robots.txt
+    adapter: public_listing_html
+    url: https://www.linkedin.com/jobs/search/?keywords=mechanical%20engineer&location=Wroc%C5%82aw
     profile: real
     enabled: true
     source_class: global_board
-    discovery_capability: USER_SESSION_REQUIRED
-    application_capability: MANUAL_TAKEOVER
-    permitted_access: false
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: SESSION_APPLICATION_ADAPTER
+    permitted_access: true
     allowed_hosts:
       - www.linkedin.com
-    reason: LinkedIn robots explicitly prohibits unapproved automated access. Manual
-      user discovery / approved integration only; never automate login or copy
-      cookies.
-    authentication_required: true
-    search_url: https://www.linkedin.com/jobs/
+      - pl.linkedin.com
+    job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
+    listing_page_pattern: ^/jobs/search/.*$
+    max_pages: 4
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    failure_backoff_ms: 300000
+    search_keyword: mechanical engineer
+    search_scope: KEYWORD_SEARCH
     required: true
+    reason: User-authorized public keyword search and public JobPosting details
+      verified HTTP 200. Published search coverage only; authenticated routes
+      tested separately.
+    regional_listing_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
   - name: indeed
     platform: Indeed
     adapter: policy_probe
@@ -3149,3 +3163,87 @@ sources:
       Published pagination and JobPosting details only.
     search_keyword: informatyk
     search_scope: KEYWORD_SEARCH
+  - name: linkedin-remote-python
+    platform: LinkedIn Jobs
+    adapter: public_listing_html
+    url: https://www.linkedin.com/jobs/search/?keywords=Python&location=European+Union&f_WT=2
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: SESSION_APPLICATION_ADAPTER
+    permitted_access: true
+    allowed_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+    job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
+    listing_page_pattern: ^/jobs/search/.*$
+    max_pages: 4
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    failure_backoff_ms: 300000
+    search_keyword: Python
+    search_scope: KEYWORD_SEARCH
+    required: false
+    reason: User-authorized public keyword search and public JobPosting details
+      verified HTTP 200. Published search coverage only; authenticated routes
+      tested separately.
+    regional_listing_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+  - name: linkedin-remote-support
+    platform: LinkedIn Jobs
+    adapter: public_listing_html
+    url: https://www.linkedin.com/jobs/search/?keywords=technical+support&location=Worldwide&f_WT=2
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: SESSION_APPLICATION_ADAPTER
+    permitted_access: true
+    allowed_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+    job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
+    listing_page_pattern: ^/jobs/search/.*$
+    max_pages: 4
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    failure_backoff_ms: 300000
+    search_keyword: technical support
+    search_scope: KEYWORD_SEARCH
+    required: false
+    reason: User-authorized public keyword search and public JobPosting details
+      verified HTTP 200. Published search coverage only; authenticated routes
+      tested separately.
+    regional_listing_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+  - name: linkedin-local-automation
+    platform: LinkedIn Jobs
+    adapter: public_listing_html
+    url: https://www.linkedin.com/jobs/search/?keywords=automatyk&location=Wroclaw
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: SESSION_APPLICATION_ADAPTER
+    permitted_access: true
+    allowed_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+    job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
+    listing_page_pattern: ^/jobs/search/.*$
+    max_pages: 4
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    failure_backoff_ms: 300000
+    search_keyword: automatyk
+    search_scope: KEYWORD_SEARCH
+    required: false
+    reason: User-authorized public keyword search and public JobPosting details
+      verified HTTP 200. Published search coverage only; authenticated routes
+      tested separately.
+    regional_listing_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com

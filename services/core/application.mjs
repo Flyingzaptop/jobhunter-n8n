@@ -12,6 +12,7 @@ import {currentPreparationPolicy} from './preparation-policy.mjs';
 import YAML from 'yaml';
 import {isModelAnswerable,enqueue as enqueueProse,getReady as readyProse,consume as consumeProse} from './application-prose.mjs';
 import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
+import {reusableQuestionAnswer} from './answer-memory.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
@@ -176,7 +177,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         }
         if(field.type==='checkbox' && field.checked || field.type==='radio' && field.checked)continue;
         if(!field.options && !['checkbox','radio'].includes(field.type)&&known(field.value))continue;
-        const answer=resolveField(field,{profile,job,answerMemory});if(answer?.skip)continue;
+        const answer=resolveField(field,{profile,job,answerMemory})??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
         if(!answer){
           if(isModelAnswerable(field)){
             const prosePolicy=policy??YAML.parse(await readFile('config/search_policy.yaml','utf8'));
@@ -190,6 +191,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
           if(field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
         }
         const operation=field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
+        if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
       const finalScope=scopeApplicationForm(view);

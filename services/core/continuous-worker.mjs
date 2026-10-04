@@ -71,7 +71,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- let nextModel='fit';const states={};
+ let nextModel='fit',proseTurn=false;const states={};
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
@@ -89,11 +89,11 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    if(lane==='ingestion')await discovery(context);
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
-    if(prose){const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
+    if(prose&&proseTurn){proseTurn=false;const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
     const candidates=await store.cvCandidates(profile,policy);
     const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
      if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context)))return true;}return false;};
-    if(nextModel==='cv'){nextModel='fit';if(!(await generate()))await fit(context);}
+    if(nextModel==='cv'){nextModel='fit';proseTurn=true;if(!(await generate()))await fit(context);}
     else {nextModel='cv';await fit(context);}
    } else if(lane.startsWith('preparation-')){
     for(const row of await store.preparationCandidates(profile,policy)){

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import {rememberQuestionAnswer} from './answer-memory.mjs';
 
 export const QUESTION_ANSWER_LIMIT = 2000;
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
@@ -35,6 +36,7 @@ export async function acceptQuestionAnswerWithClient(client, { questionId, corre
   const saved = (await client.query(`UPDATE application_questions SET answer=$2::jsonb,answer_source=$3,confidence=1,reusable=false,answered_at=now()
     WHERE question_id=$1 AND answered_at IS NULL AND answer IS NULL RETURNING question_id,application_id,telegram_request_id`, [questionId, JSON.stringify(value), source])).rows[0];
   if (!saved) throw hitlError('QUESTION_ALREADY_ANSWERED');
+  await rememberQuestionAnswer(client,{question,application,answer:value,source});
   await client.query('INSERT INTO application_answer_receipts(question_id,application_id,source) VALUES($1,$2,$3)', [questionId, application.application_id, source]);
   await event(client, application.application_id, 'HITL_ANSWER_ACCEPTED', { question_id: questionId, request_id: correlationId, source });
   return { ...saved, source, dispatch_status: 'PENDING' };

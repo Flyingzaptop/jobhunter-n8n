@@ -1,15 +1,18 @@
 import {chromium} from 'playwright';
 import {extractJobPostings} from './discovery.mjs';
 import {publishedNextPage} from './discovery-cursors.mjs';
+import {extractVisibleBoardJob} from './board-document.mjs';
+import {boardProfileStatus,openBoardProfile} from './board-profiles.mjs';
 
 export const BOARD_TARGETS = Object.freeze({
   pracuj:{url:'https://www.pracuj.pl/praca',hostname:'www.pracuj.pl',jobPath:/^\/praca\/.+,oferta,\d+\/?$/},
   olx:{url:'https://www.olx.pl/praca/',hostname:'www.olx.pl',jobPath:/^\/(?:d\/oferta|oferta\/praca)\/.+\.html$/},
+  linkedin:{url:'https://www.linkedin.com/jobs/search/',hostname:'www.linkedin.com',hosts:['www.linkedin.com','pl.linkedin.com'],jobPath:/^\/jobs\/view\/(?:[^/]+-)?\d+\/?$/},
 });
 export function boardVacancyLinks(name,links){
   const target=BOARD_TARGETS[name];if(!target)throw new Error('UNKNOWN_BOARD_TARGET');
   const seen=new Set();const jobs=[];
-  for(const item of links){try{const url=new URL(item.href,target.url);if(url.protocol!=='https:'||url.hostname!==target.hostname||!target.jobPath.test(url.pathname))continue;
+  for(const item of links){try{const url=new URL(item.href,target.url);if(url.protocol!=='https:'||!(target.hosts??[target.hostname]).includes(url.hostname)||!target.jobPath.test(url.pathname))continue;
     url.hash='';url.search='';if(seen.has(url.href))continue;seen.add(url.href);jobs.push({url:url.href,title_hint:String(item.text??'').trim().slice(0,300)});
   }catch{/* Unusable links are not evidence. */}}
   return jobs;
@@ -39,9 +42,11 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
   try{for(const name of names){
     const target=BOARD_TARGETS[name];const currentUrl=listingUrl??target.url;
     const parsedListing=new URL(currentUrl);const validPath=parsedListing.pathname===new URL(target.url).pathname
-      ||name==='olx'&&/^\/praca\/q-[a-zA-Z0-9%_,+-]+\/$/.test(parsedListing.pathname);
+      ||name==='olx'&&/^\/praca\/q-[a-zA-Z0-9%_,+-]+\/$/.test(parsedListing.pathname)
+      ||name==='pracuj'&&/^\/praca\/[^/]+$/.test(parsedListing.pathname);
     if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
-    const context=await browser.newContext();
+    const profile=await boardProfileStatus(name);
+    const context=profile.prepared?await openBoardProfile(name,{headless:profile.headless}):await browser.newContext();
     // Discovery only: never transmit application forms or interact with authentication.
     await context.route('**/*',route=>publicBrowserRequestAllowed(route.request().url(),route.request().method())?route.continue():route.abort());
     const page=await context.newPage();const result={source:name,url:currentUrl,status:'UNKNOWN',job_links:[],details:[]};
@@ -65,6 +70,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
             const detailState=await inspectPage(page,detailResponse);Object.assign(detail,{http_status:detailState.status,status:detailState.challenge??'PUBLIC_DETAIL_READABLE',title:detailState.title});
             if(!detailState.challenge){
               const html=await page.content();detail.job_postings=extractJobPostings(html);
+              if(!detail.job_postings.length){const extracted=await extractVisibleBoardJob(page,name);if(extracted)detail.job_postings=[extracted];}
               detail.structured_job_count=detail.job_postings.length;
               if(!detail.job_postings.length)detail.status='PUBLIC_DETAIL_WITHOUT_JOBPOSTING';
             }
