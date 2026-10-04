@@ -18,6 +18,12 @@ See [real-world readiness report](docs/REAL_WORLD_READINESS_V2_REPORT.md) and
 [Control Center setup](docs/CONTROL_CENTER_SETUP.md). Run `npm run dashboard`
 after building its frontend. Local dashboard: http://127.0.0.1:3020.
 
+The next [Production Readiness Gate](docs/PRODUCTION_READINESS_GATE.md) is active:
+real local identity, transparent relevance queue, larger real Qwen batches,
+source-labelled calibration, employer-ready PDFs, ATS final-review rehearsals,
+actual Telegram delivery and dashboard HITL. Per-application review approvals
+do not enable Submit; the first ten actual applications require confirmation.
+
 All six baseline workflows and mock Stage 7 passed with real n8n, PostgreSQL, local Ollama and Chromium; mocks remain regression evidence only. See docs/STAGE_7_E2E_REPORT.md. A real Control Center n8n invocation also passed through stages 2→3→4→5 with filling disabled. Production readiness remains partial: real identity/PDF readiness, complete platform/ATS compatibility, live Telegram delivery and Docker deployment are not verified.
 Do not enable real submission. No successful unit test implies Stage 7 PASS.
 

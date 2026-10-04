@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import YAML from 'yaml';
-import { sourceFragmentCatalog, compactSchemaForJob, mandatoryRequirementAnchors } from '../services/core/fit.mjs';
+import { sourceFragmentCatalog, compactSchemaForJob, mandatoryRequirementAnchors, enforceEducation, requiresCompletedDegree } from '../services/core/fit.mjs';
 
 // Exact observed heading vocabulary; deterministic regression only, not live
 // model/market acceptance. Candidate facts and scores are never manufactured.
@@ -118,4 +118,37 @@ Canonical is a growing international software company.` };
   assert.equal(catalog.find(f => f.text === 'Required skills and experience').importance_hint, null);
   assert.ok(!catalog.some(f => f.text === 'Required skills' || f.text === 'experience'));
   assert.equal(catalog.find(f => /Canonical is a growing/.test(f.text)).importance_hint, null);
+});
+test('actual Bosch German qualification headings scope exact inline requirements and end at additional information', () => {
+  const degree='Ausbildung: Studium im Bereich Maschinenbau, Mechatronik, Fahrzeugtechnik, Produktionstechnik, Automatisierungstechnik oder vergleichbar';
+  const job={...base,description_text:`Unternehmensbeschreibung\nBei Bosch gestalten wir Zukunft.\nStellenbeschreibung\nDabei erstellst du präzise Entwürfe.\nQualifikationen\n${degree}\nErfahrungen und Know-how: Kenntnisse in CAD-Systemen (z.B. Solid Edge, SolidWorks) und fertigungsgerechter Konstruktion/Zeichnungserstellung; sicherer Umgang mit MS Office\nPersönlichkeit und Arbeitsweise: du kommunizierst offen\nArbeitsalltag: deine Präsenz vor Ort ist erforderlich\nSprachen: verhandlungssicheres Deutsch und gutes Englisch\nZusätzliche Informationen\nBeginn: ab März 2027\nVoraussetzung für das Praktikum ist die Immatrikulation an einer Hochschule.`};
+  const catalog=sourceFragmentCatalog(job);const required=atomic(catalog,'MANDATORY');
+  assert.ok(required.some(f=>f.text===degree));assert.equal(catalog.find(f=>f.text===degree).list_container,false);
+  assert.ok(required.some(f=>/Sprachen:/.test(f.text)));assert.ok(required.some(f=>/Präsenz vor Ort/.test(f.text)));
+  assert.ok(required.some(f=>/Immatrikulation/.test(f.text)));assert.ok(!required.some(f=>/Beginn:|Bosch gestalten|Entwürfe/.test(f.text)));
+  for(const heading of ['Qualifikationen','Zusätzliche Informationen'])assert.equal(catalog.find(f=>f.text===heading).context_only,true);
+  const schema=compactSchemaForJob(job,profile,catalog);assert.ok(schema.properties.explicit_requirements.required.length>=6);
+});
+test('German standalone profile/preferences do not mistake employer prose for headings',()=>{
+  const catalog=sourceFragmentCatalog({...base,description_text:'Ihr Profil\nPython Erfahrung.\nWunschqualifikationen\nCAD Erfahrung.\nWas wir bieten\nUnser Unternehmen bietet Schulungen.\nWir diskutieren Ihr Profil im Team.'});
+  assert.equal(catalog.find(f=>f.text==='Python Erfahrung.').importance_hint,'MANDATORY');
+  assert.equal(catalog.find(f=>f.text==='CAD Erfahrung.').importance_hint,'STRONG_PREFERENCE');
+  assert.ok(!catalog.some(f=>/Unternehmen|diskutieren/.test(f.text)&&f.importance_hint));
+});
+test('actual Waymo ongoing-degree requirement retains related-field PARTIAL without a fabricated completion hard blocker',()=>{
+ const p=structuredClone(profile);p.education[0].status='degree_in_progress';
+ const requirement="Currently pursuing a Bachelor's or Master's degree in Computer Science, Software Engineering, or a related technical field";
+ const row={category:'EDUCATION',requirement,match:'PARTIAL',strict:true,candidate_evidence_fact_ids:['edu_mech'],reason:'Related technical study; exact CS field uncertain.'};
+ assert.equal(requiresCompletedDegree(requirement),false);assert.deepEqual(enforceEducation([row],p)[0],row);
+ const unknown={...row,match:'UNKNOWN',candidate_evidence_fact_ids:[]};assert.equal(enforceEducation([unknown],p)[0].match,'UNKNOWN');
+});
+test('ongoing multilingual study is distinct from completed degree and does not imply degree level',()=>{
+ for(const text of ['Currently enrolled in a Bachelor degree','Studying toward a Masters degree','Ausbildung: Studium im Bereich Maschinenbau','Étudiant en cours de Master','Degree in progress'])assert.equal(requiresCompletedDegree(text),false,text);
+ for(const text of ['Bachelor degree required','BSc or higher in Computer Science','Completed Bachelor degree and currently pursuing a Master','Abgeschlossenes Bachelorstudium erforderlich','Diplômé d’une école d’ingénieurs ou titulaire d’un Master'])assert.equal(requiresCompletedDegree(text),true,text);
+});
+test('real trailing multi-application directions are context-only and unavailable as scored requirements',()=>{
+ const text='To be in consideration for multiple roles, you will need to apply to each one individually - please apply to the top 3 roles you are interested in.';
+ const j={...base,description_text:`You have:\nCAD experience.\nWe prefer:\nPython experience.\nNote: This will be a hybrid onsite internship position.\n${text}`};
+ const catalog=sourceFragmentCatalog(j);const fragment=catalog.find(f=>f.text===text);assert.equal(fragment.context_only,true);assert.equal(fragment.importance_hint,null);
+ const schema=compactSchemaForJob(j,profile,catalog);assert.ok(!Object.hasOwn(schema.properties.requirements.properties,String(fragment.id)));
 });

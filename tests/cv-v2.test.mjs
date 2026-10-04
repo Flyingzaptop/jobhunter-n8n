@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,buildTailoredCv,renderCvV2Html,verifyCvEntailment,resolveCvLlm} from '../services/core/cv-v2.mjs';
+import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,buildTailoredCv,renderCvV2Html,verifyCvEntailment,resolveCvLlm,cvWriterSchema} from '../services/core/cv-v2.mjs';
 import {OllamaClient} from '../services/core/llm.mjs';
+import Ajv from 'ajv';
 
 // MOCK / REGRESSION only. No gateway response here is real-world acceptance.
 const profile={onboarding:{legal_name:'UNKNOWN',email:'UNKNOWN',phone:'UNKNOWN'},education:[{id:'education',institution:'A university',field:'Mechanical Engineering',status:'degree_in_progress',provenance:'EDUCATION'}],experience:[{id:'it',role:'IT Specialist',provenance:'PROFESSIONAL',duration_approx_years:1.5,statements:['Supported Windows workstations.'],skills:['Windows']}],projects:[{id:'cad',title:'Cycloidal gearbox',provenance:'ACADEMIC',statements:['Designed a cycloidal gearbox in CAD.'],skills:['CAD']},{id:'web',title:'Web applications',provenance:'PERSONAL_PROJECT',statements:['Built web applications using React and Python/Django.'],skills:['React','Python','Django']}],languages:[{id:'pl',language:'Polish',level:'fluent'}]};
@@ -106,4 +107,13 @@ test('writer omits undocumented RL policy clauses while authoritative fact map r
   llm.json=async args=>{if(args.strong){const facts=JSON.parse(args.prompt).facts;assert.equal(facts.find(f=>f.id==='research').statements[0],'Ran supervised, unsupervised and self-supervised learning experiments');}return invoke(args);};
   const manifest=await buildTailoredCv({job:{job_id:'policy',availability_status:'OPEN'},profile:source,analysis:{},llm,outputRoot:root});
   const map=JSON.parse(await readFile(manifest.source_map_path,'utf8'));assert.equal(map.facts.find(f=>f.id==='research').statements[0],original);assert.equal(source.projects.at(-1).statements[0],original);
+});
+
+test('writer skill grammar requires exact labels and citations that establish that particular skill',()=>{
+  const check=new Ajv({strict:true}).compile(cvWriterSchema(profile));
+  const document=draft();assert.equal(check(document),true);
+  document.skills=[claim('Python','it')];assert.equal(check(document),false);
+  document.skills=[claim('Python','web')];assert.equal(check(document),true);
+  document.skills=[claim('Python expert','web')];assert.equal(check(document),false);
+  document.skills=[{text:'Python',source_fact_ids:['web','it']}];assert.equal(check(document),false);
 });

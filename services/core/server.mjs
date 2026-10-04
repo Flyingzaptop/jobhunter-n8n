@@ -15,6 +15,8 @@ import {reconcile} from './reconciliation.mjs';
 import {runObserved,observe} from './observability.mjs';
 import {retryPlan} from './analysis-retry.mjs';
 import {computePriority} from './priority.mjs';
+import {dispatchQuestionAnswer} from './hitl.mjs';
+import {browserConfig} from '../browser-service/server.mjs';
 const load = async (p) => YAML.parse(await readFile(p, "utf8"));
 const secretEqual = (a, b) => {
   const x = Buffer.from(a ?? ""),
@@ -245,7 +247,8 @@ export function createCore({
     if(accepted.application_id){
       const row=(await repository.pool.query('SELECT job_id FROM applications WHERE application_id=$1',[accepted.application_id])).rows[0];
       if(!row)throw new Error('Correlated application missing');
-      return stage(5,{job_id:row.job_id,application_id:accepted.application_id});
+      if(accepted.question_id){const dispatched=await dispatchQuestionAnswer(repository,accepted.question_id,()=>resumeAnsweredApplication(accepted.application_id));return dispatched.result??dispatched;}
+      return resumeAnsweredApplication(accepted.application_id);
     }
     if(accepted.command==='/summary')return stage(6);
     if(accepted.command==='/weekly')return stage(6,{weekly:true});
@@ -257,6 +260,19 @@ export function createCore({
     }
     if(['/pause','/resume'].includes(accepted.command))await telegramService.send(accepted.command==='/pause'?'JobHunter paused. Saved application state is retained.':'JobHunter resumed. Queue processing is enabled.');
     return accepted;
+  }
+  async function resumeAnsweredApplication(applicationId){
+    const row=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1',[applicationId])).rows[0];
+    if(!row)throw new Error('Correlated application missing');
+    if(row.last_state?.preparation_only===true){
+      if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT==='true')throw new Error('Preparation resume requires dry-run');
+      const profile=await load(`${configDir}/candidate_profile.yaml`);
+      const {reverifyMarketJob}=await import('./discovery-v2.mjs');
+      return runObserved(repository,5,{application_id:applicationId},()=>runApplication({repository,jobId:row.job_id,applicationId,profile,telegram:telegramService,
+        config:{...browserConfig(),dryRun:true,allowRealSubmit:false,enabled:true},
+        verifyOpen:async({job})=>(await reverifyMarketJob({job,repository})).status==='OPEN'}),{trigger:'controlled-preparation',mode:'REAL'});
+    }
+    return stage(5,{job_id:row.job_id,application_id:applicationId});
   }
   const server = http.createServer(async (req, res) => {
     const runId = randomUUID();
@@ -277,6 +293,16 @@ export function createCore({
         if (text.length > 100000) throw new Error("Request too large");
       }
       const body = text ? JSON.parse(text) : {};
+      if(req.method==='POST'&&req.url==='/hitl/dispatch'){
+        if(Object.keys(body).some(k=>k!=='question_id'))throw new Error('Invalid HITL dispatch body');
+        const result=await dispatchQuestionAnswer(repository,body.question_id,receipt=>resumeAnsweredApplication(receipt.application_id));
+        return send(200,{ok:true,result});
+      }
+      if(req.method==='POST'&&req.url==='/hitl/recover'){
+        const pending=(await repository.pool.query("SELECT question_id FROM application_answer_receipts WHERE dispatch_status='PENDING' ORDER BY created_at LIMIT 20")).rows;
+        const results=[];for(const row of pending)results.push(await dispatchQuestionAnswer(repository,row.question_id,receipt=>resumeAnsweredApplication(receipt.application_id)));
+        return send(200,{ok:true,result:{results}});
+      }
       if (req.method === "POST" && /^\/stages\/[1-6]$/.test(req.url)) {
         const result = await stage(Number(req.url.at(-1)), body);
         return send(200, { ok: true, result });

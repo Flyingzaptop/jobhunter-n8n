@@ -1,3 +1,6 @@
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+const ASHBY_PUBLIC_QUERIES=JSON.parse(readFileSync(new URL('../../config/ats_public_read_queries.json',import.meta.url),'utf8')).queries;
 export function atsAdapterFor(value){let host;try{host=new URL(value).hostname.toLowerCase();}catch{return 'generic';}for(const [id,domains] of Object.entries({greenhouse:['greenhouse.io'],lever:['lever.co'],ashby:['ashbyhq.com'],smartrecruiters:['smartrecruiters.com'],teamtailor:['teamtailor.com'],workday:['myworkdayjobs.com']}))if(domains.some(d=>host===d||host.endsWith('.'+d)))return id;return 'generic';}
 export function reviewedReadPost({url,body,adapter}){
  const target=new URL(url);if(atsAdapterFor(url)!==adapter)return {allowed:false,reason:'ADAPTER_ORIGIN_MISMATCH'};
@@ -6,6 +9,16 @@ export function reviewedReadPost({url,body,adapter}){
   if(Object.keys(data).some(k=>!['appliedFacets','limit','offset','searchText'].includes(k)))return {allowed:false,reason:'WORKDAY_SEARCH_PAYLOAD_REJECTED'};
   if(!Number.isInteger(data.limit)||data.limit<1||data.limit>100||!Number.isInteger(data.offset)||data.offset<0||typeof data.searchText!=='string'||data.searchText.length>500||!data.appliedFacets||typeof data.appliedFacets!=='object'||Array.isArray(data.appliedFacets))return {allowed:false,reason:'WORKDAY_SEARCH_PAYLOAD_REJECTED'};
   return {allowed:true,operation:'PUBLIC_VACANCY_SEARCH',reversible:true,submitting:false};
+ }
+ if(adapter==='ashby'&&target.hostname==='jobs.ashbyhq.com'&&target.pathname==='/api/non-user-graphql'){
+  if(Object.keys(data).some(k=>!['operationName','variables','query'].includes(k))||target.searchParams.get('op')!==data.operationName||[...target.searchParams.keys()].some(k=>k!=='op'))return {allowed:false,reason:'ASHBY_PUBLIC_QUERY_PAYLOAD_REJECTED'};
+  const query=ASHBY_PUBLIC_QUERIES.find(q=>q.operation_name===data.operationName);
+  if(!query||typeof data.query!=='string'||createHash('sha256').update(data.query).digest('hex')!==query.query_sha256||!data.variables||typeof data.variables!=='object'||Array.isArray(data.variables))return {allowed:false,reason:'ASHBY_QUERY_NOT_REVIEWED'};
+  const v=data.variables;
+  if(typeof v.organizationHostedJobsPageName!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(v.organizationHostedJobsPageName))return {allowed:false,reason:'ASHBY_BOARD_ID_REJECTED'};
+  const valid=data.operationName==='ApiJobPosting'?Object.keys(v).every(k=>['organizationHostedJobsPageName','jobPostingId'].includes(k))&&/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(v.jobPostingId):Object.keys(v).every(k=>['organizationHostedJobsPageName','searchContext'].includes(k))&&(v.searchContext===undefined||v.searchContext==='JobPosting');
+  if(!valid)return {allowed:false,reason:'ASHBY_PUBLIC_QUERY_VARIABLES_REJECTED'};
+  return {allowed:true,operation:'PUBLIC_VACANCY_FORM_SCHEMA_READ',reversible:true,submitting:false};
  }
  return {allowed:false,reason:'NO_REVIEWED_READ_POST'};
 }

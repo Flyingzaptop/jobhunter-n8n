@@ -1,0 +1,10 @@
+import {mkdir,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {Telegram} from '../services/core/telegram.mjs';
+const telegram=new Telegram();
+if(!telegram.token||!telegram.chatId)throw new Error('TELEGRAM_LOCAL_CONFIGURATION_REQUIRED');
+const message=await telegram.send('JobHunter: проверка реальной доставки для Production Readiness Gate. Реальные отклики пока отключены. Вопросы по заявкам можно будет подтверждать здесь и в dashboard.');
+if(!Number.isSafeInteger(message.message_id)||String(message.chat?.id)!==telegram.chatId)throw new Error('TELEGRAM_DELIVERY_RESPONSE_NOT_VERIFIED');
+const proof={pass:true,scope:'REAL_OPERATOR_CHAT_DELIVERY',message_id:message.message_id,verified_at:new Date().toISOString(),config_fingerprint:createHash('sha256').update(JSON.stringify({token:process.env.TELEGRAM_BOT_TOKEN,chat_id:process.env.TELEGRAM_ALLOWED_CHAT_ID})).digest('hex')};
+await mkdir('data/telegram',{recursive:true});await writeFile('data/telegram/delivery-proof.json',JSON.stringify(proof,null,2),{mode:0o600});
+console.log(JSON.stringify({pass:true,message_id:message.message_id,verified_at:proof.verified_at}));

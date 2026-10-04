@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Repository } from "../core/repository.mjs";
 import { OllamaClient } from "../core/llm.mjs";
 import { BrowserClient } from "../core/application.mjs";
+import {productionGateStatus} from '../core/production-gate.mjs';
 import { browserConfig } from "../browser-service/server.mjs";
 import { createAuth } from "./auth.mjs";
 import * as q from "./queries.mjs";
@@ -12,6 +13,8 @@ import { sanitize } from "../core/observability.mjs";
 import { report } from "../core/reporting.mjs";
 import { randomUUID } from "node:crypto";
 import { n8nCli,prepareControlWorkflows } from "../../scripts/n8n-bootstrap.mjs";
+import { answerApplicationQuestion, dispatchQuestionAnswer, questionEligibility, hitlError } from '../core/hitl.mjs';
+import { prepareApplicationReview, approveApplicationReview, revokeApplicationReview, REVIEW_APPLICATION_LIMIT, REVIEW_CAMPAIGN } from './review-gates.mjs';
 async function body(req) {
   let text = "";
   for await (const chunk of req) {
@@ -38,6 +41,8 @@ export function createDashboard({
   distRoot = path.resolve("services/dashboard/web/dist"),
   browser = new BrowserClient(),
   dispatch = null,
+  answerDispatch = null,
+  profileProvider = () => q.load('candidate_profile'),
 } = {}) {
   const auth = createAuth(repository, { password });
   const streams = new Set();
@@ -200,6 +205,10 @@ export function createDashboard({
       );
       return send({ logged_out: true });
     }
+    if(p==='/api/production-gate')return send(await productionGateStatus({repository,profile:await profileProvider()}));
+    if(p==='/api/relevance-queue')return send({counts:(await repository.pool.query('SELECT status,count(*)::int count FROM relevance_queue GROUP BY status ORDER BY status')).rows,
+      data:(await repository.pool.query(`SELECT q.job_id,q.relevance_score,q.status,q.role_hints,q.reasons,q.location_class,q.seniority_class,j.title,j.company,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.status NOT IN ('LOW_PRIORITY','CLOSED') ORDER BY q.relevance_score DESC,q.job_id LIMIT 50`)).rows,
+      model_invocations:(await repository.pool.query('SELECT count(*)::int count FROM fit_batch_receipts')).rows[0].count});
     if (p === "/api/overview" || p === "/api/system")
       return send({
         ...(await overview()),
@@ -275,6 +284,39 @@ export function createDashboard({
           )
         ).rows,
       );
+    if (/^\/api\/hitl\/questions\/[^/]+\/answer$/.test(p)) {
+      if (req.method !== 'POST') throw hitlError('POST_REQUIRED',405);
+      const questionId = p.split('/')[4], input = await body(req);
+      if (!q.uuid(questionId) || input.confirmed !== true || !q.uuid(input.expected_request_id) || Object.keys(input).some(key=>!['answer','confirmed','expected_request_id'].includes(key))) throw hitlError('INVALID_QUESTION_ANSWER_REQUEST',400);
+      const profile = await profileProvider();
+      const receipt = await answerApplicationQuestion(repository,{questionId,correlationId:input.expected_request_id,answer:input.answer,source:'USER_DASHBOARD',profileId:profile.profile_id});
+      if (answerDispatch) dispatchQuestionAnswer(repository,questionId,answerDispatch).catch(()=>{});
+      else if(process.env.CORE_SERVICE_TOKEN) {
+        fetch('http://127.0.0.1:3000/hitl/dispatch',{method:'POST',headers:{'content-type':'application/json','x-jobhunter-token':process.env.CORE_SERVICE_TOKEN},body:JSON.stringify({question_id:questionId}),signal:AbortSignal.timeout(45000)}).then(async response=>{if(!response.ok)throw new Error('CORE_HITL_DISPATCH_REJECTED');await response.arrayBuffer();}).catch(()=>{
+          repository.event('application',receipt.application_id,'DASHBOARD_HITL_DISPATCH_UNAVAILABLE',{question_id:questionId,reason:'CORE_RECOVERY_REQUIRED'}).catch(()=>{});
+        });
+      }
+      return send(receipt);
+    }
+    if (/^\/api\/applications\/[^/]+\/review(?:\/(prepare|approve|revoke))?$/.test(p)) {
+      const applicationId=p.split('/')[3], action=p.split('/')[5];
+      if (!q.uuid(applicationId)) throw hitlError('INVALID_APPLICATION_ID',400);
+      if(action && req.method!=='POST')throw hitlError('POST_REQUIRED',405);
+      const profile=await profileProvider();
+      if (!action) {
+        if (req.method!=='GET') throw hitlError('GET_REQUIRED',405);
+        const app=(await repository.pool.query('SELECT application_id FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
+        if (!app) throw hitlError('APPLICATION_NOT_FOUND',404);
+        return send({gates:(await repository.pool.query('SELECT * FROM application_review_gates WHERE application_id=$1 AND candidate_profile_id=$2 ORDER BY created_at DESC LIMIT 10',[applicationId,profile.profile_id])).rows,application_limit:REVIEW_APPLICATION_LIMIT,campaign:REVIEW_CAMPAIGN,review_only:true,real_submit_enabled:false});
+      }
+      if (req.method!=='POST') throw hitlError('POST_REQUIRED',405);
+      const input=await body(req);
+      if (action==='prepare') {if(Object.keys(input).length)throw hitlError('INVALID_REVIEW_REQUEST',400);return send(await prepareApplicationReview(repository,applicationId,profile,browser));}
+      if (!q.uuid(input.approval_id) || Object.keys(input).some(key=>!['approval_id','binding_digest','confirmed'].includes(key))) throw hitlError('INVALID_REVIEW_REQUEST',400);
+      if(action==='revoke')return send(await revokeApplicationReview(repository,applicationId,input.approval_id,profile));
+      if(input.confirmed!==true || !/^[0-9a-f]{64}$/.test(input.binding_digest??''))throw hitlError('EXPLICIT_REVIEW_CONFIRMATION_REQUIRED',400);
+      return send(await approveApplicationReview(repository,applicationId,input.approval_id,input.binding_digest,profile,browser));
+    }
     if (p.startsWith("/api/applications/")) {
       const result = await q.applicationDetail(repository, p.split("/").at(-1));
       if (!result)
@@ -283,13 +325,11 @@ export function createDashboard({
         });
       return send(result);
     }
-    if (p === "/api/hitl")
+    if (p === "/api/hitl") {
+      const profile=await profileProvider();
+      const questions=(await repository.pool.query(`SELECT q.*,j.company,j.title,a.status AS application_status,a.candidate_profile_id,a.last_state FROM application_questions q JOIN applications a USING(application_id) JOIN jobs j USING(job_id) WHERE q.answered_at IS NULL ORDER BY q.created_at`)).rows.map(row=>{const {last_state,candidate_profile_id,...visible}=row;const denied=questionEligibility(row,{status:row.application_status,candidate_profile_id,last_state},profile.profile_id);return {...visible,dashboard_answer_allowed:!denied,answer_blocked_reason:denied};});
       return send({
-        questions: (
-          await repository.pool.query(
-            `SELECT q.*,j.company,j.title FROM application_questions q JOIN applications a USING(application_id) JOIN jobs j USING(job_id) WHERE q.answered_at IS NULL ORDER BY q.created_at`,
-          )
-        ).rows,
+        questions,
         onboarding: await q.onboarding(),
         manual: (
           await repository.pool.query(
@@ -302,6 +342,7 @@ export function createDashboard({
           )
         ).rows,
       });
+    }
     if (p === "/api/cvs")
       return send([
         ...(

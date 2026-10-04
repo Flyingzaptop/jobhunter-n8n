@@ -64,7 +64,12 @@ export async function createBrowserService(config = browserConfig()) {
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
         await route.fulfill(await pinnedRequest(request, destination));
-      } catch (error) { session.blocked_requests.push({ reason: error.message, timestamp: new Date().toISOString() }); await route.abort('blockedbyclient').catch(() => {}); }
+      } catch (error) {
+        const rejected=route.request();let operationName;
+        try{const json=JSON.parse(rejected.postData()??'');if(typeof json.operationName==='string'&&/^[A-Za-z0-9_]{1,100}$/.test(json.operationName))operationName=json.operationName;}catch{}
+        session.blocked_requests.push({reason:error.message,url:observerUrl(rejected.url()),method:rejected.method(),...(operationName?{operation_name:operationName}:{}),timestamp:new Date().toISOString()});
+        await route.abort('blockedbyclient').catch(()=>{});
+      }
     });
     if (context.routeWebSocket) await context.routeWebSocket('**/*', socket => socket.close());
     context.on('page', page => { if (session.page && page !== session.page) page.close().catch(() => {}); });
@@ -74,7 +79,7 @@ export async function createBrowserService(config = browserConfig()) {
     const result = await session.page.evaluate(() => {
       const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => e.id ? '#' + CSS.escape(e.id) : e.name ? `${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]` : `[data-jh-index="${e.dataset.jhIndex}"]`;
-      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', visible: visible(e), value: e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
+      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', disabled:Boolean(e.disabled), visible: visible(e), value: e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link', final_submit: e.dataset.finalSubmit === 'true', href: e.href || null }; });
       return { url: location.href, title: document.title, current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
@@ -109,7 +114,8 @@ export async function createBrowserService(config = browserConfig()) {
         await locator.setChecked(payload.checked !== false); session.filled_fields[payload.selector] = payload.checked !== false;
       }
       else if (operation === 'upload') {
-        if (!field.visible || field.type !== 'file') throw new Error('NOT_UPLOAD_FIELD');
+        if (field.type !== 'file' || field.disabled) throw new Error('NOT_UPLOAD_FIELD');
+        if(!field.visible&&!/\bresume\b|\bcv\b|curriculum|lebenslauf/i.test(field.name+' '+field.label+' '+field.selector))throw new Error('HIDDEN_DOCUMENT_NOT_IDENTIFIED');
         const root = await fs.realpath(config.artifactRoot), target = await fs.realpath(path.resolve(payload.path));
         const relative = path.relative(root, target); if (relative.startsWith('..') || path.isAbsolute(relative) || path.extname(target).toLowerCase() !== '.pdf') throw new Error('ARTIFACT_NOT_APPROVED');
         const bytes = await fs.readFile(target); if (bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-' || !payload.sha256 || hash(bytes) !== payload.sha256) throw new Error('ARTIFACT_HASH_OR_FORMAT_INVALID');

@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
-export const PROMPT_VERSION = 'fit-analysis-v2.7-compact';
+export const PROMPT_VERSION = 'fit-analysis-v2.9-compact';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -135,6 +135,7 @@ function workFormatStatement(text) {
 }
 
 function employerContextStatement(text) {
+  if (/^to be in consideration for multiple roles\b|^please apply to (?:each|the top)\b|^we will accept resumes on a rolling basis\b/i.test(text)) return true;
   if (/\bnot (?:required|mandatory|essential)\b/i.test(text)) return true;
   if (/\b(?:candidates?|you|must|required|require|expect|seek|qualification)\b/i.test(text)) return false;
   return /^(?:we|our (?:company|team|process|mission))\b/i.test(text)
@@ -152,6 +153,18 @@ function standaloneQualificationHeading(text) {
     return { importance: 'MANDATORY' };
   if (/^(?:we prefer|desired skills(?: and experience)?|competences souhaitees|qualifications souhaitees|atouts|nous preferons)$/.test(key))
     return { importance: 'STRONG_PREFERENCE' };
+  if (/^(?:qualifikationen|ihr profil|dein profil|was sie mitbringen|was du mitbringst|anforderungen)$/.test(key))
+    return { importance: 'MANDATORY' };
+  if (/^(?:wunschqualifikationen|wunschprofil|von vorteil|wunschenswert)$/.test(key))
+    return { importance: 'STRONG_PREFERENCE' };
+  if (/^(?:unternehmensbeschreibung|stellenbeschreibung|zusatzliche informationen|weitere informationen|ihre aufgaben|deine aufgaben|was wir bieten|unser angebot|benefits|videos to watch)$/.test(key))
+    return { importance: null };
+  // Bosch uses inline headings followed by the exact qualification. The label
+  // itself is not a separate scored fragment; the original whole clause stays.
+  if (/^(?:ausbildung|erfahrungen und know-?how|personlichkeit und arbeitsweise|begeisterung|sprachen|arbeitsalltag)\s*:\s*\S/.test(key))
+    return { importance: 'MANDATORY', headingOnly: false };
+  if (/^(?:ausbildung|erfahrungen und know-?how|personlichkeit und arbeitsweise|begeisterung|sprachen|arbeitsalltag)$/.test(key))
+    return { importance: 'MANDATORY' };
   if (/^(?:you will|role description|key responsibilities|responsibilities|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
     return { importance: null };
   // A trailing note starts application/work-arrangement context, but an explicit
@@ -179,9 +192,9 @@ function qualificationSentences(source) {
     let importance = null;
     if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text) && !employerContextStatement(text)) {
       importance = list ? /mandatory|required/i.test(list[1]) ? 'MANDATORY' : /nice/i.test(list[1]) ? 'NICE_TO_HAVE' : 'STRONG_PREFERENCE'
-        : /\b(required|mandatory|must have|must possess|essential|is a must)\b|wymagan|obowiazkow/i.test(text) ? 'MANDATORY'
+        : /\b(required|mandatory|must have|must possess|essential|is a must|erforderlich|voraussetzung|zwingend|notwendig)\b|wymagan|obowiazkow/i.test(text) ? 'MANDATORY'
         : /\b(nice to have|helpful)\b/i.test(text) ? 'NICE_TO_HAVE'
-        : /\bpreferred\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
+        : /\b(?:preferred|wunschenswert|wünschenswert)|von vorteil\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
     }
     return {text, importance, list, headingOnly};
   });
@@ -190,7 +203,7 @@ function qualificationSentences(source) {
 function requirementItems(text, list) {
   // Alternative fields and examples qualify the one requirement; they are not
   // independent qualifications which the candidate must satisfy simultaneously.
-  if (/\b(?:or|either|such as|for example|including|ou|soit|notamment|par exemple)\b|\be\.g\./i.test(text)) return [];
+  if (/\b(?:or|either|such as|for example|including|ou|soit|notamment|par exemple|oder|beispielsweise)\b|\be\.g\.|\bz\.\s*b\./i.test(text)) return [];
   const content = (list?.[2] || text).replace(/[.!?;]+$/, '');
   return content.split(/,|\s+and\s+/i).map(item => item.trim()).filter(Boolean);
 }
@@ -434,10 +447,19 @@ export function enforceProfessionalYears(requirements, profile) {
   });
 }
 
+export function requiresCompletedDegree(text) {
+  const value=normalize(text);
+  const ongoing=/\b(?:currently\s+)?(?:pursuing|enrolled|studying|student)\b|degree in progress|ongoing (?:degree|study)|studium im bereich|laufende[snrm]? studium|immatrikuliert|etudiant[es]?|en cours (?:de|d')/i.test(value);
+  // A disjunction allowing either current study or graduation does not demand
+  // completion. An independent completed-degree AND further study still does.
+  const completedAndStudy=/\b(?:completed|graduated|abgeschlossen\w*|diplome)\b.*\band\b.*\b(?:pursuing|enrolled|studying)\b/i.test(value);
+  if(ongoing&&!completedAndStudy)return false;
+  return /\b(?:completed|bachelor|master|degree|bsc|msc|graduated|abgeschlossen\w*|diplome|titulaire)\b/i.test(value);
+}
 export function enforceEducation(requirements, profile) {
   const facts = factIndex(profile);
   return requirements.map(req => {
-    if (req.category !== 'EDUCATION' || !/\b(completed|bachelor|master|degree|bsc|msc)\b/i.test(req.requirement)) return req;
+    if (req.category !== 'EDUCATION' || !requiresCompletedDegree(req.requirement)) return req;
     const cited = req.candidate_evidence_fact_ids.map(id => facts.get(id));
     if (cited.some(fact => fact?.provenance === 'EDUCATION' && ['completed','graduated','degree_completed'].includes(fact.status))) return req;
     if (cited.some(fact => fact?.provenance === 'EDUCATION' && fact.status === 'degree_in_progress'))

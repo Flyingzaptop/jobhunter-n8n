@@ -1,5 +1,9 @@
 # Dashboard UI acceptance — real backend
 
+Historical acceptance snapshot below predates the later authenticated HITL
+answering and specific application review additions. Current behavior, integration,
+and separate regression validation are documented in DASHBOARD_HITL_GATES.md.
+
 Snapshot: **2026-10-04 10:04 Europe/Warsaw**. Dashboard:
 `http://127.0.0.1:3020`.
 

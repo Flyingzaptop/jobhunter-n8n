@@ -53,3 +53,17 @@ a new official posting GET (or complete Ashby board snapshot). Aggregator-only
 posts, protected access responses, malformed replies and wrong posting IDs return
 UNKNOWN. Inactive, explicitly closed, expired or deleted official postings are
 CLOSED. A reachable page or stale OPEN flag alone cannot authorize processing.
+
+## v2.8 German extension
+
+The actual Bosch mechatronics internship
+`8991663a-bb95-5105-b8fd-933fc49088c1` has a complete hydrated German description,
+but v2.7 did not recognize its `Qualifikationen` heading. v2.8 adds bounded German
+section/profile names and exact inline `Ausbildung`, `Erfahrungen und Know-how`,
+`Persönlichkeit und Arbeitsweise`, `Begeisterung`, `Sprachen`, and `Arbeitsalltag`
+labels. `Zusätzliche Informationen` ends scope; explicitly required enrollment
+clauses remain requirements. `oder` alternatives/examples stay one clause.
+
+Two regression cases grounded in that observed vocabulary pass alongside all
+previous tests: 54/54 fit regressions. German language capability and completed
+degree truth are not assumed. Fresh actual Qwen reanalysis is separate evidence.

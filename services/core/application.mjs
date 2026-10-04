@@ -12,6 +12,21 @@ export class BrowserClient {
 const known = value => value !== undefined && value !== null && value !== '' && value !== 'UNKNOWN';
 const norm = value => String(value??'').toLowerCase().replace(/[_\W]+/g,' ').trim();
 const country = value => /^(pl|poland)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
+export function employerAutomationPolicy(view){
+  const text=`${view.text??''}\n${(view.fields??[]).map(f=>f.label??'').join('\n')}`;
+  return /(?:AI|artificial intelligence|generated content)[^.\n]{0,100}(?:disqualif|not permitted|prohibit)|(?:prohibit|not allowed|must not|do not)[^.\n]{0,100}(?:AI|artificial intelligence)|only my own words/i.test(text)?'HUMAN_AUTHORED_ONLY':null;
+}
+export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
+  const identity=profile.onboarding??{},name=identity.legal_name;
+  const values=(view.fields??[]).filter(f=>f.visible&&!['password','hidden','file'].includes(f.type)).map(f=>String(f.value??''));
+  const haystack=`${view.text??''}\n${values.join('\n')}`;
+  const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
+    job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
+    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)),
+    questions:outstanding===0,required_fields:!(view.fields??[]).some(f=>f.visible&&f.required&&(f.validation_message||(!f.value&&f.type!=='checkbox')||(f.type==='checkbox'&&!f.checked))),
+    claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha};
+  return {pass:Object.values(checks).every(Boolean),checks,observed_at:new Date().toISOString(),form_fingerprint:view.fingerprint,cv_sha256:cv.sha256};
+}
 
 export function professionalYears(profile) {
   if(known(profile.candidate?.professional_years))return profile.candidate.professional_years;
@@ -23,18 +38,21 @@ export function professionalYears(profile) {
 }
 
 export function resolveField(field, { profile, job, answerMemory = {} }) {
-  const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(field.label), legal=identity.legal_name||candidate.legal_name||candidate.name;
+  const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(field.label).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   value=direct[field.name];
+  if(field.name==='name'&&field.type==='text')value=legal;
+  if(field.name==='location'&&field.type==='text'&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))value=`${candidate.base_location.city}, ${candidate.base_location.country}`;
   if(field.name==='years_experience' && /catia|solidworks|fusion|python|java|c\+\+|cad|specific|software|technology/.test(label))value=undefined;
   if(!known(value)) {
-    if(/first name|given name/.test(label))value=direct.first_name;
+    if(/^(?:full name|legal name|name)$/.test(label))value=legal;
+    else if(/first name|given name/.test(label))value=direct.first_name;
     else if(/last name|surname|family name/.test(label))value=direct.last_name;
-    else if(/email/.test(label)&&field.type==='email')value=identity.email;
-    else if(/phone/.test(label)&&field.type==='tel')value=identity.phone;
+    else if(/^(?:e mail|email)(?: address)?$/.test(label)&&['email','text'].includes(field.type))value=identity.email;
+    else if(/^(?:phone|phone number|telephone|mobile(?: phone)?(?: number)?)$/.test(label)&&['tel','text'].includes(field.type))value=identity.phone;
     else if(/^(?:how many )?(?:professional years of experience|years of professional experience|years of commercial experience)$/.test(label))value=professionalYears(profile);
     else if(field.multiple && /skills/.test(label))value=(field.options||[]).filter(o=>skills.includes(norm(o.value))||skills.includes(norm(o.label))).map(o=>o.value);
     else if(/fusion.*project/.test(label)) { const fact=facts.find(f=>(f.skills||[]).some(s=>norm(s)==='fusion 360'));if(fact?.statements?.length){value=`${fact.provenance}: ${fact.statements.join(' ')}`;source='VERIFIED_FACT';} }
@@ -111,11 +129,13 @@ export async function runApplication({ repository, jobId, applicationId, profile
     }
     if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
     for(let count=0;count<maxSteps;count++){
+      const employerPolicy=employerAutomationPolicy(view);
+      if(employerPolicy){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:employerPolicy,browser_session_id:sessionId,current_url:view.url});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:employerPolicy};}
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: interactive CAPTCHA\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
-      for(const field of view.fields.filter(f=>f.visible&&!['hidden','submit','button'].includes(f.type))){
-        if(field.type==='file'){if(field.value)continue;if(!field.required)continue;if(!/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label)){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
+      for(const field of view.fields.filter(f=>(f.visible||(f.type==='file'&&!f.disabled&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
+        if(field.type==='file'){if(field.value)continue;const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);if(!field.required&&!resume)continue;if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
         if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment/i.test(field.label)) {
           if(field.checked)continue;const consent=classifyConsent(field.label,field.required);if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED'))continue;
           if(consent.consent_type==='USER_REQUIRED')return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});
@@ -133,8 +153,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
         const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL',[application.application_id])).rows[0].n;
-        const uploaded=(view.uploaded_file_hashes||[]).some(file=>file.sha256===cv.sha256&&file.filename===path.basename(cv.pdf_path));
-        if(!known(legalName)||reviewFacts.some(value=>!known(value)||!view.text.includes(String(value)))||!uploaded||outstanding||view.fields.some(f=>f.visible&&f.required&&f.validation_message)||!cv.qa_json?.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
+        const review=finalReviewEvidence({view,profile,job,cv,outstanding});
+        if(!review.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED',final_review:review});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
+        await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{final_review:review}]);
         if(application.status!=='READY_TO_SUBMIT'){await transition(repository,application.application_id,'READY_TO_SUBMIT',{browser_session_id:sessionId});application.status='READY_TO_SUBMIT';}
         const reason=submitPermission(view.url,config);if(reason){await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2,dry_run=$3 WHERE application_id=$1',[application.application_id,reason,config.dryRun]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
         await mutex.query("SELECT pg_advisory_lock(hashtextextended('jobhunter-submission-quota',0))");quotaLock=true;

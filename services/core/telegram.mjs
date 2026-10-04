@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import {acceptQuestionAnswerWithClient} from './hitl.mjs';
 const updateId = value => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid Telegram update ID');
   return value;
@@ -65,9 +66,14 @@ export class Telegram {
       `INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id,telegram_chat_id) VALUES($1,$2,$3,$3,$4,$5)`,
       [questionId, applicationId, text, requestId, this.chatId],
     );
-    const message = await this.send(
+    await repo.pool.query(`UPDATE applications SET last_state=last_state || jsonb_build_object('pending_question',COALESCE(last_state->'pending_question','{}'::jsonb)||jsonb_build_object('request_id',$2::text)) WHERE application_id=$1`,[applicationId,requestId]);
+    let message;
+    try{message = await this.send(
       `Need your answer\nApplication: ${applicationId}\nRequest: ${requestId}\n\n${text}\nReply to this message.`,
-    );
+    );}catch(error){
+      await repo.event('application',applicationId,'HITL_NOTIFICATION_FAILED',{question_id:questionId,request_id:requestId,reason:this.token&&this.chatId?'DELIVERY_FAILED':'TELEGRAM_NOT_CONFIGURED'});
+      return requestId;
+    }
     await repo.pool.query(
       "UPDATE application_questions SET telegram_message_id=$2 WHERE question_id=$1",
       [questionId, message.message_id],
@@ -112,18 +118,19 @@ export class Telegram {
     if (!message.reply_to_message?.message_id || !text.trim())
       throw new Error("Reply to the pending question required");
     const { rows } = await repo.pool.query(
-      `UPDATE application_questions SET answer=$1,answer_source='USER_TELEGRAM',confidence=1,answered_at=now() WHERE telegram_message_id=$2 AND telegram_chat_id=$3 AND answered_at IS NULL RETURNING application_id,question_id,raw_question`,
-      [JSON.stringify(text), message.reply_to_message.message_id, this.chatId],
+      `SELECT q.*,a.candidate_profile_id FROM application_questions q JOIN applications a USING(application_id) WHERE q.telegram_message_id=$1 AND q.telegram_chat_id=$2 AND q.answered_at IS NULL`,
+      [message.reply_to_message.message_id,this.chatId],
     );
     if (rows.length !== 1)
       throw new Error("Unknown or already answered question");
+    const saved=await acceptQuestionAnswerWithClient(repo.pool,{questionId:rows[0].question_id,correlationId:rows[0].telegram_request_id,answer:text,source:'USER_TELEGRAM',profileId:rows[0].candidate_profile_id});
     await repo.event(
       "application",
       rows[0].application_id,
       "TELEGRAM_ANSWERED",
       { question_id: rows[0].question_id },
     );
-    return rows[0];
+    return saved;
   }
   async acceptDurably(repo, update) {
     const id = updateId(update?.update_id);
@@ -144,7 +151,7 @@ export class Telegram {
       let accepted; let outcome = 'ACCEPTED'; let errorCode = null;
       try { accepted = await this.accept(transactional, update); }
       catch (error) {
-        errorCode = rejectionCodes.get(error.message);
+        errorCode = rejectionCodes.get(error.message)??(error.code&&/^(?:INVALID_USER_ANSWER|QUESTION_|APPLICATION_NOT_WAITING|SECURITY_QUESTION)/.test(error.code)?error.code:null);
         if (!errorCode) throw error;
         accepted = {}; outcome = 'REJECTED';
       }

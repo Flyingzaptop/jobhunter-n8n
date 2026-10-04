@@ -44,7 +44,10 @@ test('PostgreSQL and Chromium application runner pauses for correlated human ans
  await telegram.accept(repo,{message:{chat:{id:123},text:'2026-11-01',reply_to_message:{message_id:Number(question.telegram_message_id)}}});
  result=await runApplication({...options,applicationId:result.application_id});assert.equal(result.status,'CAPTCHA_WAIT',JSON.stringify(result));
  const answer=await fixtureHumanCaptcha({baseUrl:'http://127.0.0.1:3002',draftId:result.pending_question.draft_id,testToken:'fixture-test-human'});question=(await client.query('SELECT * FROM application_questions WHERE application_id=$1 AND answered_at IS NULL',[result.application_id])).rows[0];
- await telegram.accept(repo,{message:{chat:{id:123},text:answer.code,reply_to_message:{message_id:Number(question.telegram_message_id)}}});
+ await assert.rejects(telegram.accept(repo,{message:{chat:{id:123},text:answer.code,reply_to_message:{message_id:Number(question.telegram_message_id)}}}),/APPLICATION_NOT_WAITING_FOR_ANSWER|SECURITY_QUESTION/);
+ // Existing mock board's explicit human-test adapter supplies this fixture code.
+ // Production Telegram/dashboard never accepts CAPTCHA/security challenge answers.
+ await client.query("UPDATE application_questions SET answer=$1::jsonb,answer_source='MOCK_HUMAN_TEST_ADAPTER',answered_at=now() WHERE question_id=$2",[JSON.stringify(answer.code),question.question_id]);
  result=await runApplication({...options,applicationId:result.application_id});assert.equal(result.status,'SUBMITTED',JSON.stringify(result));assert.equal(board.submissions.size,1);
  const duplicate=await runApplication({...options,applicationId:result.application_id});assert.equal(duplicate.status,'SUBMITTED');assert.equal(board.submissions.size,1);assert.equal((await client.query('SELECT count(*)::int AS n FROM applications')).rows[0].n,1);
  assert.equal((await client.query('SELECT count(*)::int AS n FROM consents')).rows[0].n,1);assert.ok((await client.query("SELECT count(*)::int AS n FROM events WHERE event_type='STATE_SUBMITTED'")).rows[0].n===1);

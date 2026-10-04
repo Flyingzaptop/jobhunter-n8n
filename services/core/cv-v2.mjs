@@ -83,13 +83,17 @@ export function cvWriterSchema(profile) {
   const skillNames = [...new Set(facts.flatMap(f => f.skills ?? []).map(s => skillText(s).replace(/_/g,' ')))];
   const skill = structuredClone(claim);
   skill.properties.text = skillNames.length ? {enum:skillNames} : {type:'string', maxLength:0};
+  const skillSchema=skillNames.length ? {oneOf:skillNames.map(text=>{
+    const supportedIds=facts.filter(f=>(f.skills??[]).some(s=>skillText(s).replace(/_/g,' ')===text)).map(f=>f.id);
+    return obj({text:{const:text},source_fact_ids:{type:'array',minItems:1,maxItems:Math.min(6,supportedIds.length),uniqueItems:true,items:{enum:supportedIds}}});
+  })} : skill;
   const sectionIds = facts.filter(f => f.provenance && !['EDUCATION','COURSE'].includes(f.provenance)).map(f => f.id);
   const sectionSchema=sectionIds.length ? {oneOf:sectionIds.map(id=>{
     const bullet=structuredClone(claim);
     bullet.properties.source_fact_ids={type:'array',minItems:1,maxItems:1,items:{const:id}};
     return obj({source_fact_id:{const:id},bullets:{...array(bullet,3),minItems:1}});
   })} : obj({source_fact_id:str,bullets:{...array(claim,3),minItems:1}});
-  return obj({headline:claim, summary:{...array(claim,2),minItems:1}, skills:{...array(skill,14), ...(skillNames.length ? {minItems:1} : {maxItems:0})},
+  return obj({headline:claim, summary:{...array(claim,2),minItems:1}, skills:{...array(skillSchema,14), ...(skillNames.length ? {minItems:1} : {maxItems:0})},
     sections:{...array(sectionSchema,4), ...(sectionIds.length ? {minItems:1} : {maxItems:0})},
     application_text:array(obj({kind:{enum:['cover_letter','motivation','introduction']}, claims:{...array(claim,3), minItems:1}}),1)});
 }

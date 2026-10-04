@@ -64,3 +64,13 @@ BLOCKED_IDENTITY may be saved with factual QA and identity QA separate; full PDF
 PASS requires actual known identity. Maintain original createCv API/wrapper backwards
 compatibility by root integration. Never run Ollama concurrently across agents;
 coordinate root GPU ownership before real inference.
+
+Later production-gate milestone: dashboard accepts explicit user answers via
+POST /api/hitl/questions/:question_id/answer with session/CSRF and exact
+{answer,expected_request_id,confirmed:true}. This updates the same durable
+application_questions row as Telegram; source USER_DASHBOARD, no reusable answer
+or candidate-profile mutation. core/hitl.mjs owns common acceptance/dispatch.
+Specific POST /api/applications/:id/review/{prepare,approve,revoke} persists
+per-application fresh job/profile/CV/form digest review only. No real Submit or
+AUTO_APPLY enablement is introduced. Global production evidence remains required.
+Full request/validation/integration details: docs/DASHBOARD_HITL_GATES.md.

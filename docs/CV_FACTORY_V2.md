@@ -52,3 +52,10 @@ reverifies official ATS publication, hydrates selected summary-only details, run
 real fact-based fit and skips rejected listings. Results checkpoint to
 `tests/results/cv-v2-real.json`; generated drafts also persist to `cv_drafts`.
 No result from the regression gateway contributes to these acceptance metrics.
+
+Actual-identity follow-up is documented in `docs/CV_IDENTITY_GATE_REPORT.md`.
+The exact skill grammar binds every allowed label to only its supporting fact IDs.
+`scripts/cv-v2-identity-gate.mjs` generates actual REVIEW/STRETCH CVs into the
+configured `data/cv-v2` root. `scripts/cv-approve-visual.mjs` records completed
+rendered-page inspection and registers approved artifacts. Employer content-policy
+blocks remain separate from factual/PDF QA and prevent application eligibility.
