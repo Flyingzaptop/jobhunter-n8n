@@ -16,12 +16,13 @@ try {
     console.log(JSON.stringify({run:run?{run_id:run.run_id,status:run.status,message:run.message,processed:run.processed_count,success:run.success_count,failure:run.failure_count,started_at:run.started_at}:null,
       queue:counts,analyzed:results.length,decisions:results.reduce((a,j)=>{a[j.decision]=(a[j.decision]??0)+1;return a;},{}),nonreject:results.filter(j=>j.decision!=='REJECT')}));
   }else if(process.argv.includes('--analyze')) {
-    if(process.env.JOBHUNTER_FIT_BATCH_AUTHORIZED!=='true')throw new Error('Root must grant exclusive GPU ownership before batch inference');
+    if(process.env.JOBHUNTER_FIT_BATCH_AUTHORIZED!=='true')throw new Error('Explicit batch authorization required before inference');
     if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT!=='false')throw new Error('Readiness batch requires real submit disabled');
     const profile=YAML.parse(await readFile('config/candidate_profile.yaml','utf8'));
     const policy=YAML.parse(await readFile('config/search_policy.yaml','utf8'));
     const report=await runRelevanceFitBatch({repository,profile,policy,llm:new OllamaClient(),
-      inferenceAuthorized:true,maxJobs:Number(value('--max-jobs=')??25),maxRuntimeMs:Number(value('--max-minutes=')??60)*60000});
+      inferenceAuthorized:true,maxJobs:Number(value('--max-jobs=')??25),maxRuntimeMs:Number(value('--max-minutes=')??60)*60000,
+      jobIds:value('--job-ids=')?.split(',')});
     await writeFile(`tests/results/fit-batch-${report.operation_run_id}.json`,JSON.stringify(report,null,2));console.log(JSON.stringify(report));
   }else {
     const report=await buildRelevanceQueue({repository,observer:event=>console.log(JSON.stringify(event))});

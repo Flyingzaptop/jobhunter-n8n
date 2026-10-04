@@ -2,7 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 
-export const PROMPT_VERSION = 'fit-analysis-v2.9-compact';
+export const PROMPT_VERSION = 'fit-analysis-v3.1-compact';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -18,6 +18,31 @@ const qualificationBlocker = req => req.strict && req.importance === 'MANDATORY'
 const authorizationCondition = /\b(?:work\s+(?:authorization|permit)|right\s+to\s+work|citizen(?:ship)?|visa|immigration|sponsorship|security\s+clearance|export\s+control)\b/i;
 const hiringCondition = /\b(?:hire|hiring|employ|employment|contract|contractor|b2b|eor|employer of record)\b/i;
 const explicitPolishRemoteEmployment = /\b(?:remotely|remote)\s+from\s+Poland\b.*\bPolish\s+employment\s+contract\b/i;
+const missingString = value => /^(?:unknown|unspecified|not specified|n\/?a|none|null|undefined|\?)$/i.test(String(value??'').trim()) ? null : value;
+export function normalizeWorkFormatUnknowns(format={}) {
+  return Object.fromEntries(Object.entries(format).map(([key,value])=>[key,typeof value==='string'&&key!=='employment_route'?missingString(value):value]));
+}
+function explicitHybridQuote(job) {
+  return String(job.description_text??'').split(/\n|(?<=[.!?])\s+/).find(text=>
+    /^(?:note\s*:\s*)?(?:this|the)\s+(?:(?:role|position|job|internship)\s+(?:is|will be|requires)|will be)\b[^.!?]*\bhybrid\b/i.test(text)
+    || /^hybrid (?:role|position|work|working|arrangement)\b/i.test(text));
+}
+export function groundedWorkNumbers(job,profile={}) {
+  const numbers={onsite_days_per_week:null,onsite_days_per_month:null,office_distance_km:null};
+  const words={zero:0,no:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7};
+  for(const text of String(job.description_text??'').split(/\n|(?<=[.!?])\s+/)){
+    if(/on[- ]?site|in[- ]?office|office attendance|at the office|commut|hybrid|travel/i.test(text)){
+      for(const match of text.matchAll(/\b(\d+|zero|no|one|two|three|four|five|six|seven)\s+(?:(?:on[- ]?site|office)\s+)?days?\s*(?:(?:per|a|each|\/)\s*(week|month)|(weekly|monthly))/gi)){
+        const amount=/^\d+$/.test(match[1])?Number(match[1]):words[match[1].toLowerCase()];
+        numbers[/week/i.test(match[2]??match[3])?'onsite_days_per_week':'onsite_days_per_month']=amount;
+      }
+    }
+    const base=normalize(profile.candidate?.base_location?.city??'Wroclaw');
+    const distance=normalize(text).match(/\b(\d+(?:\.\d+)?)\s*km\s+from\s+([\p{L} ]+)/u);
+    if(distance&&normalize(distance[2]).startsWith(base))numbers.office_distance_km=Number(distance[1]);
+  }
+  return numbers;
+}
 const polishHiringEvidence = /\bPolish\s+employment\s+contract\b|\b(?:hire|hiring|employ|employment|contractor|b2b|eor)\b[^.!?;]*\b(?:Poland|worldwide|globally)\b|\bPoland\b[^.!?;]*\b(?:hire|employ|employment|contractor|b2b|eor)\b/i;
 
 export const FIT_SCHEMA = object({
@@ -96,6 +121,11 @@ export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalo
     properties: Object.fromEntries(additionalIds.map(id => [String(id), {$ref: '#/$defs/explicit_requirement'}]))};
   schema.properties.explicit_requirements = {type: 'object', additionalProperties: false,
     required: explicitIds.map(String), properties: Object.fromEntries(explicitIds.map(id => [String(id), {$ref: '#/$defs/explicit_requirement'}]))};
+  for(const field of ['requirements','explicit_requirements'])for(const fragment of catalog){
+    if(!fragment.category_hint||!schema.properties[field].properties[String(fragment.id)])continue;
+    const item=structuredClone(keyedItem);item.properties.category={const:fragment.category_hint};
+    schema.properties[field].properties[String(fragment.id)]=item;
+  }
   // Decode the mandatory/preferred map first. Optional source keys are merely
   // permitted references, not a second list of requirements to manufacture.
   schema.properties = {role_family:schema.properties.role_family, role_level:schema.properties.role_level,
@@ -103,6 +133,8 @@ export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalo
     explicit_requirements:schema.properties.explicit_requirements, requirements:schema.properties.requirements,
     work_format:schema.properties.work_format};
   schema.required.push('explicit_requirements');
+  if(explicitHybridQuote(job))schema.properties.work_format.properties.hybrid_required={const:true};
+  for(const [field,value] of Object.entries(groundedWorkNumbers(job,profile)))schema.properties.work_format.properties[field]={const:value};
   schema.properties.work_format.properties.evidence_fragment_ids.items = catalog.length ? {enum: catalog.map(f => f.id)} : {type: 'integer', minimum: 0};
   if (!authorizationCondition.test(job.description_text || ''))
     schema.properties.work_format.properties.authorization_known_impossible = {enum: [false]};
@@ -122,6 +154,8 @@ export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalo
 
 /** IDs refer to original contiguous text, avoiding generated quotations entirely. */
 function workFormatStatement(text) {
+  text=String(text).trim().replace(/^[-*•]\s+/,'');
+  if(/^remote[- ]first\b.*\b(?:no|without)\b.*\b(?:required\s+)?commute\b/i.test(text))return true;
   // Employer capabilities and descriptions of the offered arrangement do not
   // assert a qualification possessed by the candidate. Explicit candidate
   // legal/location conditions remain available for requirement mapping.
@@ -142,6 +176,15 @@ function employerContextStatement(text) {
     || /\b(?:projects?|experience)\b.*\b(?:valid (?:hands-on )?evidence|projects count|not required)\b/i.test(text)
     || /^(?:full[- ]time|part[- ]time)[.!]?$/i.test(text);
 }
+function sourceCategoryHint(text) {
+  const value=normalize(text);
+  if(/^ausbildung\s*:|^formation\s*\/(?:\s*experience)?|^(?:voraussetzung.*immatrikulation)/.test(value))return 'EDUCATION';
+  if(/^sprachen\s*:|^(?:english|german|french|polish|deutsch|englisch)\s+(?:[abc][12]|language|fluency)/.test(value))return 'LANGUAGE';
+  if(/^arbeitsalltag\s*:/.test(value))return 'LOCATION';
+  if(/^erfahrungen und know-?how\s*:/.test(value))return 'TECHNICAL';
+  if(/^personlichkeit und arbeitsweise\s*:|^begeisterung\s*:/.test(value))return 'OTHER';
+  return null;
+}
 
 function standaloneQualificationHeading(text) {
   // Bounded section names only. Matching "qualifications" or "skills" inside
@@ -149,10 +192,11 @@ function standaloneQualificationHeading(text) {
   // untouched: normalization here is solely for detecting the heading.
   const key = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
     .toLowerCase().replace(/[:—.-]+\s*$/, '').trim();
-  if (/^(?:you have|qualifications|(?:required|minimum|basic) skills(?: and experience)?|formation\s*(?:\/|et)\s*experience|competences(?: techniques)?|qualites personnelles|profil recherche|votre profil)$/.test(key))
+  if (/^(?:must have|essential skills|minimum requirements|you have|who you are|what you bring|about you|your qualifications|qualifications|required qualifications|(?:required|minimum|basic) skills(?: and experience)?|formation\s*(?:\/|et)\s*experience|competences(?: techniques)?|qualites personnelles|profil recherche|votre profil)$/.test(key))
     return { importance: 'MANDATORY' };
   if (/^(?:we prefer|desired skills(?: and experience)?|competences souhaitees|qualifications souhaitees|atouts|nous preferons)$/.test(key))
     return { importance: 'STRONG_PREFERENCE' };
+  if(/^(?:nice to have|nice-to-have|bonus skills)$/.test(key))return{importance:'NICE_TO_HAVE'};
   if (/^(?:qualifikationen|ihr profil|dein profil|was sie mitbringen|was du mitbringst|anforderungen)$/.test(key))
     return { importance: 'MANDATORY' };
   if (/^(?:wunschqualifikationen|wunschprofil|von vorteil|wunschenswert)$/.test(key))
@@ -165,7 +209,7 @@ function standaloneQualificationHeading(text) {
     return { importance: 'MANDATORY', headingOnly: false };
   if (/^(?:ausbildung|erfahrungen und know-?how|personlichkeit und arbeitsweise|begeisterung|sprachen|arbeitsalltag)$/.test(key))
     return { importance: 'MANDATORY' };
-  if (/^(?:you will|role description|key responsibilities|responsibilities|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
+  if (/^(?:you will|what you['’]ll do|what you will do|what we offer|how to apply|what to expect|important information|who we are|about [\p{L}\p{N}& -]+|role description|key responsibilities|responsibilities|recruitment process|additional information|pay disclosure|poland employee benefits|estimated hourly pay range|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
     return { importance: null };
   // A trailing note starts application/work-arrangement context, but an explicit
   // qualification in the note (e.g. clearance required) is still evaluated.
@@ -173,21 +217,41 @@ function standaloneQualificationHeading(text) {
   return null;
 }
 
-function qualificationSentences(source) {
-  let scope = null;
-  return source.split(/(?<=[.!?;])\s+|\n+/).map(text => text.trim()).filter(Boolean).map(text => {
+function knownSourceOfficeCountry(job={}) {
+  const names=[...new Set([...Object.values(countryCodes),'new zealand','australia','canada'])];
+  const raw=countryName(job.country);if(names.includes(raw))return raw;
+  const location=normalize(job.location);
+  if(/(?:,\s*|^)nz$/.test(location))return 'new zealand';
+  if(/(?:,\s*|^)uk$/.test(location))return 'united kingdom';
+  for(const name of names.sort((a,b)=>b.length-a.length))
+    if(new RegExp(`\\b${name}\\b`,'i').test(location))return name;
+  return null;
+}
+function qualificationSentences(source,{job}={}) {
+  let scope = null;let contextScope=false;let conditionalRegion=null;const officeCountry=knownSourceOfficeCountry(job);
+  // Avoid splitting an example qualifier after e.g./z.B. The original text and
+  // exact-source quotation remain unchanged; only the boundary decision changes.
+  const pieces=[];let start=0;
+  for(const match of source.matchAll(/(?<=[.!?;])\s+|\n+/g)){
+    if(!match[0].includes('\n')&&/(?:\be\.g\.|\bi\.e\.|\bz\.\s*b\.|\bu\.s\.|\betc\.)$/i.test(source.slice(start,match.index)))continue;
+    pieces.push(source.slice(start,match.index));start=match.index+match[0].length;
+  }pieces.push(source.slice(start));
+  return pieces.map(text => text.trim()).filter(Boolean).map(text => {
+    const officeHeading=text.match(/^for candidates seeking to work in (.+?) offices only\s*:?$/i);
+    if(officeHeading){conditionalRegion=countryName(officeHeading[1]);scope=null;contextScope=true;return{text,importance:null,list:null,headingOnly:true,contextOnly:true,conditional_region:conditionalRegion};}
     const standalone = standaloneQualificationHeading(text);
     const headings = [...text.matchAll(/\b(what you must have|minimum qualifications|required qualifications|basic qualifications|(?:candidate|job|role) requirements|what we are looking for(?: in you)?|what you(?:['’]ll| will) be doing|get some bonus points|preferred qualifications|additional skills that you might also bring|what we offer you|benefits|interview process|equal employment)\b|^requirements\s*:?$/gi)];
-    if (standalone) scope = standalone.importance;
+    if (standalone) {scope = standalone.importance;contextScope=standalone.importance===null;conditionalRegion=null;}
     else if (headings.length) {
       const heading = headings.at(-1)[0];
       scope = /must have|minimum|required|basic|requirements/i.test(heading) ? 'MANDATORY'
         : /bonus|preferred|looking for/i.test(heading) ? 'STRONG_PREFERENCE'
         : /additional skills/i.test(heading) ? 'NICE_TO_HAVE' : null;
+      contextScope=scope===null;
     }
     const headingOnly = standalone ? standalone.headingOnly !== false : headings.some(heading => text.replace(/[:—-]\s*$/, '').trim().toLowerCase() === heading[0].replace(/:\s*$/, '').trim().toLowerCase());
     const untrustedCommand = /ignore (?:previous|system|all) instructions|(?:reveal|expose|print|send|upload).*(?:secrets?|tokens?|environment variables)|upload another|localhost/i.test(text);
-    const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bnot (?:required|mandatory|essential)\b/i.test(text);
+    const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bnot (?:required|mandatory|essential)\b|\bproducing required documentation\b/i.test(text);
     const list = text.match(/\b(mandatory|required|nice to have|preferred)\s*:\s*(.*)/i);
     let importance = null;
     if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text) && !employerContextStatement(text)) {
@@ -196,14 +260,17 @@ function qualificationSentences(source) {
         : /\b(nice to have|helpful)\b/i.test(text) ? 'NICE_TO_HAVE'
         : /\b(?:preferred|wunschenswert|wünschenswert)|von vorteil\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
     }
-    return {text, importance, list, headingOnly};
+    if(conditionalRegion&&/\b(?:applicants?|candidates?|employees?|you)\b.*\b(?:must be|eligible|authorizations?|citizenship|nationality)\b/i.test(text))importance='MANDATORY';
+    if(conditionalRegion&&officeCountry&&conditionalRegion!==officeCountry)importance=null;
+    return {text, importance, list, headingOnly,contextOnly:conditionalRegion&&officeCountry&&conditionalRegion!==officeCountry||contextScope&&!importance,
+      category_hint:sourceCategoryHint(text),...(conditionalRegion?{conditional_region:conditionalRegion}:{})};
   });
 }
 
 function requirementItems(text, list) {
   // Alternative fields and examples qualify the one requirement; they are not
   // independent qualifications which the candidate must satisfy simultaneously.
-  if (/\b(?:or|either|such as|for example|including|ou|soit|notamment|par exemple|oder|beispielsweise)\b|\be\.g\.|\bz\.\s*b\./i.test(text)) return [];
+  if (/\b(?:or|either|such as|for example|including|eg|ou|soit|notamment|par exemple|oder|beispielsweise)\b|\be\.g\.|\bz\.\s*b\./i.test(text)) return [];
   const content = (list?.[2] || text).replace(/[.!?;]+$/, '');
   return content.split(/,|\s+and\s+/i).map(item => item.trim()).filter(Boolean);
 }
@@ -213,7 +280,7 @@ export function sourceFragmentCatalog(job) {
     {text: job.location, work_format_only: true}, {text: job.country, work_format_only: true},
     {text: job.work_mode, work_format_only: true}].filter(source => source.text);
   const catalog = []; const seen = new Map();
-  const add = (text, importance_hint = null, list_container = false, metadataOnly = false, contextOnly = false) => {
+  const add = (text, importance_hint = null, list_container = false, metadataOnly = false, contextOnly = false,categoryHint=null,conditionalRegion=null) => {
     text = text.trim();
     if (!text) return;
     if (seen.has(text)) {
@@ -221,19 +288,22 @@ export function sourceFragmentCatalog(job) {
       if (importance_hint) entry.importance_hint = importance_hint;
       if (metadataOnly && !entry.importance_hint) entry.work_format_only = true;
       if (contextOnly && !entry.importance_hint) entry.context_only = true;
+      if(categoryHint)entry.category_hint=categoryHint;
+      if(conditionalRegion)entry.conditional_region=conditionalRegion;
       return;
     }
     const entry = {id: catalog.length, text, importance_hint, list_container,
       work_format_only: metadataOnly || workFormatStatement(text),
-      context_only: !importance_hint && (contextOnly || employerContextStatement(text))};
+      context_only: !importance_hint && Boolean(contextOnly || employerContextStatement(text)),...(categoryHint?{category_hint:categoryHint}:{}),...(conditionalRegion?{conditional_region:conditionalRegion}:{})};
+    if(entry.work_format_only)entry.importance_hint=null;
     seen.set(text, entry.id); catalog.push(entry);
   };
-  for (const {text: sentence, importance: hint, list, metadataOnly, contextOnly} of sources.flatMap(source =>
-    qualificationSentences(source.text).map(sentence => ({...sentence, metadataOnly: source.work_format_only, contextOnly: source.context_only || sentence.headingOnly})))) {
+  for (const {text: sentence, importance: hint, list, metadataOnly, contextOnly,category_hint,conditional_region} of sources.flatMap(source =>
+    qualificationSentences(source.text,{job}).map(sentence => ({...sentence, metadataOnly: source.work_format_only, contextOnly: source.context_only || sentence.headingOnly||sentence.contextOnly})))) {
     const compound = hint && !list && /,|\s+and\s+/i.test(sentence);
     const items = list || compound ? requirementItems(sentence, list) : [];
-    add(sentence, hint, items.length > 0, metadataOnly, contextOnly);
-    for (const item of items) add(item, hint, metadataOnly, contextOnly);
+    add(sentence, hint, items.length > 0, metadataOnly, contextOnly,category_hint,conditional_region);
+    for (const item of items) add(item, hint,false, metadataOnly, contextOnly,category_hint,conditional_region);
   }
   return catalog;
 }
@@ -261,6 +331,8 @@ export function expandCompactAnalysis(wire, {job, profile, catalog = sourceFragm
     if (source.list_container) throw new StructuredOutputError('Mandatory or preferred list must map each item separately');
     if (source.work_format_only) throw new StructuredOutputError('Work-format statement is employer evidence, not a candidate qualification');
     if (source.context_only) throw new StructuredOutputError('Employer or role context is not a candidate qualification');
+    if(source.category_hint&&req.category!==source.category_hint)
+      throw new StructuredOutputError(`Source qualification category must be ${source.category_hint}: ${source.text}`);
     const factIds = req.candidate_evidence_fact_ids;
     for (const id of factIds) if (!facts.has(id)) throw new StructuredOutputError('Unknown candidate evidence ID');
     const years = source.text.match(/\b(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\b/i)?.[1];
@@ -319,6 +391,13 @@ export function factIndex(profile) {
       facts.set(id, {id, provenance: null, type: 'verified_skill', statements: [skill], skills: [skill]});
     }
   }
+  const addMetadata=(id,statements)=>{if(facts.has(id))throw new Error('Duplicate candidate metadata fact ID');facts.set(id,{id,provenance:null,type:'verified_candidate_metadata',statements});};
+  const known=value=>typeof value==='string'&&value.trim()&&!/^(?:unknown|null|n\/a)$/i.test(value.trim());
+  const base=profile.candidate?.base_location;
+  if(base&&[base.city,base.country].some(known))addMetadata('candidate_base_location',[`Declared base location: ${[base.city,base.country].filter(known).join(', ')}.`]);
+  if(profile.candidate?.citizenship?.length&&profile.candidate.citizenship.every(known))addMetadata('candidate_citizenship',[`Declared citizenship: ${profile.candidate.citizenship.join(', ')}.`]);
+  if(typeof profile.candidate?.eu_citizen==='boolean')addMetadata('candidate_eu_citizenship',[`Declared EU citizenship: ${profile.candidate.eu_citizen}. This does not establish an employer hiring route or a non-EU permit.`]);
+  if(typeof profile.candidate?.availability?.full_time==='boolean')addMetadata('candidate_full_time_availability',[`Declared full-time availability: ${profile.candidate.availability.full_time}. No start date or notice period is inferred.`]);
   return facts;
 }
 
@@ -329,7 +408,7 @@ const hasSkill = (fact, skill) => !skill || (fact.skills || []).some(s => normal
 
 /** A narrow completeness guard: explicit mandatory sentences cannot disappear. */
 export function mandatoryRequirementAnchors(job) {
-  return qualificationSentences(job.description_text || '').filter(sentence => sentence.importance === 'MANDATORY').map(sentence => sentence.text);
+  return qualificationSentences(job.description_text || '',{job}).filter(sentence => sentence.importance === 'MANDATORY').map(sentence => sentence.text);
 }
 
 export function missingMandatoryListItems(analysis, job) {
@@ -367,6 +446,7 @@ export function schemaForJob(job, profile) {
 
 /** Reject hallucinated IDs, false provenance and ungrounded employer evidence. */
 export function validateFactIntegrity(analysis, profile, job) {
+  analysis.work_format=normalizeWorkFormatUnknowns(analysis.work_format);
   if (!validateSchema(analysis)) throw new StructuredOutputError('Fit analysis JSON schema mismatch');
   const facts = factIndex(profile);
   const source = [job.title, job.description_text, job.location, job.country, job.work_mode].filter(Boolean).join('\n');
@@ -376,6 +456,8 @@ export function validateFactIntegrity(analysis, profile, job) {
     if (!quoted(req.source_quote, source)) throw new StructuredOutputError('Requirement quote missing from vacancy');
     if (workFormatStatement(req.source_quote) && req.importance !== 'DESCRIPTION_ONLY')
       throw new StructuredOutputError('Work-format statement is employer evidence, not a candidate qualification');
+    const categoryHint=sourceCategoryHint(req.source_quote);
+    if(categoryHint&&req.category!==categoryHint)throw new StructuredOutputError(`Source qualification category must be ${categoryHint}: ${req.source_quote}`);
     const expectedProvenance = new Set();
     req.candidate_evidence_fact_ids.forEach(id => {
       const fact = facts.get(id);
@@ -407,6 +489,12 @@ export function validateFactIntegrity(analysis, profile, job) {
     && !analysis.work_format.evidence.length)
     throw new StructuredOutputError('Confirmed hiring eligibility requires vacancy evidence');
   const hiringEvidence = analysis.work_format.evidence.join(' ');
+  if(explicitHybridQuote(job)&&analysis.work_format.hybrid_required!==true)
+    throw new StructuredOutputError('Explicit hybrid vacancy requires hybrid_required=true; fully remote inference contradicts the source');
+  for(const [field,expected] of Object.entries(groundedWorkNumbers(job,profile))){
+    if(analysis.work_format[field]!==null&&analysis.work_format[field]!==expected)
+      throw new StructuredOutputError(`Ungrounded work-format numeric value ${field}; use only explicit source frequency or base-city distance`);
+  }
   const explicitPolishEmployment = explicitPolishRemoteEmployment.test(hiringEvidence);
   if (explicitPolishEmployment && (analysis.work_format.can_hire_in_poland !== true
     || analysis.work_format.employment_route !== 'PL_EMPLOYEE'))
@@ -459,7 +547,7 @@ export function requiresCompletedDegree(text) {
 export function enforceEducation(requirements, profile) {
   const facts = factIndex(profile);
   return requirements.map(req => {
-    if (req.category !== 'EDUCATION' || !requiresCompletedDegree(req.requirement)) return req;
+    if (req.category !== 'EDUCATION' || !requiresCompletedDegree(req.source_quote??req.requirement)) return req;
     const cited = req.candidate_evidence_fact_ids.map(id => facts.get(id));
     if (cited.some(fact => fact?.provenance === 'EDUCATION' && ['completed','graduated','degree_completed'].includes(fact.status))) return req;
     if (cited.some(fact => fact?.provenance === 'EDUCATION' && fact.status === 'degree_in_progress'))
@@ -483,6 +571,31 @@ export function enforceLanguageLevels(requirements, profile) {
       candidate_evidence_fact_ids: [language.id], candidate_evidence_provenance: [],
       genuinely_ambiguous: false,
       reason: `Declared ${language.language} ${candidateLevel}; vacancy requires ${required}. No certificate claim made.`};
+  });
+}
+
+/** Bounded factual qualifier guards; never equate project work with employment. */
+export function enforceSkillQualifiers(requirements,profile) {
+  const facts=factIndex(profile);
+  const evidence=fact=>[...(fact?.statements??[]),...(fact?.skills??[])].map(value=>typeof value==='string'?value:JSON.stringify(value)).join(' ');
+  return requirements.map(req=>{
+    if(req.category!=='TECHNICAL'||req.match!=='YES')return req;
+    const text=normalize(req.source_quote??req.requirement),cited=req.candidate_evidence_fact_ids.map(id=>facts.get(id));
+    const citedText=cited.map(evidence).join(' ');
+    if(/\b(?:agile|scrum)\b/.test(text)&&!/\b(?:agile|scrum)\b/i.test(citedText))
+      return{...req,match:'UNKNOWN',reason:'Cited facts contain no documented agile/Scrum environment; project work alone does not establish it.',semantic_qa:'UNSUPPORTED_AGILE_ENVIRONMENT'};
+    if(/c\+\+/.test(text)&&/\b(?:proficien\w*|strong|expert|advanced|excellent)\b/.test(text)){
+      const supporting=cited.filter(f=>/c\+\+/i.test(evidence(f)));
+      if(!supporting.length)return{...req,match:'UNKNOWN',reason:'No cited C++ evidence supports this proficiency requirement.',semantic_qa:'UNSUPPORTED_CPP_PROFICIENCY'};
+      if(supporting.every(f=>/basic|intermediate|concept|familiarity|limited/i.test(evidence(f))))
+        return{...req,match:'PARTIAL',reason:'Documented C++ evidence is limited to basic/intermediate concepts; strong proficiency is not established.',semantic_qa:'CPP_QUALIFIER_EXCEEDS_FACT'};
+    }
+    if(/\b(?:ubuntu|linux)\b/.test(text)&&/\b(?:previous experience|experience (?:working|using|with)|hands-on experience)\b/.test(text)){
+      const supporting=cited.filter(f=>/\b(?:ubuntu|linux)\b/i.test(evidence(f)));
+      if(supporting.length&&supporting.every(f=>f.type==='verified_skill'&&/familiarity|basic|limited/i.test(evidence(f))))
+        return{...req,match:'PARTIAL',reason:'Only Linux familiarity is documented; prior hands-on distribution work is not established.',semantic_qa:'LINUX_EXPERIENCE_EXCEEDS_FACT'};
+    }
+    return req;
   });
 }
 
@@ -516,19 +629,22 @@ export function scoreRequirements(requirements, {weights = defaultWeights} = {})
 const european = new Set(['poland','germany','czechia','czech republic','austria','netherlands','sweden','norway','finland','denmark','france','belgium','spain','portugal','italy','ireland','romania','bulgaria','hungary','slovakia','slovenia','croatia','estonia','latvia','lithuania','luxembourg','greece','cyprus','malta','iceland','switzerland','united kingdom','uk']);
 const euCountries = new Set([...european].filter(c => !['norway','iceland','switzerland','united kingdom','uk'].includes(c)));
 const countryCodes = {pl:'poland',de:'germany',cz:'czechia',at:'austria',nl:'netherlands',se:'sweden',no:'norway',fi:'finland',dk:'denmark',fr:'france',be:'belgium',es:'spain',pt:'portugal',it:'italy',ie:'ireland',ro:'romania',bg:'bulgaria',hu:'hungary',sk:'slovakia',si:'slovenia',hr:'croatia',ee:'estonia',lv:'latvia',lt:'lithuania',lu:'luxembourg',gr:'greece',cy:'cyprus',mt:'malta',is:'iceland',ch:'switzerland',gb:'united kingdom',uk:'united kingdom',us:'united states'};
-const countryName = value => countryCodes[normalize(value)] || normalize(value);
+const countryName = value => countryCodes[normalize(missingString(value))] || normalize(missingString(value));
 
 export function workFormatAnalysis({job, profile, policy = {}, workFormat}) {
-  const f = workFormat || {};
+  const f = normalizeWorkFormatUnknowns(workFormat || {});
+  if(explicitHybridQuote(job))f.hybrid_required=true;
+  const groundedNumbers=groundedWorkNumbers(job,profile);
+  for(const [field,expected] of Object.entries(groundedNumbers))if(f[field]!==expected)f[field]=expected;
   const loc = policy.work_location_policy || {};
-  const country = countryName(f.office_country || job.country);
+  const country = countryName(f.office_country || job.country || (/\bpoland\b/i.test(job.location??'')?'Poland':null));
   const city = normalize(f.office_location || job.location);
   const base = profile.candidate?.base_location || loc.candidate_base || {city: 'Wroclaw', country: 'Poland'};
   const baseCity = normalize(base.city);
   const local = (city === baseCity || city.includes(`${baseCity},`) || city.includes(`${baseCity} `))
     || (typeof f.office_distance_km === 'number' && f.office_distance_km <= (loc.local?.radius_km ?? 30) && country === 'poland');
-  const region = normalize(f.remote_region);
-  const residency = normalize(f.employee_residency_requirement);
+  const region = normalize(missingString(f.remote_region));
+  const residency = normalize(missingString(f.employee_residency_requirement));
   const reasons = []; let classification = 'UNKNOWN', feasible = false, blocker = false;
   const regularOnsite = (f.onsite_days_per_week ?? 0) > 0 || (f.onsite_days_per_month ?? 0) > 1;
   if (f.remote_allowed === true && !f.hybrid_required && !regularOnsite) {
@@ -544,10 +660,12 @@ export function workFormatAnalysis({job, profile, policy = {}, workFormat}) {
   } else if (local && f.remote_allowed === false && f.hybrid_required === false) {
     classification = 'ONSITE_WROCLAW_LOCAL'; feasible = loc.local?.onsite_auto_apply === true;
     if (!feasible) reasons.push('LOCAL_ONSITE_REVIEW');
-  } else if (country === 'poland' && f.hybrid_required === true && f.onsite_days_per_week === 0
+  } else if (country === 'poland' && f.hybrid_required === true && (f.onsite_days_per_week===null||f.onsite_days_per_week===0)
     && f.onsite_days_per_month !== null && f.onsite_days_per_month !== undefined
     && f.onsite_days_per_month <= (loc.poland_nonlocal?.max_onsite_days_per_month_for_auto_apply ?? 1)) {
     classification = 'HYBRID_POLAND_RARE_TRAVEL'; feasible = loc.poland_nonlocal?.rare_travel_enabled !== false;
+  } else if(country==='poland'&&f.hybrid_required===true&&!local){
+    classification='HYBRID_POLAND_NONLOCAL_REVIEW';reasons.push('POLAND_NONLOCAL_HYBRID_REVIEW');
   } else if (country && (f.hybrid_required === true || f.remote_allowed === false)) {
     classification = european.has(country) ? (f.hybrid_required ? 'HYBRID_EUROPE_RELOCATION_REVIEW' : 'ONSITE_EUROPE_RELOCATION_REVIEW') : 'NON_EU_RELOCATION_REVIEW';
     const allowed = loc.relocation?.allowed_countries?.map(countryName).includes(country)
@@ -606,14 +724,16 @@ export async function analyzeJob({job, profile, policy = {}, llm = new OllamaCli
   const compact = llm instanceof OllamaClient || llm.wireFormat === 'compact';
   const system = await readFile(new URL(compact ? '../../prompts/fit_analysis_compact.md' : '../../prompts/fit_analysis.md', import.meta.url), 'utf8');
   const catalog = compact ? sourceFragmentCatalog(job) : null;
-  const sourceOrder = compact ? qualificationSentences(job.description_text || '').map(sentence =>
+  const sourceOrder = compact ? qualificationSentences(job.description_text || '',{job}).map(sentence =>
     catalog.find(fragment => fragment.text === sentence.text)?.id) : null;
   const completeCatalog = compact && sourceOrder.every(Number.isInteger);
   const compactCatalog = compact ? catalog.map(fragment => ({id:fragment.id, text:fragment.text,
     ...(fragment.importance_hint ? {importance_hint:fragment.importance_hint} : {}),
     ...(fragment.list_container ? {list_container:true} : {}),
     ...(fragment.work_format_only ? {work_format_only:true} : {}),
-    ...(fragment.context_only ? {context_only:true} : {})})) : null;
+    ...(fragment.context_only ? {context_only:true} : {}),
+    ...(fragment.category_hint ? {category_hint:fragment.category_hint} : {}),
+    ...(fragment.conditional_region ? {conditional_region:fragment.conditional_region} : {})})) : null;
   const schema = compact ? compactSchemaForJob(job, profile, catalog) : schemaForJob(job, profile);
   const prompt = JSON.stringify({candidate_facts: [...factIndex(profile).values()],
     candidate: profile.candidate, onboarding: profile.onboarding, search_policy: policy,
@@ -635,7 +755,7 @@ export async function analyzeJob({job, profile, policy = {}, llm = new OllamaCli
   const raw = compact ? expandCompactAnalysis(output, {job, profile, catalog}) : output;
   // An explicitly injected test gateway must satisfy exactly the same truth boundary.
   validateFactIntegrity(raw, profile, job);
-  const disciplined = enforceLanguageLevels(enforceEducation(enforceProfessionalYears(raw.requirements, profile), profile), profile);
+  const disciplined = enforceSkillQualifiers(enforceLanguageLevels(enforceEducation(enforceProfessionalYears(raw.requirements, profile), profile), profile), profile);
   const analysis = {...raw, requirements: disciplined,
     hard_blockers: disciplined.flatMap((req, index) => qualificationBlocker(req)
       ? [{requirement_index: index, reason: req.reason}] : [])};

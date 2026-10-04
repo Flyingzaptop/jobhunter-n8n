@@ -3,6 +3,7 @@ import {readFile,realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {cvIdentityQa} from './cv-v2.mjs';
 import {reverifyMarketJob} from './discovery-v2.mjs';
+import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
@@ -23,6 +24,9 @@ export async function createControlledPreparation({repository,jobId,cvId,profile
  const bytes=await readFile(file);if(digest(bytes)!==cv.sha256||bytes.subarray(0,5).toString()!=='%PDF-')throw new Error('CV_BYTES_CHANGED');
  const verified=await reverifyMarketJob({job,repository});
  if(verified.status!=='OPEN')throw new Error('CURRENT_OFFICIAL_POSTING_NOT_OPEN');
+ const refreshedJob=verified.job??(await repository.listCanonicalJobs()).find(j=>j.job_id===jobId);
+ const current=await verifyCurrentCvEvidence({cv,job:refreshedJob,profile,analysis:analysis.analysis_json,artifactRoot});
+ if(!current.pass)throw new Error(`PREPARATION_EVIDENCE_STALE:${current.reasons.join(',')}`);
  const state={preparation_only:true,control_mode:'PER_APPLICATION_CONFIRMATION',readiness_gate_pass:false,
   profile_hash:profileHash,cv_sha256:cv.sha256,job_content_hash:verified.job?.content_hash??job.content_hash,
   source_decision:analysis.decision,authorization_basis:'USER_REQUESTED_PRODUCTION_GATE_REHEARSAL'};

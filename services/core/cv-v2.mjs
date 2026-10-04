@@ -8,6 +8,7 @@ import {PDFParse} from 'pdf-parse';
 import {factIndex} from './fit.mjs';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {observe,operationContext} from './observability.mjs';
+import {canonicalAnalysisHash} from './evidence-hash.mjs';
 
 export const CV_V2_VERSION = 'cv-factory-v2.1';
 const ajv = new Ajv({strict:true, allErrors:true});
@@ -38,8 +39,7 @@ export function resolveCvLlm(llm,environment=process.env) {
   if(llm && !(llm instanceof OllamaClient))return llm;
   const original=llm??new OllamaClient();
   if(!environment.CV_WRITER_MODEL && !environment.CV_VERIFIER_MODEL)return original;
-  return new OllamaClient({baseUrl:original.baseUrl,timeoutMs:original.timeoutMs,fetchImpl:original.fetch,
-    model:environment.CV_VERIFIER_MODEL||original.model,strongModel:environment.CV_WRITER_MODEL||original.strongModel});
+  return original.withModels({model:environment.CV_VERIFIER_MODEL||original.model,strongModel:environment.CV_WRITER_MODEL||original.strongModel});
 }
 
 export function cvIdentityQa(profile) {
@@ -206,7 +206,7 @@ export function renderCvV2Html(document, profile, language, identity) {
 const CV_STYLE = readFileSync(new URL('./templates/cv-v2.css',import.meta.url),'utf8');
 
 async function renderPdf(html, target) {
-  const browser=await chromium.launch({headless:true});
+  const browser=await chromium.launch({headless:true,args:['--disable-gpu']});
   try {const page=await browser.newPage(); await page.setContent(html,{waitUntil:'load'}); await page.emulateMedia({media:'print'});
     const visual=await page.evaluate(()=>({no_horizontal_overflow:document.documentElement.scrollWidth<=document.documentElement.clientWidth,
       headings_visible:[...document.querySelectorAll('h1,h2,h3')].every(e=>e.getBoundingClientRect().width>0 && getComputedStyle(e).fontSize!=='0px')}));
@@ -226,7 +226,10 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
   const cvId=randomUUID();
   const dir=path.resolve(outputRoot,new Date().toISOString().slice(0,7),safeSlug(job.company),safeSlug(job.job_id),cvId);
   await mkdir(dir,{recursive:true});
-  const manifest={cv_id:cvId,job_id:job.job_id,status:'BLOCKED_CLAIMS',profile_version:hash(JSON.stringify(profile)),template_version:CV_V2_VERSION,
+  const profileHash=hash(JSON.stringify(profile));
+  const manifest={cv_id:cvId,job_id:job.job_id,status:'BLOCKED_CLAIMS',profile_version:profileHash,profile_hash:profileHash,template_version:CV_V2_VERSION,
+    job_content_hash:job.content_hash??hash(job.description_text??''),
+    analysis_hash:canonicalAnalysisHash(analysis),analysis_input_hash:analysis?.fit_input_hash??null,
     operation_run_id:operationContext.getStore()?.run_id??null,
     analysis_prompt_version:analysis?.prompt_version??null,
     source_decision:analysis?.decision ?? null,application_eligible:!rejected && ['AUTO_APPLY','REVIEW','STRETCH'].includes(analysis?.decision),
@@ -283,7 +286,8 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
   } catch (error) {manifest.qa.error={code:error.name,message:error.message};}
   if (rejected) {manifest.content_status=manifest.status;manifest.status='REJECTED_DIAGNOSTIC_CONTENT';manifest.application_eligible=false;}
   manifest.qa.pass=manifest.status==='PASS';
-  await writeFile(manifest.source_map_path,JSON.stringify({profile_version:manifest.profile_version,claims:document?cvClaimCatalog(document):[],
+  await writeFile(manifest.source_map_path,JSON.stringify({profile_version:manifest.profile_version,profile_hash:manifest.profile_hash,
+    job_content_hash:manifest.job_content_hash,analysis_hash:manifest.analysis_hash,analysis_input_hash:manifest.analysis_input_hash,claims:document?cvClaimCatalog(document):[],
     deterministic_sections:{education:(profile.education??[]).map(f=>f.id),training:(profile.training??[]).map(f=>f.id),languages:(profile.languages??[]).map(f=>f.id),
       metadata:document?document.sections.map(s=>({source_fact_id:s.source_fact_id,fields:['role','title','employer','organization','environment','provenance','start_date','exact_start_date','exact_end_date','status']})):[]},facts:catalog.facts},null,2));
   await writeFile(manifest.manifest_path,JSON.stringify(manifest,null,2));

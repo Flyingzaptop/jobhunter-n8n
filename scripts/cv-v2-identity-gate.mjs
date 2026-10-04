@@ -1,4 +1,5 @@
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import YAML from 'yaml';
 import {Repository} from '../services/core/repository.mjs';
 import {OllamaClient} from '../services/core/llm.mjs';
@@ -19,7 +20,7 @@ try {
   for(const id of ids) {
     if(!/^[0-9a-f-]{36}$/i.test(id))throw new Error('Actual UUID required');
     const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[id])).rows[0];
-    const analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]?.analysis_json;
+    let analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]?.analysis_json;
     const sample={job_id:id,title:job?.title,company:job?.company,url:job?.canonical_url,decision:analysis?.decision,overall_fit:analysis?.overall_fit,started_at:new Date().toISOString()};report.samples.push(sample);await save();
     try {
       if(!job||!analysis||!['REVIEW','STRETCH'].includes(analysis.decision)||analysis.overall_fit==null||!analysis.requirements?.length)throw new Error('Actual non-rejected information-complete REVIEW/STRETCH analysis required');
@@ -27,6 +28,10 @@ try {
       sample.open_verification=await reverifyMarketJob({job,repository});
       if(sample.open_verification.status!=='OPEN')throw new Error('Posting not currently verified OPEN');
       const refreshed=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[id])).rows[0];
+      analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[id])).rows[0]?.analysis_json;
+      const currentProfileHash=createHash('sha256').update(JSON.stringify(profile)).digest('hex');
+      if(!analysis||analysis.profile_hash!==currentProfileHash||analysis.job_content_hash!==refreshed.content_hash||!analysis.fit_input_hash)throw new Error('Current source/profile-bound analysis receipt required; no legacy fallback');
+      if(!['REVIEW','STRETCH'].includes(analysis.decision)||analysis.overall_fit==null||!analysis.requirements?.length||analysis.hard_blockers?.length)throw new Error('Latest source-bound analysis is not suitable for review');
       sample.cv=await observedCvBuild({job:refreshed,profile,analysis,llm,repository,outputRoot:'data/cv-v2'});
       sample.status=sample.cv.status;sample.pdf_visual_review='PENDING';
       console.log(JSON.stringify({event:'identity_cv_generated',job_id:id,cv_id:sample.cv.cv_id,status:sample.cv.status,claims_pass:sample.cv.qa.claims.pass,identity_pass:sample.cv.qa.identity.pass,pdf_pass:sample.cv.qa.pdf.pass,pages:sample.cv.qa.pdf.page_count,preview_paths:sample.cv.qa.pdf.preview_paths,error:sample.cv.qa.error}));

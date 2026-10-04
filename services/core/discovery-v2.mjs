@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import YAML from 'yaml';
 import { safeFetch, parseSourcePayload, sourceEndpoint, extractJobPostings, decodeEntities } from './discovery.mjs';
-import { normalizeRaw, duplicateConfidence } from './normalization.mjs';
+import { normalizeRaw, duplicateConfidence, descriptionContent } from './normalization.mjs';
 const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html']);
 const validateRobotsPayload = text => {
   if (/^\s*(?:<!doctype|<html|<head)/i.test(text) || !/(?:user-agent|sitemap|allow|disallow)\s*:/i.test(text))
@@ -69,6 +69,35 @@ const iso = value => {
   if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000).toISOString();
   return value && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
 };
+export function extractExplicitApplicationDeadlines(input='') {
+  const months={january:1,jan:1,stycznia:1,januar:1,february:2,feb:2,lutego:2,februar:2,march:3,mar:3,marca:3,marz:3,maerz:3,
+    april:4,apr:4,kwietnia:4,may:5,maja:5,mai:5,june:6,jun:6,czerwca:6,juni:6,july:7,jul:7,lipca:7,juli:7,
+    august:8,aug:8,sierpnia:8,september:9,sep:9,sept:9,wrzesnia:9,october:10,oct:10,pazdziernika:10,oktober:10,
+    november:11,nov:11,listopada:11,december:12,dec:12,grudnia:12,dezember:12};
+  const output=[];
+  for(const text of descriptionContent(input).split('\n')) {
+    if(!/^(?:application deadline|closing date|deadline for applications|apply by|termin (?:skladania|składania) (?:aplikacji|zgloszen|zgłoszeń)|bewerbungsfrist|bewerbungsschluss)\s*:/i.test(text))continue;
+    const value=text.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();let day,month,year;
+    let match=value.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+    if(match){[,year,month,day]=match;}
+    else if((match=value.match(/\b(\d{1,2})\.(\d{1,2})\.(\d{4})\b/))){[,day,month,year]=match;}
+    else if((match=value.match(/\b(\d{1,2})(?:st|nd|rd|th|\.)?\s+([a-z]+)\.?\s*,?\s*(\d{4})\b/))){day=match[1];month=months[match[2]];year=match[3];}
+    else if((match=value.match(/\b([a-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?\s*,?\s*(\d{4})\b/))){month=months[match[1]];day=match[2];year=match[3];}
+    if(!day||!month||!year||Number(year)<2000||Number(year)>2200)continue;
+    const parsed=new Date(Date.UTC(Number(year),Number(month)-1,Number(day)));
+    if(parsed.getUTCFullYear()!==Number(year)||parsed.getUTCMonth()!==Number(month)-1||parsed.getUTCDate()!==Number(day))continue;
+    output.push({source_quote:text,deadline_date:parsed.toISOString().slice(0,10),
+      past_after_utc:new Date(parsed.getTime()+2*86400000-1).toISOString(),timezone:'UNKNOWN_CONSERVATIVE_DATE_GRACE'});
+  }
+  return output;
+}
+export function officialDeadlineConflict(raw,{now=new Date()}={}) {
+  const item=raw.raw_payload??{};const text=[item.descriptionPlain,item.description_text,item.descriptionHtml,item.description,item.content,
+    ...(item.lists??[]).map(list=>list.content)].filter(Boolean).map(descriptionContent).join('\n');
+  const deadlines=extractExplicitApplicationDeadlines(text);const past=deadlines.filter(deadline=>Date.parse(deadline.past_after_utc)<new Date(now).getTime());
+  return past.length?{status:'UNKNOWN',reason:'AVAILABILITY_CONFLICT',method:'OFFICIAL_FEED_LISTED_WITH_EXPLICIT_PAST_APPLICATION_DEADLINE',
+    deadlines:past,official_feed_listed:true}:null;
+}
 const list = value => Array.isArray(value) ? value : value ? [value] : [];
 const canonicalSnapshot = job => {
   const { metadata, ...columns } = job;
@@ -138,6 +167,7 @@ export async function verifyPublicJobPosting({ source, url, fetchOptions = {}, l
   const raw = valid[0]; const normalized = normalizeRaw(raw);
   if (normalized.availability_status === 'CLOSED') return { status: 'CLOSED', raw };
   raw.raw_payload.status = 'OPEN';
+  const conflict=officialDeadlineConflict(raw);if(conflict)return{...conflict,raw:null};
   return { status: 'OPEN', raw, method: 'OFFICIAL_PUBLIC_LISTING_AND_JOBPOSTING_GET' };
 }
 
@@ -282,6 +312,8 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
               const raw = { ...record, ingestion_run_id: runId };
               const savedRaw = await repository.insertRaw(raw); raw.raw_id = savedRaw.raw_id;
               const job = normalizeRaw(raw); job.query_role_evidence = queryEvidence(job);
+              const conflict=source.source_class==='employer_ats'&&job.availability_status==='OPEN'?officialDeadlineConflict(raw):null;
+              if(conflict){job.availability_status='UNKNOWN';job.availability_conflict=conflict;}
               job.adapter = raw.adapter; job.source_board = raw.source_board;
               if (source.source_class === 'employer_ats' && job.availability_status === 'OPEN') {
                 job.discovery_open_verification = { method: publicHtmlAdapters.has(source.adapter)
@@ -300,7 +332,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
                 if (job.work_mode === 'UNKNOWN') job.work_mode = duplicate.candidate.work_mode;
                 for (const field of ['country', 'employment_type', 'published_at', 'valid_through', 'salary']) job[field] ??= duplicate.candidate[field] ?? null;
                 if (!job.description_text && duplicate.candidate.description_text) { job.description_text = duplicate.candidate.description_text; job.content_hash = duplicate.candidate.content_hash; }
-                if (job.availability_status === 'UNKNOWN' && duplicate.candidate.availability_status === 'OPEN') job.availability_status = 'OPEN';
+                if (job.availability_status === 'UNKNOWN' && !job.availability_conflict && duplicate.candidate.availability_status === 'OPEN') job.availability_status = 'OPEN';
                 if (!raw.raw_payload.applyUrl && !raw.raw_payload.application_url) job.application_url = duplicate.candidate.application_url;
               }
               const saved = await repository.upsertCanonicalJob(job, { source: raw, duplicate_signal: duplicate?.match ?? null });
@@ -452,6 +484,11 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
     if (publicHtmlAdapters.has(source.adapter)) {
       try {
         const verified = await verifyPublicJobPosting({ source, url: mapping.source_url, fetchOptions });
+        if(verified.reason==='AVAILABILITY_CONFLICT'){
+          if(repository.pool)await repository.pool.query("UPDATE jobs SET availability_status='UNKNOWN',metadata=metadata || $2::jsonb WHERE job_id=$1",
+            [job.job_id,JSON.stringify({availability_conflict:{...verified,source:source.name,verified_at:new Date().toISOString()}})]);
+          return{...verified,source_id:source.name,verified_at:new Date().toISOString()};
+        }
         if (verified.raw) {
           const refreshed = { ...canonicalSnapshot(job), ...normalizeRaw(verified.raw), job_id: job.job_id, canonical_url: job.canonical_url,
             adapter: source.adapter, last_open_verification: { source: source.name, status: verified.status,
@@ -485,6 +522,16 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
       const closed = found && (found.closed === true || found.active === false || /^(closed|expired)$/i.test(found.status ?? '')
         || (deadline && Date.parse(deadline) <= Date.now()));
       const status = found && !closed ? 'OPEN' : 'CLOSED';
+      if(status==='OPEN') {
+        const raw=source.adapter==='smartrecruiters'?parseMarketPayload(source,{content:[found]},endpoint)[0]:
+          {raw_payload:found,adapter:source.adapter};
+        const conflict=officialDeadlineConflict(raw);
+        if(conflict){
+          if(repository.pool)await repository.pool.query("UPDATE jobs SET availability_status='UNKNOWN',metadata=metadata || $2::jsonb WHERE job_id=$1",
+            [job.job_id,JSON.stringify({availability_conflict:{...conflict,source:source.name,verified_at:new Date().toISOString()}})]);
+          return{...conflict,source_id:source.name,verified_at:new Date().toISOString()};
+        }
+      }
       let refreshedJob = null;
       if (found && status === 'OPEN' && source.adapter === 'smartrecruiters') {
         const records = parseMarketPayload(source, { content: [found] }, endpoint);

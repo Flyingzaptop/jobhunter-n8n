@@ -17,7 +17,7 @@ const requirement = (overrides = {}) => ({requirement: 'CAD required', source_qu
   genuinely_ambiguous: false, min_years: null, professional_only: false, skill: 'CAD', strict: false, ...overrides});
 const format = (overrides = {}) => ({remote_allowed: true, remote_region: 'Poland',
   employee_residency_requirement: null, office_location: 'Wroclaw', office_country: 'Poland',
-  office_distance_km: null, hybrid_required: false, onsite_days_per_week: 0, onsite_days_per_month: 0,
+  office_distance_km: null, hybrid_required: false, onsite_days_per_week: null, onsite_days_per_month: null,
   onsite_frequency_text: null, business_travel_required: false, relocation_required: false,
   work_from_poland_allowed: true, can_hire_in_poland: true, employment_route: 'PL_EMPLOYEE',
   work_authorization_required: null, authorization_known_impossible: false, sponsorship_available: null,
@@ -354,6 +354,7 @@ test('independent research never satisfies professional Python years', () => {
 test('unfinished education cannot satisfy completed degree requirements', () => {
   const p = structuredClone(profile); p.education[0].status = 'degree_in_progress';
   const req = requirement({category: 'EDUCATION', requirement: 'Completed bachelor degree required',
+    source_quote:'Completed bachelor degree required',
     candidate_evidence_fact_ids: ['edu_mech'], candidate_evidence_provenance: ['EDUCATION'], strict: true});
   assert.equal(enforceEducation([req], p)[0].match, 'NO');
 });
@@ -395,10 +396,12 @@ test('unknown work format, hiring route, onboarding arrangements and permits req
 
 test('rare travel in Poland is eligible, weekly nonlocal travel requires relocation review', () => {
   const rare = format({office_location: 'Warsaw', hybrid_required: true, onsite_days_per_week: 0, onsite_days_per_month: 1});
-  assert.equal(route(analysis({work_format: rare})).work_format_class, 'HYBRID_POLAND_RARE_TRAVEL');
-  assert.equal(route(analysis({work_format: rare})).decision, 'AUTO_APPLY');
-  assert.equal(route(analysis({work_format: {...rare, onsite_days_per_week: 2}})).decision, 'REVIEW');
-  assert.equal(route(analysis({work_format: {...rare, office_country: 'PL'}})).decision, 'AUTO_APPLY');
+  const rareJob={...job,description_text:job.description_text+' Hybrid office attendance: 0 days per week and 1 day per month.'};
+  assert.equal(route(analysis({work_format: rare}),rareJob).work_format_class, 'HYBRID_POLAND_RARE_TRAVEL');
+  assert.equal(route(analysis({work_format: rare}),rareJob).decision, 'AUTO_APPLY');
+  const weeklyJob={...job,description_text:job.description_text+' Hybrid office attendance: two days weekly.'};
+  assert.equal(route(analysis({work_format: {...rare, onsite_days_per_week: 2}}),weeklyJob).decision, 'REVIEW');
+  assert.equal(route(analysis({work_format: {...rare, office_country: 'PL'}}),rareJob).decision, 'AUTO_APPLY');
   assert.equal(route(analysis({work_format: format({employee_residency_requirement: 'Poland residents only'})})).decision, 'AUTO_APPLY');
 });
 

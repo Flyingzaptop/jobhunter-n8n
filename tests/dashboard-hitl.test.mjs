@@ -13,7 +13,7 @@ import {chromium} from 'playwright';
 const profile={profile_id:'isolated-hitl-regression',onboarding:{legal_name:'Regression only'}};
 function context() {
   const id=randomUUID(),cv=randomUUID(),session=randomUUID();
-  return {profile,application:{application_id:randomUUID(),candidate_profile_id:profile.profile_id,job_id:id,cv_id:cv,status:'READY_TO_SUBMIT',last_state:{browser_session_id:session}},job:{job_id:id,availability_status:'OPEN',last_verified_open_at:new Date()},cv:{cv_id:cv,job_id:id,profile_version:activeProfileDigest(profile),sha256:'verified-cv-hash',qa_json:{pass:true,claims:{pass:true},identity:{pass:true},pdf:{pass:true}}},snapshot:{browser_session_id:session,url:'https://example.invalid/form',fingerprint:'stable-fingerprint',fields:[{selector:'#email',name:'email',type:'email',visible:true,required:true,value:'test@example.invalid'}],validation_errors:[],captcha:false}};
+  return {profile,application:{application_id:randomUUID(),candidate_profile_id:profile.profile_id,job_id:id,cv_id:cv,status:'READY_TO_SUBMIT',last_state:{browser_session_id:session}},job:{job_id:id,content_hash:digest('isolated job'),availability_status:'OPEN',last_verified_open_at:new Date()},cv:{cv_id:cv,job_id:id,profile_version:activeProfileDigest(profile),sha256:'verified-cv-hash',manifest_json:{application_eligible:true,profile_hash:activeProfileDigest(profile),job_content_hash:digest('isolated job')},qa_json:{pass:true,claims:{pass:true},identity:{pass:true},pdf:{pass:true}}},snapshot:{browser_session_id:session,url:'https://example.invalid/form',fingerprint:'stable-fingerprint',fields:[{selector:'#email',name:'email',type:'email',visible:true,required:true,value:'test@example.invalid'}],validation_errors:[],captcha:false,forms:[],buttons:[]}};
 }
 test('HITL validation refuses unknown, unbounded, secret and stale answers',()=>{
   assert.equal(boundedAnswer(' My explicit answer '),'My explicit answer');
@@ -32,6 +32,24 @@ test('review digests bind actual answers and omit transient observer operations'
   assert.notEqual(before,digest(formBinding({...c.snapshot,fields:[{...c.snapshot.fields[0],value:'changed@example.invalid'}]})));
   for(const mutation of [c=>c.application.status='SUBMISSION_UNKNOWN',c=>c.snapshot.captcha=true,c=>c.cv.qa_json.identity.pass=false,c=>c.cv.profile_version='stale',c=>c.job.last_verified_open_at='invalid',c=>c.snapshot.text='Use of AI may disqualify your application',c=>c.snapshot.fields[0].value='']){const changed=context();mutation(changed);assert.throws(()=>validateReviewContext(changed));}
 });
+test('question wording, visibility and disabled changes invalidate the exact form binding',()=>{
+  const c=context(),before=digest(formBinding(c.snapshot));
+  for(const patch of [{label:'Different legal declaration'},{visible:false},{disabled:true}])assert.notEqual(digest(formBinding({...c.snapshot,fields:[{...c.snapshot.fields[0],...patch}]})),before);
+  const original={...c.snapshot,buttons:[{selector:'#submit',text:'Submit application',type:'submit',href:'https://example.invalid/submit',formAction:'https://example.invalid/submit',formMethod:'post'}],forms:[{selector:'#apply',action:'https://example.invalid/submit',method:'post'}]};
+  const initial=digest(formBinding(original));
+  for(const patch of [{text:'Accept binding contract'},{type:'button'},{selector:'#different-submit'},{href:'https://example.invalid/another'},{formAction:'https://example.invalid/another'},{formMethod:'get'}])assert.notEqual(digest(formBinding({...original,buttons:[{...original.buttons[0],...patch}]})),initial);
+  assert.notEqual(digest(formBinding({...original,forms:[{...original.forms[0],action:'https://example.invalid/changed-destination'}]})),initial);
+});
+test('required radio groups need an actual checked option rather than a nonempty value',()=>{
+  const c=context();
+  c.snapshot.fields=[{selector:'#radio-yes',name:'legal_confirmation',type:'radio',required:true,visible:true,disabled:false,value:'yes',checked:false,form_selector:'#apply'},{selector:'#radio-no',name:'legal_confirmation',type:'radio',required:true,visible:true,disabled:false,value:'no',checked:false,form_selector:'#apply'}];
+  assert.throws(()=>validateReviewContext(c),/REQUIRED_FORM_ANSWER_MISSING/);
+  c.snapshot.fields[1].checked=true;validateReviewContext(c);
+  c.snapshot.fields[1].form_selector='#different-form';assert.throws(()=>validateReviewContext(c),/REQUIRED_FORM_ANSWER_MISSING/);
+});
+test('full CV QA cannot override absent eligibility, policy blockers or stale source/profile hashes',()=>{
+  for(const mutation of [c=>delete c.cv.manifest_json.application_eligible,c=>c.cv.manifest_json.application_policy_blocker='EMPLOYER_NO_AI_ATTESTATION',c=>delete c.cv.manifest_json.profile_hash,c=>c.cv.manifest_json.job_content_hash='outdated',c=>delete c.job.content_hash]){const c=context();mutation(c);assert.throws(()=>validateReviewContext(c));}
+});
 
 test('actual PostgreSQL: one correlated answer, authenticated review gate, stale digests and ten-slot cap', {skip:!process.env.DATABASE_URL,timeout:60000}, async t=>{
   const repo=new Repository(),admin=repo.pool,schema='hitl_gate_test_'+randomUUID().replaceAll('-','');
@@ -47,13 +65,13 @@ test('actual PostgreSQL: one correlated answer, authenticated review gate, stale
   const pdfPath=path.join(directory,'regression.pdf');await writeFile(pdfPath,pdf);
   async function seed(status='NEEDS_USER',kind='MISSING_FACT') {
     const job=randomUUID(),application=randomUUID(),cv=randomUUID(),question=randomUUID(),request=randomUUID(),session=randomUUID();
-    await repo.pool.query("INSERT INTO jobs(job_id,canonical_url,application_url,company,title,description_text,availability_status,last_verified_open_at)VALUES($1,$2,$2,'REGRESSION ONLY','Isolated auth/gate test','No real employer or market evidence','OPEN',now())",[job,`https://example.invalid/${job}`]);
+    await repo.pool.query("INSERT INTO jobs(job_id,canonical_url,application_url,company,title,description_text,content_hash,availability_status,last_verified_open_at)VALUES($1,$2,$2,'REGRESSION ONLY','Isolated auth/gate test','No real employer or market evidence',$3,'OPEN',now())",[job,`https://example.invalid/${job}`,digest('isolated job')]);
     const qa={pass:true,claims:{pass:true},identity:{pass:true},pdf:{pass:true}};
-    await repo.pool.query("INSERT INTO cv_versions(cv_id,job_id,profile_version,template_version,model,pdf_path,html_path,sha256,qa_json,manifest_json)VALUES($1,$2,$3,'regression','none',$4,'not-used',$5,$6,'{}')",[cv,job,activeProfileDigest(profile),pdfPath,digest(pdf),qa]);
+    await repo.pool.query("INSERT INTO cv_versions(cv_id,job_id,profile_version,template_version,model,pdf_path,html_path,sha256,qa_json,manifest_json)VALUES($1,$2,$3,'regression','none',$4,'not-used',$5,$6,$7)",[cv,job,activeProfileDigest(profile),pdfPath,digest(pdf),qa,{application_eligible:true,profile_hash:activeProfileDigest(profile),job_content_hash:digest('isolated job')}]);
     const state={browser_session_id:session,...(status==='NEEDS_USER'?{pending_question:{request_id:request,type:kind,field_type:'text',question:'Exact regression question'}}:{})};
     await repo.pool.query('INSERT INTO applications(application_id,candidate_profile_id,job_id,cv_id,status,last_state)VALUES($1,$2,$3,$4,$5,$6)',[application,profile.profile_id,job,cv,status,state]);
     if(status==='NEEDS_USER')await repo.pool.query("INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id)VALUES($1,$2,'Exact regression question','Exact regression question',$3)",[question,application,request]);
-    const snapshot={browser_session_id:session,url:`https://example.invalid/${job}/apply`,fingerprint:'fixed-safe-form',fields:[{selector:'#start',name:'start_date',type:'text',visible:true,required:true,value:'Provided answer'}],validation_errors:[],captcha:false,uploaded_file_hashes:[]};
+    const snapshot={browser_session_id:session,url:`https://example.invalid/${job}/apply`,fingerprint:'fixed-safe-form',fields:[{selector:'#start',name:'start_date',type:'text',visible:true,required:true,value:'Provided answer'}],validation_errors:[],captcha:false,forms:[{selector:'#apply',action:`https://example.invalid/${job}/submit`,method:'post'}],buttons:[{selector:'#submit',text:'Submit application',type:'submit',formAction:`https://example.invalid/${job}/submit`,formMethod:'post',visible:true,disabled:false}],uploaded_file_hashes:[]};
     return {job,application,cv,question,request,snapshot};
   }
   await t.test('dashboard and Telegram race produces one answer and one durable dispatch receipt',async()=>{
@@ -109,6 +127,20 @@ test('actual PostgreSQL: one correlated answer, authenticated review gate, stale
     await consumeApplicationReview(repo,seeded.application,prepared.gate.approval_id,profile,browser,{assertProductionGate:async()=>true});
     await assert.rejects(consumeApplicationReview(repo,seeded.application,prepared.gate.approval_id,profile,browser,{assertProductionGate:async()=>true}));
     await assert.rejects(prepareApplicationReview(repo,seeded.application,profile,browser),/APPLICATION_REVIEW_ALREADY_CONSUMED/);
+  });
+  await t.test('persisted approval cannot accept changed question wording or Submit destination',async()=>{
+    const seeded=await seed('READY_TO_SUBMIT'),browser={call:async()=>seeded.snapshot};
+    const prepared=await prepareApplicationReview(repo,seeded.application,profile,browser);
+    seeded.snapshot.fields[0].label='New legal question after preparation';
+    await assert.rejects(approveApplicationReview(repo,seeded.application,prepared.gate.approval_id,prepared.gate.binding_digest,profile,browser),/REVIEW_STALE_OR_ALREADY_APPROVED/);
+    delete seeded.snapshot.fields[0].label;
+    const destination=seeded.snapshot.buttons[0].formAction;
+    seeded.snapshot.buttons[0].formAction='https://example.invalid/changed-submit-destination';
+    await assert.rejects(approveApplicationReview(repo,seeded.application,prepared.gate.approval_id,prepared.gate.binding_digest,profile,browser),/REVIEW_STALE_OR_ALREADY_APPROVED/);
+    seeded.snapshot.buttons[0].formAction=destination;seeded.snapshot.forms[0].action='https://example.invalid/changed-form-action';
+    await assert.rejects(approveApplicationReview(repo,seeded.application,prepared.gate.approval_id,prepared.gate.binding_digest,profile,browser),/REVIEW_STALE_OR_ALREADY_APPROVED/);
+    await revokeApplicationReview(repo,seeded.application,prepared.gate.approval_id,profile);
+    assert.equal((await repo.pool.query('SELECT status FROM applications WHERE application_id=$1',[seeded.application])).rows[0].status,'READY_TO_SUBMIT');
   });
   await t.test('compiled React HITL flow requires explicit review confirmation and stores plain user text once',async()=>{
     const seeded=await seed(),password='isolated-ui-'+randomUUID(),app=createDashboard({repository:repo,password,port:0,profileProvider:async()=>profile,answerDispatch:async()=>({status:'REGRESSION_NO_BROWSER_ACTION'})});await app.start();

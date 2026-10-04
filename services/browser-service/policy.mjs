@@ -55,3 +55,10 @@ export function classifyConsent(text, required = false) {
   else if (/accurate|truthful|true and correct/.test(value)) type = 'TRUTH_ATTESTATION';
   return { consent_text: text, consent_text_hash: hash, consent_type: type };
 }
+
+// Production Gate preparation does not expose a real-submit executor. Changing
+// environment flags is never an individual, concrete application confirmation.
+export function controlledSubmitPermission(value,config){
+ const configured=submitPermission(value,config);if(configured)return configured;
+ return isMockUrl(new URL(value),config)?null:'CONTROLLED_SUBMIT_AUTHORIZATION_REQUIRED';
+}

@@ -1,5 +1,12 @@
 # Production Readiness Gate — active run
 
+On 2026-10-04 the user explicitly switched inference to Ollama Cloud and selected
+`gemma4:31b`. This supersedes the earlier local-only/Qwen model restriction for
+this run. The signed-in loopback relay uses `gemma4:cloud`, whose verified remote
+manifest points to `gemma4:31b`. Local model inference remains disabled while the
+user is gaming. Fit/CV/semantic gates and submission safeguards remain enforced.
+See [cloud configuration](OLLAMA_CLOUD.md).
+
 The user's 2026-10-04 request supersedes the previous missing-identity blocker.
 Actual supplied legal name, phone and email are saved in the ignored local
 candidate profile. Other facts remain UNKNOWN until supplied; private contacts

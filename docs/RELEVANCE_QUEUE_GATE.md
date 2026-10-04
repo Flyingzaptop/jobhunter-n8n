@@ -57,6 +57,11 @@ node --env-file=.env scripts/relevance-queue.mjs --analyze --max-jobs=200 --max-
 node --env-file=.env scripts/relevance-queue.mjs --status
 ```
 
+`--job-ids=<comma-separated actual canonical UUIDs>` supports an explicitly
+selected real-job pilot after exclusive GPU handoff. It records
+`selection_scope: EXPLICIT_ACTUAL_JOB_SUBSET`; it does not inject qualification
+scores, alter cheap relevance scores or claim the subset represents the market.
+
 The first authorized actual run is `04058fac-6d01-4049-b120-8cb06eea5d42`.
 Its progress is persisted in `operation_runs`/events and queue states; the final
 report is written as `tests/results/fit-batch-<operation_run_id>.json`. Until it

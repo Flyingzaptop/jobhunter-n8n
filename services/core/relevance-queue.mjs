@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { analyzeJob, PROMPT_VERSION, sourceFragmentCatalog } from './fit.mjs';
+import {LLM_GATEWAY_VERSION} from './llm.mjs';
 import { reverifyMarketJob } from './discovery-v2.mjs';
 import { computePriority } from './priority.mjs';
 import { retryPlan } from './analysis-retry.mjs';
 import { runObserved, observe, operationContext } from './observability.mjs';
 
-export const RELEVANCE_VERSION = 'relevance-v1.0-deterministic';
+export const RELEVANCE_VERSION = 'relevance-v1.2-deterministic';
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/gi,'l').toLowerCase();
 const europe = /^(?:pl|de|fr|gb|uk|ie|nl|be|cz|at|se|fi|dk|no|ch|es|it|pt|lt|lv|ee|ro|hu|sk|si|hr|poland|germany|france|united kingdom|ireland|netherlands|belgium|czechia|austria|sweden|finland|denmark|norway|switzerland|spain|italy|portugal|european union|europe)$/;
@@ -14,7 +15,7 @@ const patterns = {
   simulation_test: /simulation|validation|(?:hardware|embedded|system|mechanical) test|test (?:engineer|system)|verifikation|verification|\b(?:hil|sil)\b|prototyp/,
   automation_robotics: /robotic\w*|automat(?:ion|yk\w*|ion engineer)|plc|controls engineer|embedded|mechatron/,
   python_data: /\bpython\b|machine learning|data scient\w*|scientific software|technical software|research software|computer vision|graphics engineer|gpu performance/,
-  it_support: /\bit support\b|technical support|systems? admin\w*|administrator (?:it|system)|informatyk|deployment (?:engineer|automation)|network engineer/,
+  it_support: /\bit support\b|technical support|product support|systems? admin\w*|administrator (?:it|system)|informatyk|deployment (?:engineer|automation)|network engineer/,
 };
 const jobSnapshot = job => {
   const {metadata,...columns}=job; const result={...(metadata??{}),...columns}; delete result.metadata; return result;
@@ -24,8 +25,8 @@ export function relevanceInputHash(job) {
   return hash({title:j.title,company:j.company,description:j.description_text,location:j.location,country:j.country,
     work_mode:j.work_mode,canonical_url:j.canonical_url,application_url:j.application_url,availability:j.availability_status});
 }
-export function fitInputHash({job,profile,policy,model,promptVersion=PROMPT_VERSION}) {
-  return hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),model,promptVersion});
+export function fitInputHash({job,profile,policy,model,promptVersion=PROMPT_VERSION,gatewayVersion=LLM_GATEWAY_VERSION}) {
+  return hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),model,promptVersion,gatewayVersion});
 }
 export function screenRelevance(job,{now=new Date()}={}) {
   const j=jobSnapshot(job),title=fold(j.title),description=fold(j.description_text),location=fold(j.location),country=fold(j.country);
@@ -34,7 +35,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
   const titleSignals=[];let bodySignals=0;
   for(const [family,pattern] of Object.entries(patterns)) {
     const titleMatch=title.match(pattern); const bodyMatch=description.match(pattern);
-    if(titleMatch){roles.push(family);titleSignals.push(family==='mechanical_rd'?46:family==='simulation_test'?40:34);add(`TITLE_${family.toUpperCase()}`,0,titleMatch[0],'title');}
+    if(titleMatch&&(!/product support/.test(titleMatch[0])||/api|integration|troubleshoot|technical/.test(description))){roles.push(family);titleSignals.push(family==='mechanical_rd'?46:family==='simulation_test'?40:34);add(`TITLE_${family.toUpperCase()}`,0,titleMatch[0],'title');}
     else if(bodyMatch){roles.push(family);add(`DESCRIPTION_${family.toUpperCase()}`,bodySignals++<2?5:0,bodyMatch[0],'description_text');}
   }
   if(titleSignals.length){add('TARGET_TITLE_WEIGHT',Math.max(...titleSignals),title,'title');if(titleSignals.length>1)add('CROSS_DISCIPLINARY_TITLE',Math.min(8,4*(titleSignals.length-1)),roles.join(', '),'title');}
@@ -52,6 +53,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
   else if(/\b(?:worldwide|europe|eu|eea|emea)\b/.test(location)){locationClass='BROAD_REGION_ELIGIBILITY_UNKNOWN';add('BROAD_REGION_PRIORITY_ONLY',10,j.location,'location');}
   else if(/\b(?:berlin|munich|london|dublin|paris|zurich|stockholm|cork)\b/.test(location)){locationClass='EUROPE_CITY_HINT_COUNTRY_UNVERIFIED';add('EUROPE_CITY_HINT',7,j.location,'location');}
   else if(country==='us'||country==='united states'||/\b(?:united states|usa)\b/.test(location)){locationClass='NON_EUROPE_ELIGIBILITY_REVIEW';add('NON_EUROPE_DEPRIORITIZED',-10,j.country||j.location,'country/location');}
+  else if(['nz','new zealand','au','australia','ca','canada'].includes(country)||/\bnew zealand\b|\baustralia\b|(?:,\s*|^)nz$/.test(location)){locationClass='NON_EUROPE_ELIGIBILITY_REVIEW';add('NON_EUROPE_DEPRIORITIZED',-10,j.country||j.location,'country/location');}
   else add('LOCATION_UNKNOWN',0,'Location/eligibility must be verified; no Poland permission inferred','location');
   if(j.work_mode==='REMOTE')add('REMOTE_PRIORITY_ELIGIBILITY_UNKNOWN',6,'Remote label is not work-from-Poland permission','work_mode');
   const date=Date.parse(j.published_at??j.first_seen_at??'');
@@ -72,7 +74,9 @@ export async function buildRelevanceQueue({repository,observer=async()=>{},now=n
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(job_id) DO UPDATE SET relevance_version=EXCLUDED.relevance_version,input_hash=EXCLUDED.input_hash,
       relevance_score=EXCLUDED.relevance_score,role_hints=EXCLUDED.role_hints,reasons=EXCLUDED.reasons,location_class=EXCLUDED.location_class,
       seniority_class=EXCLUDED.seniority_class,needs_hydration=EXCLUDED.needs_hydration,status=CASE WHEN relevance_queue.status='RUNNING' THEN 'RUNNING'
-        WHEN relevance_queue.input_hash<>EXCLUDED.input_hash OR relevance_queue.relevance_version<>EXCLUDED.relevance_version THEN EXCLUDED.status ELSE relevance_queue.status END,
+        WHEN EXCLUDED.status='CLOSED' THEN 'CLOSED'
+        WHEN relevance_queue.input_hash<>EXCLUDED.input_hash THEN EXCLUDED.status
+        WHEN relevance_queue.status IN('LOW_PRIORITY','QUEUED') THEN EXCLUDED.status ELSE relevance_queue.status END,
       updated_at=now() RETURNING status,(xmax=0) AS inserted`,[job.job_id,q.relevance_version,q.input_hash,q.relevance_score,q.status,JSON.stringify(q.role_hints),JSON.stringify(q.reasons),q.location_class,q.seniority_class,q.needs_hydration]);
     const status=saved.rows[0].status;counts[status]=(counts[status]??0)+1; if(saved.rows[0].inserted)changed++;
     if(Object.values(counts).reduce((a,b)=>a+b,0)%250===0)await observer({event:'RELEVANCE_SCREEN_PROGRESS',processed:Object.values(counts).reduce((a,b)=>a+b,0),total:jobs.length});
@@ -83,14 +87,18 @@ export async function listRelevanceCandidates(repository,{limit=500,minScore=40}
   if(!Number.isInteger(limit)||limit<1||limit>5000)throw new Error('INVALID_RELEVANCE_LIMIT');
   return (await repository.pool.query(`SELECT j.*,q.relevance_score,q.role_hints,q.reasons,q.location_class,q.seniority_class,q.needs_hydration,q.status AS queue_status
     FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.relevance_score>=$1 AND q.status<>'CLOSED'
-    ORDER BY q.relevance_score DESC,CASE WHEN q.seniority_class='JUNIOR_STUDENT' THEN 0 ELSE 1 END,j.first_seen_at,job_id LIMIT $2`,[minScore,limit])).rows.map(jobSnapshot);
+    ORDER BY CASE WHEN q.location_class IN('WROCLAW_LOCATION_HINT','POLAND_LOCATION_HINT') THEN 0
+      WHEN q.location_class IN('EUROPE_RELOCATION_REVIEW','EUROPE_CITY_HINT_COUNTRY_UNVERIFIED','BROAD_REGION_ELIGIBILITY_UNKNOWN') THEN 1
+      WHEN q.location_class='NON_EUROPE_ELIGIBILITY_REVIEW' THEN 3 ELSE 2 END,
+      q.relevance_score DESC,CASE WHEN q.seniority_class='JUNIOR_STUDENT' THEN 0 ELSE 1 END,j.first_seen_at,job_id LIMIT $2`,[minScore,limit])).rows.map(jobSnapshot);
 }
 
 export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJobs=50,maxRuntimeMs=3600000,
-  inferenceAuthorized=false,observer=observe,signal,regressionMode=false,analyzer=analyzeJob,verifier=reverifyMarketJob}={}) {
-  if(!inferenceAuthorized&&!regressionMode)throw new Error('EXCLUSIVE_GPU_AUTHORIZATION_REQUIRED');
+  inferenceAuthorized=false,observer=observe,signal,regressionMode=false,analyzer=analyzeJob,verifier=reverifyMarketJob,jobIds}={}) {
+  if(!inferenceAuthorized&&!regressionMode)throw new Error('BATCH_INFERENCE_AUTHORIZATION_REQUIRED');
   if((analyzer!==analyzeJob||verifier!==reverifyMarketJob)&&!regressionMode)throw new Error('INJECTED_GATEWAY_FORBIDDEN_IN_REAL_BATCH');
   if(!Number.isInteger(maxJobs)||maxJobs<1||maxJobs>1000||!Number.isFinite(maxRuntimeMs)||maxRuntimeMs<1000)throw new Error('INVALID_FIT_BATCH_LIMIT');
+  if(jobIds&&(!Array.isArray(jobIds)||!jobIds.length||jobIds.some(id=>!/^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i.test(id))))throw new Error('INVALID_FIT_JOB_IDS');
   const lock=await repository.pool.connect();let acquired=false;
   const lockKey=regressionMode?'jobhunter.relevance-fit-batch-regression-'+(await lock.query('SELECT current_schema() schema')).rows[0].schema:'jobhunter.relevance-fit-batch';
   try {
@@ -105,7 +113,11 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
             errors:results.filter(x=>x.status!=='ANALYZED').map(x=>({job_id:x.job_id,status:x.status})),results,blocked_reason:'PAUSED'};
         const ready=(await repository.pool.query(`SELECT q.*,j.metadata AS job_metadata,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id)
           WHERE q.status IN('QUEUED','RETRY','ANALYZED','DEAD_LETTER','OPEN_UNVERIFIED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
-          ORDER BY q.relevance_score DESC,q.job_id LIMIT 2000`)).rows;
+          AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),CASE
+            WHEN q.location_class IN('WROCLAW_LOCATION_HINT','POLAND_LOCATION_HINT') THEN 0
+            WHEN q.location_class IN('EUROPE_RELOCATION_REVIEW','EUROPE_CITY_HINT_COUNTRY_UNVERIFIED','BROAD_REGION_ELIGIBILITY_UNKNOWN') THEN 1
+            WHEN q.location_class='NON_EUROPE_ELIGIBILITY_REVIEW' THEN 3 ELSE 2 END,
+            q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
           const key=fitInputHash({job,profile,policy,model:llm.model});
@@ -140,18 +152,20 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
               VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[row.job_id,key,analysisId,runId,llm.model,hash(profile),hash(policy),PROMPT_VERSION]);
             await client.query("UPDATE relevance_queue SET status='ANALYZED',input_hash=$2,last_completed_hash=$3,error_code=NULL,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,relevanceInputHash(job),key]);
             await client.query("UPDATE jobs SET status='ANALYZED',last_analysis_error=NULL,next_analysis_retry_at=NULL,analysis_failure_kind=NULL WHERE job_id=$1",[row.job_id]);
+            await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',
+              [randomUUID(),'job',row.job_id,'QUEUED_FIT_ANALYZED',{run_id:runId,stage:3,decision:analysis.decision,overall_fit:analysis.overall_fit,fit_input_hash:key,model:llm.model,prompt_version:PROMPT_VERSION}]);
             await client.query('COMMIT');
           }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
           results.push({job_id:row.job_id,status:'ANALYZED',decision:analysis.decision,overall_fit:analysis.overall_fit,fit_input_hash:key});
-          await repository.event('job',row.job_id,'QUEUED_FIT_ANALYZED',{decision:analysis.decision,overall_fit:analysis.overall_fit,fit_input_hash:key,model:llm.model});
         }catch(error){const plan=retryPlan(error,claim.attempt_count);
           await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.retryable?'RETRY':'DEAD_LETTER',error.name,plan.next_retry_at]);
           results.push({job_id:row.job_id,status:plan.retryable?'RETRY':'DEAD_LETTER',error:error.name,retry_at:plan.next_retry_at});
         }
-          await observer(repository,{event:'QUEUED_FIT_PROGRESS',message:`Actual Qwen jobs ${inferenceAttempts}/${maxJobs}; queue processed ${results.length}`,processed_count:results.length,
+          await observer(repository,{event:'QUEUED_FIT_PROGRESS',message:`Actual ${llm.model??'model'} jobs ${inferenceAttempts}/${maxJobs}; queue processed ${results.length}`,processed_count:results.length,
           success_count:results.filter(x=>x.status==='ANALYZED').length,failure_count:results.filter(x=>x.error).length});
       }
-      return {scope:regressionMode?'REGRESSION_INJECTED_GATEWAY':'REAL_LOCAL_QWEN_FIT',attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,
+      return {scope:regressionMode?'REGRESSION_INJECTED_GATEWAY':llm.provider&&llm.provider!=='local'?'REAL_CLOUD_FIT':'REAL_LOCAL_FIT',provider:llm.provider??'local',model:llm.model,attempted:results.length,inference_attempted:inferenceAttempts,analyzed:results.filter(x=>x.status==='ANALYZED').length,
+        selection_scope:jobIds?'EXPLICIT_ACTUAL_JOB_SUBSET':'DETERMINISTIC_RELEVANCE_QUEUE',selected_job_ids:jobIds??null,
         errors:results.filter(x=>x.status!=='ANALYZED').map(x=>({job_id:x.job_id,status:x.status,error:x.error})),results,cancelled:Boolean(signal?.aborted)};
     },{trigger:'relevance-queue',mode:regressionMode?'MOCK':'REAL'});
   } finally { if(acquired)await lock.query('SELECT pg_advisory_unlock(hashtext($1))',[lockKey]);lock.release(); }

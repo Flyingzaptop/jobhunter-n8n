@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { transition } from './state.mjs';
 import { browserConfig } from '../browser-service/server.mjs';
-import { submitPermission, classifyConsent } from '../browser-service/policy.mjs';
+import {persistPendingApplicationQuestion} from './hitl.mjs';
+import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
+import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 
 export class BrowserClient {
   constructor({ baseUrl = process.env.BROWSER_SERVICE_URL || 'http://127.0.0.1:3001', token = process.env.BROWSER_SERVICE_TOKEN, fetchImpl = fetch } = {}) { this.baseUrl=baseUrl; this.token=token; this.fetch=fetchImpl; }
@@ -70,11 +72,13 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
 
 async function ask({repository,telegram,application,browser,sessionId,field,snapshot,type}) {
   const status=type==='CAPTCHA'?'CAPTCHA_WAIT':'NEEDS_USER';
-  const pending={selector:field.selector,field_name:field.name,field_type:field.type,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
+  const pending={selector:field.selector,field_name:field.name,field_type:field.type,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
   await transition(repository,application.application_id,status,{browser_session_id:sessionId,pending_question:pending,current_step:snapshot.current_step});
+  const question=await persistPendingApplicationQuestion(repository,{applicationId:application.application_id,rawQuestion:field.label,chatId:telegram?.chatId??null});
+  pending.request_id=question.telegram_request_id;
   await browser.call(`/sessions/${sessionId}/checkpoint`,{pending_question:pending});
   try {
-    const requestId=await telegram.request(repository,application.application_id,type==='CAPTCHA'?'CAPTCHA: reply with the exact code shown in the attached screenshot.':field.label);
+    const requestId=await telegram.request(repository,application.application_id,field.label);
     pending.request_id=requestId;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{pending_question:pending}]);
     if(type==='CAPTCHA' && telegram.token && telegram.chatId){
       const shot=await browser.call(`/sessions/${sessionId}/screenshot`,{});const message=(await repository.pool.query('SELECT telegram_message_id FROM application_questions WHERE telegram_request_id=$1',[requestId])).rows[0];
@@ -111,6 +115,11 @@ export async function runApplication({ repository, jobId, applicationId, profile
     if(application.status==='SUBMITTING'){await transition(repository,application.application_id,'SUBMISSION_UNKNOWN',{reason:'INTERRUPTED_SUBMISSION_REQUIRES_RECONCILIATION'});return {application_id:application.application_id,status:'SUBMISSION_UNKNOWN'};}
     if(['SUBMITTED','SUBMISSION_UNKNOWN','SUBMITTING','SKIPPED','FAILED','MANUAL_TAKEOVER','ALREADY_APPLIED'].includes(application.status))return {application_id:application.application_id,status:application.status,confirmation_id:application.confirmation_id};
     const cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[application.cv_id])).rows[0];
+    if(!isMockUrl(new URL(job.canonical_url),config)){
+      const latest=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[jobId])).rows[0]?.analysis_json;
+      const evidence=await verifyCurrentCvEvidence({cv,job,profile,analysis:latest,artifactRoot:config.artifactRoot});
+      if(!evidence.pass){await repository.event('application',application.application_id,'PREPARATION_EVIDENCE_REJECTED',{reasons:evidence.reasons});return {application_id:application.application_id,status:application.status,started:false,reason:'CURRENT_EMPLOYER_READY_CV_REQUIRED'};}
+    }
     let sessionId=application.last_state?.browser_session_id, view;
     if(application.status==='QUEUED'||application.status==='OPENING') {if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=opened.snapshot;await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
     else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
@@ -120,7 +129,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       await transition(repository,application.application_id,'FILLING',{pending_question:null});application.status='FILLING';
       const field=view.fields.find(f=>f.selector===pending.selector);
       const generation=view.fields.find(f=>f.name==='captcha_generation')?.value;
-      if(!field || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
+      if(!field || !field.visible || field.disabled || view.fingerprint!==pending.fingerprint || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
       const answer=answerRow.answer;
       if(field.type==='checkbox'||field.type==='radio'){if(!/^(yes|agree|approved|true)$/i.test(String(answer)))return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});}
       else if(field.options)view=await browser.call(`/sessions/${sessionId}/select`,{selector:field.selector,value:answer});
@@ -134,7 +143,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: interactive CAPTCHA\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
-      for(const field of view.fields.filter(f=>(f.visible||(f.type==='file'&&!f.disabled&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
+      for(const field of view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
         if(field.type==='file'){if(field.value)continue;const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);if(!field.required&&!resume)continue;if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
         if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment/i.test(field.label)) {
           if(field.checked)continue;const consent=classifyConsent(field.label,field.required);if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED'))continue;
@@ -157,7 +166,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         if(!review.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED',final_review:review});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
         await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{final_review:review}]);
         if(application.status!=='READY_TO_SUBMIT'){await transition(repository,application.application_id,'READY_TO_SUBMIT',{browser_session_id:sessionId});application.status='READY_TO_SUBMIT';}
-        const reason=submitPermission(view.url,config);if(reason){await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2,dry_run=$3 WHERE application_id=$1',[application.application_id,reason,config.dryRun]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
+        const reason=controlledSubmitPermission(view.url,config);if(reason){await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2,dry_run=$3 WHERE application_id=$1',[application.application_id,reason,config.dryRun]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
         await mutex.query("SELECT pg_advisory_lock(hashtextextended('jobhunter-submission-quota',0))");quotaLock=true;
         const control=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0];const tally=(await repository.pool.query("SELECT count(*)::int AS n FROM applications WHERE status IN ('SUBMITTING','SUBMITTED','SUBMISSION_UNKNOWN') AND COALESCE(submitted_at,updated_at)>=date_trunc('day',now() AT TIME ZONE 'Europe/Warsaw') AT TIME ZONE 'Europe/Warsaw'")).rows[0].n;
         if(control?.paused||!config.enabled||tally>=Number(config.maxApplicationsPerDay??process.env.MAX_APPLICATIONS_PER_DAY??20)){const reason=control?.paused||!config.enabled?'PAUSED':'DAILY_LIMIT';await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2 WHERE application_id=$1',[application.application_id,reason]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}

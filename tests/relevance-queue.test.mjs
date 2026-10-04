@@ -8,6 +8,11 @@ test('cheap screening selects technical junior roles without fake fit/eligibilit
  assert.equal(technical.status,'QUEUED');assert.equal(technical.decision,null);assert.equal(technical.employment_eligibility,'UNKNOWN');assert.equal(technical.is_fit_analysis,false);
  assert.equal(clerk.status,'LOW_PRIORITY');assert.ok(technical.relevance_score>clerk.relevance_score);assert.ok(technical.reasons.some(r=>r.signal==='JUNIOR_STUDENT_TITLE'));
 });
+test('technical product-support bridge roles are queued from source troubleshooting evidence without generic retail support inference',()=>{
+ const technical=screenRelevance({title:'Product Support Specialist',location:'Europe',description_text:'Experience troubleshooting technical issues, including APIs and integration setups.',availability_status:'OPEN'},{now});
+ const retail=screenRelevance({title:'Product Support Associate',location:'Europe',description_text:'Retail returns and orders.',availability_status:'OPEN'},{now});
+ assert.equal(technical.status,'QUEUED');assert.equal(technical.is_fit_analysis,false);assert.ok(technical.role_hints.includes('it_support'));assert.equal(retail.status,'LOW_PRIORITY');
+});
 test('remote unknown geography remains unknown and changed facts/model/policy/prompt invalidate fit receipt hash',()=>{
  const job={title:'Python Engineer',description_text:'Scientific tools',work_mode:'REMOTE',availability_status:'OPEN'};
  const q=screenRelevance(job,{now});assert.equal(q.location_class,'UNKNOWN');assert.equal(q.employment_eligibility,'UNKNOWN');
@@ -43,5 +48,5 @@ test('real PostgreSQL queue resumes unique analyses, skips unchanged receipts an
  const retry=await runRelevanceFitBatch({...options,profile:{profile_id:'fixture-network'},analyzer:async()=>{throw new TypeError('fetch failed');}});
  assert.equal(retry.results[0].status,'RETRY');
  assert.ok(retry.results[0].retry_at);assert.equal((await repo.pool.query("SELECT count(*)::int n FROM operation_runs WHERE mode='MOCK'")).rows[0].n,6);
- await assert.rejects(runRelevanceFitBatch({...options,regressionMode:false}),/EXCLUSIVE_GPU_AUTHORIZATION_REQUIRED/);
+ await assert.rejects(runRelevanceFitBatch({...options,regressionMode:false}),/BATCH_INFERENCE_AUTHORIZATION_REQUIRED/);
 });

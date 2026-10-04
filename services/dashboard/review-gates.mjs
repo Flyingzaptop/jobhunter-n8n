@@ -11,7 +11,9 @@ export const digest = value => createHash('sha256').update(typeof value === 'str
 export const activeProfileDigest = profile => digest(JSON.stringify(profile));
 export function formBinding(snapshot) {
   return { session_id: snapshot.browser_session_id, url: snapshot.url, fingerprint: snapshot.fingerprint, current_step: snapshot.current_step,
-    fields: (snapshot.fields ?? []).map(field => ({ selector: field.selector, name: field.name, type: field.type, value: field.value, checked: field.checked, required: field.required, options: field.options })),
+    fields: (snapshot.fields ?? []).map(field => ({ selector: field.selector, name: field.name, label:field.label,type: field.type, value: field.value, checked: field.checked, required: field.required, visible:field.visible,disabled:field.disabled,readOnly:field.readOnly,form:field.form,form_id:field.form_id,form_selector:field.form_selector,options: field.options })),
+    buttons:(snapshot.buttons??[]).map(button=>({selector:button.selector,text:button.text,type:button.type,href:button.href,visible:button.visible,disabled:button.disabled,name:button.name,value:button.value,formAction:button.formAction,formMethod:button.formMethod,form_action:button.form_action,form_method:button.form_method,form:button.form,form_id:button.form_id,form_selector:button.form_selector})),
+    forms:snapshot.forms??null,form_action:snapshot.form_action,form_destination:snapshot.form_destination,
     uploaded_file_hashes: snapshot.uploaded_file_hashes ?? [] };
 }
 export function validateReviewContext({ application, job, cv, profile, snapshot, now = Date.now() }) {
@@ -20,12 +22,16 @@ export function validateReviewContext({ application, job, cv, profile, snapshot,
   const verifiedAt = new Date(job?.last_verified_open_at ?? '').getTime();
   if (job?.availability_status !== 'OPEN' || !Number.isFinite(verifiedAt) || now - verifiedAt > REVIEW_TTL_MS || verifiedAt > now + 60000) throw hitlError('VACANCY_REVERIFICATION_REQUIRED');
   if (!cv || cv.job_id !== application.job_id || cv.cv_id !== application.cv_id || cv.qa_json?.pass !== true || cv.qa_json?.claims?.pass !== true || cv.qa_json?.identity?.pass !== true || cv.qa_json?.pdf?.pass !== true) throw hitlError('FULL_VERIFIED_CV_REQUIRED');
+  if(cv.manifest_json?.application_eligible!==true || Object.hasOwn(cv.manifest_json,'application_policy_blocker'))throw hitlError('CV_NOT_APPLICATION_ELIGIBLE');
   if (cv.profile_version !== activeProfileDigest(profile)) throw hitlError('CV_PROFILE_VERSION_STALE');
+  if(cv.manifest_json.profile_hash!==activeProfileDigest(profile))throw hitlError('CV_PROFILE_HASH_STALE_OR_MISSING');
+  if(!job.content_hash || cv.manifest_json.job_content_hash!==job.content_hash)throw hitlError('CV_JOB_CONTENT_HASH_STALE_OR_MISSING');
   if (!snapshot || snapshot.browser_session_id !== application.last_state?.browser_session_id || !snapshot.fingerprint || !Array.isArray(snapshot.fields) || snapshot.captcha || snapshot.validation_errors?.length || snapshot.fields.some(f => f.visible && (f.type === 'password' || /token|otp|totp|authentication.code/i.test(f.name ?? '') && f.type !== 'hidden'))) throw hitlError('BROWSER_REVIEW_REQUIRES_MANUAL_ASSISTANCE');
   if (!/^https:\/\//i.test(snapshot.url ?? '')) throw hitlError('HTTPS_APPLICATION_FORM_REQUIRED');
+  if(!Array.isArray(snapshot.forms)||!Array.isArray(snapshot.buttons))throw hitlError('FORM_DESTINATION_METADATA_REQUIRED');
   const policyText = `${snapshot.text ?? ''} ${(snapshot.fields ?? []).map(f=>f.label??'').join(' ')}`;
   if (job.metadata?.employer_policy?.ai_content_disallowed === true || /(?:do not|must not|not permitted|not allowed|prohibit|without)[^.\n]{0,80}\b(?:AI|artificial intelligence)\b|\b(?:AI|artificial intelligence)\b[^.\n]{0,100}(?:disqualif|prohibit|not permitted|not allowed)|human[- ](?:written|only)/i.test(policyText)) throw hitlError('EMPLOYER_AI_ATTESTATION_REQUIRES_MANUAL_REVIEW');
-  if (snapshot.fields.some(f => f.visible && f.required && (f.type === 'checkbox' ? f.checked !== true : !f.value))) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
+  if (snapshot.fields.some(f => f.visible && f.required && !f.disabled && (f.type === 'checkbox' ? f.checked !== true : f.type==='radio' ? f.checked!==true&&!snapshot.fields.some(other=>other.type==='radio'&&other.checked===true&&!other.disabled&&other.visible!==false&&Boolean(f.name)&&other.name===f.name&&(other.form_selector??other.form_id??other.form??null)===(f.form_selector??f.form_id??f.form??null)) : !f.value))) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
   if ((snapshot.uploaded_file_hashes?.length || snapshot.fields.some(f=>f.visible&&f.type==='file'&&/resume|\bcv\b/i.test(`${f.name??''} ${f.label??''}`))) && !snapshot.uploaded_file_hashes?.some(file=>file.sha256===cv.sha256)) throw hitlError('UPLOADED_CV_DOES_NOT_MATCH_REVIEW');
 }
 async function buildBinding(repository, applicationId, profile, browser) {

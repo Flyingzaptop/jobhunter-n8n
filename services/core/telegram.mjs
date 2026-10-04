@@ -60,13 +60,10 @@ export class Telegram {
     return this.call("sendMessage", { text });
   }
   async request(repo, applicationId, text) {
-    const requestId = randomUUID(),
-      questionId = randomUUID();
-    await repo.pool.query(
-      `INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id,telegram_chat_id) VALUES($1,$2,$3,$3,$4,$5)`,
-      [questionId, applicationId, text, requestId, this.chatId],
-    );
-    await repo.pool.query(`UPDATE applications SET last_state=last_state || jsonb_build_object('pending_question',COALESCE(last_state->'pending_question','{}'::jsonb)||jsonb_build_object('request_id',$2::text)) WHERE application_id=$1`,[applicationId,requestId]);
+    const previous=(await repo.pool.query(`SELECT q.* FROM application_questions q JOIN applications a USING(application_id) WHERE q.application_id=$1 AND q.raw_question=$2 AND q.answered_at IS NULL AND q.telegram_request_id::text=a.last_state->'pending_question'->>'request_id'`,[applicationId,text])).rows[0];
+    let requestId=previous?.telegram_request_id??randomUUID(),questionId=previous?.question_id??randomUUID();
+    if(previous?.telegram_message_id)return requestId;
+    if(!previous)await repo.pool.query(`WITH persisted AS (INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id,telegram_chat_id) VALUES($1,$2,$3,$3,$4,$5) RETURNING telegram_request_id) UPDATE applications SET last_state=last_state || jsonb_build_object('pending_question',COALESCE(last_state->'pending_question','{}'::jsonb)||jsonb_build_object('request_id',(SELECT telegram_request_id::text FROM persisted))) WHERE application_id=$2`,[questionId,applicationId,text,requestId,this.chatId]);
     let message;
     try{message = await this.send(
       `Need your answer\nApplication: ${applicationId}\nRequest: ${requestId}\n\n${text}\nReply to this message.`,

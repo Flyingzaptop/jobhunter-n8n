@@ -424,7 +424,7 @@ export function createDashboard({
         fields: view.fields?.map((f) => ({
           ...f,
           value:
-            f.type === "password" ||
+            f.type === "password" || f.type === "hidden" ||
             /token|otp|password|auth.*code/i.test(f.name)
               ? "[redacted]"
               : f.value,

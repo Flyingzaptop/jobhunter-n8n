@@ -36,6 +36,9 @@ test('unknown eligibility, old vacancy and closed status cannot gain confirmed f
   assert.equal(part(oldClosed, 'vacancy_status_confidence').value, 0);
 });
 test('retry policy distinguishes network fetch TypeError from programming/configuration TypeError', () => {
+  assert.equal(classifyAnalysisFailure(Object.assign(new Error('Cloud request failed'),{code:'HTTP_429'})), 'TRANSIENT');
+  assert.equal(classifyAnalysisFailure(Object.assign(new Error('Cloud request failed'),{code:'HTTP_503'})), 'TRANSIENT');
+  assert.equal(classifyAnalysisFailure(Object.assign(new Error('Cloud request failed'),{code:'HTTP_401'})), 'SEMANTIC_OR_CONFIGURATION');
   assert.equal(classifyAnalysisFailure(new TypeError('Cannot read properties of undefined')), 'SEMANTIC_OR_CONFIGURATION');
   assert.equal(classifyAnalysisFailure(new TypeError('fetch failed')), 'TRANSIENT');
   assert.equal(classifyAnalysisFailure(Object.assign(new Error('aborted'), { name: 'AbortError' })), 'TRANSIENT');

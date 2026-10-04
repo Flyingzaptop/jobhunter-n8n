@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting } from '../services/core/discovery-v2.mjs';
+import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting,extractExplicitApplicationDeadlines,officialDeadlineConflict } from '../services/core/discovery-v2.mjs';
 import { normalizeRaw } from '../services/core/normalization.mjs';
 
 test('robots wildcard, query patterns and specific agent groups cannot be bypassed', () => {
@@ -168,4 +168,22 @@ test('missing current listing or mismatched JobPosting identity stays UNKNOWN', 
   const mismatch = await verifyPublicJobPosting({ source: publicSource, url: publicUrl, robotsText: 'User-agent: *\nAllow: /',
     listingText: `<a href="${publicUrl}">Open role</a>`, fetchOptions: publicFetchOptions(publicPage({ url: 'https://career.teamtailor.com/jobs/99-other-role' })) });
   assert.equal(mismatch.status, 'UNKNOWN');
+});
+test('only explicitly labeled application deadlines with unambiguous year create availability conflicts',()=>{
+ const now=new Date('2026-10-04T12:00:00Z');
+ const past=officialDeadlineConflict({raw_payload:{content:'Application Deadline: Friday, 28th August 2026'}},{now});
+ assert.equal(past.reason,'AVAILABILITY_CONFLICT');assert.equal(past.status,'UNKNOWN');assert.equal(past.deadlines[0].deadline_date,'2026-08-28');
+ assert.equal(officialDeadlineConflict({raw_payload:{content:'Application Deadline: 31 December 2026'}},{now}),null);
+ assert.equal(officialDeadlineConflict({raw_payload:{content:'Start Date: November 2026\nCourse graduation: 2025\nInternship beginning: May 2026'}},{now}),null);
+ assert.equal(extractExplicitApplicationDeadlines('Bewerbungsschluss: 28.08.2026')[0].deadline_date,'2026-08-28');
+ assert.equal(extractExplicitApplicationDeadlines('Termin składania aplikacji: 28 sierpnia 2026')[0].deadline_date,'2026-08-28');
+ assert.equal(extractExplicitApplicationDeadlines('Application deadline: 08/12/2026').length,0);
+ assert.equal(extractExplicitApplicationDeadlines('Application deadline: 31 February 2026').length,0);
+});
+test('fresh listed official detail with past textual deadline becomes UNKNOWN with persisted conflict evidence',async()=>{
+ const updates=[];const repository={pool:{async query(sql,args){if(sql.startsWith('SELECT'))return{rows:[{source_name:'greenhouse-canonical',source_item_id:'42'}]};updates.push({sql,args});return{rows:[]};}}};
+ const result=await reverifyMarketJob({job:{job_id:'existing-job'},repository,fetchOptions:{lookupImpl:async()=>[{address:'8.8.8.8',family:4}],sleepImpl:async()=>{},
+   fetchImpl:async()=>new Response(JSON.stringify({id:42,title:'Intern',content:'Application Deadline: 28 August 2020'}))}});
+ assert.equal(result.status,'UNKNOWN');assert.equal(result.reason,'AVAILABILITY_CONFLICT');assert.equal(result.official_feed_listed,true);
+ assert.ok(updates.some(x=>x.sql.includes("availability_status='UNKNOWN'")));assert.ok(updates.some(x=>x.args[1].includes('2020-08-28')));
 });

@@ -6,6 +6,8 @@ import path from 'node:path';
 import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,buildTailoredCv,renderCvV2Html,verifyCvEntailment,resolveCvLlm,cvWriterSchema} from '../services/core/cv-v2.mjs';
 import {OllamaClient} from '../services/core/llm.mjs';
 import Ajv from 'ajv';
+import {createHash} from 'node:crypto';
+import {canonicalAnalysisHash} from '../services/core/evidence-hash.mjs';
 
 // MOCK / REGRESSION only. No gateway response here is real-world acceptance.
 const profile={onboarding:{legal_name:'UNKNOWN',email:'UNKNOWN',phone:'UNKNOWN'},education:[{id:'education',institution:'A university',field:'Mechanical Engineering',status:'degree_in_progress',provenance:'EDUCATION'}],experience:[{id:'it',role:'IT Specialist',provenance:'PROFESSIONAL',duration_approx_years:1.5,statements:['Supported Windows workstations.'],skills:['Windows']}],projects:[{id:'cad',title:'Cycloidal gearbox',provenance:'ACADEMIC',statements:['Designed a cycloidal gearbox in CAD.'],skills:['CAD']},{id:'web',title:'Web applications',provenance:'PERSONAL_PROJECT',statements:['Built web applications using React and Python/Django.'],skills:['React','Python','Django']}],languages:[{id:'pl',language:'Polish',level:'fluent'}]};
@@ -116,4 +118,36 @@ test('writer skill grammar requires exact labels and citations that establish th
   document.skills=[claim('Python','web')];assert.equal(check(document),true);
   document.skills=[claim('Python expert','web')];assert.equal(check(document),false);
   document.skills=[{text:'Python',source_fact_ids:['web','it']}];assert.equal(check(document),false);
+});
+
+test('CV manifest binds the exact source vacancy, profile and stored analysis without inventing an input receipt',async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'cv-v2-bindings-'));
+  const digest=value=>createHash('sha256').update(value).digest('hex');
+  const analysis={decision:'REVIEW',cv_focus_fact_ids:['cad'],fit_input_hash:'verified-fit-input-receipt'};
+  const job={job_id:'bound',availability_status:'OPEN',description_text:'Original source description.',content_hash:'official-normalized-content-hash'};
+  const manifest=await buildTailoredCv({job,profile,analysis,llm:gateway(draft()),outputRoot:root});
+  assert.equal(manifest.job_content_hash,job.content_hash);
+  assert.equal(manifest.profile_hash,digest(JSON.stringify(profile)));assert.equal(manifest.profile_version,manifest.profile_hash);
+  assert.equal(manifest.analysis_hash,canonicalAnalysisHash(analysis));assert.equal(manifest.analysis_input_hash,analysis.fit_input_hash);assert.equal(manifest.source_decision,'REVIEW');
+  const map=JSON.parse(await readFile(manifest.source_map_path,'utf8'));assert.equal(map.job_content_hash,manifest.job_content_hash);assert.equal(map.analysis_hash,manifest.analysis_hash);assert.equal(map.profile_hash,manifest.profile_hash);
+  const legacy=await buildTailoredCv({job:{...job,content_hash:undefined},profile,analysis:{decision:'REVIEW'},llm:gateway(draft()),outputRoot:root});
+  assert.equal(legacy.job_content_hash,digest(job.description_text));assert.equal(legacy.analysis_input_hash,null);
+});
+
+test('source, profile or analysis changes produce different bindings for stale-CV gate comparisons',async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'cv-v2-stale-bindings-'));
+  const job={job_id:'changing',availability_status:'OPEN',description_text:'First official requirements.'};
+  const analysis={decision:'REVIEW',cv_focus_fact_ids:['cad'],fit_input_hash:'first-fit-input'};
+  const baseline=await buildTailoredCv({job,profile,analysis,llm:gateway(draft()),outputRoot:root});
+  const changed=await buildTailoredCv({job:{...job,description_text:'Changed official requirements.'},profile:{...profile,onboarding:{...profile.onboarding,notice_period:'30 days'}},analysis:{...analysis,fit_input_hash:'changed-fit-input'},llm:gateway(draft()),outputRoot:root});
+  assert.notEqual(changed.job_content_hash,baseline.job_content_hash);assert.notEqual(changed.profile_hash,baseline.profile_hash);assert.notEqual(changed.analysis_hash,baseline.analysis_hash);assert.notEqual(changed.analysis_input_hash,baseline.analysis_input_hash);
+  assert.equal(changed.qa.claims.pass,true);assert.equal(changed.qa.pass,false); // bindings establish inputs, not identity/PDF readiness
+});
+
+test('analysis evidence hash survives JSONB object key reordering but detects evidence-value and array-order changes',()=>{
+  const first={decision:'REVIEW',requirements:[{match:'PARTIAL',requirement:'Python'},{match:'UNKNOWN',requirement:'Linux'}],work_format:{employment_route:'UNKNOWN',remote_allowed:true}};
+  const jsonbOrder={work_format:{remote_allowed:true,employment_route:'UNKNOWN'},requirements:[{requirement:'Python',match:'PARTIAL'},{requirement:'Linux',match:'UNKNOWN'}],decision:'REVIEW'};
+  assert.equal(canonicalAnalysisHash(first),canonicalAnalysisHash(jsonbOrder));
+  assert.notEqual(canonicalAnalysisHash(first),canonicalAnalysisHash({...jsonbOrder,decision:'REJECT'}));
+  assert.notEqual(canonicalAnalysisHash(first),canonicalAnalysisHash({...jsonbOrder,requirements:[...jsonbOrder.requirements].reverse()}));
 });

@@ -5,6 +5,7 @@ import {Repository} from '../services/core/repository.mjs';
 import {OllamaClient} from '../services/core/llm.mjs';
 import {observedCvAnalysis} from './cv-v2-observed.mjs';
 import {reverifyMarketJob} from '../services/core/discovery-v2.mjs';
+import {fitInputHash} from '../services/core/relevance-queue.mjs';
 
 if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT!=='false')throw new Error('Submission-disabled real dry-run required');
 const repository=new Repository();const llm=new OllamaClient();
@@ -27,6 +28,8 @@ try {
       if(!refreshed.description_text||refreshed.description_text.length<100)throw new Error('Employer detail still missing');
       const observed=await observedCvAnalysis({repository,job:refreshed,profile,policy,llm});
       const analysis=observed.analysis;analysis.model=llm.model;analysis.profile_version=createHash('sha256').update(JSON.stringify(profile)).digest('hex');
+      analysis.profile_hash=analysis.profile_version;analysis.job_content_hash=refreshed.content_hash;
+      analysis.fit_input_hash=fitInputHash({job:refreshed,profile,policy,model:llm.model,promptVersion:analysis.prompt_version});
       await repository.saveAnalysis(id,analysis);sample.analysis=analysis;sample.operation_run_id=observed.operation_run_id;
       sample.review_candidate=['REVIEW','STRETCH'].includes(analysis.decision)&&analysis.overall_fit!=null&&analysis.requirements.length>0;
       sample.status=sample.review_candidate?'AWAITING_OPERATOR_SUITABILITY_REVIEW':analysis.decision;
