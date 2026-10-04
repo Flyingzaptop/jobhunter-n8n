@@ -3,7 +3,21 @@ import { randomUUID } from 'node:crypto';
 import YAML from 'yaml';
 import { safeFetch, parseSourcePayload, sourceEndpoint, extractJobPostings, decodeEntities } from './discovery.mjs';
 import { normalizeRaw, duplicateConfidence, descriptionContent } from './normalization.mjs';
-const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html']);
+const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html', 'public_listing_html']);
+
+export function publicListingJobUrls(source, text) {
+  if (!source.job_link_pattern) throw new Error('PUBLIC_LISTING_JOB_PATTERN_REQUIRED');
+  const pattern = new RegExp(source.job_link_pattern);
+  const urls = new Set();
+  for (const [, href] of String(text).matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
+    try {
+      const url = new URL(decodeEntities(href), source.url);
+      if (url.origin !== new URL(source.url).origin || !pattern.test(url.pathname)) continue;
+      url.hash = ''; url.search = ''; urls.add(url.href);
+    } catch { /* Invalid page links are not vacancy URLs. */ }
+  }
+  return [...urls];
+}
 const validateRobotsPayload = text => {
   if (/^\s*(?:<!doctype|<html|<head)/i.test(text) || !/(?:user-agent|sitemap|allow|disallow)\s*:/i.test(text))
     throw new Error('INVALID_ROBOTS_PAYLOAD');
@@ -261,7 +275,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
   const existing = normalizationIndex(await repository.listCanonicalJobs());
   const seen = new Set(); const newIds = new Set(); const jobs = new Map(); const results = [];
   const emit = async (source, details) => observer({ run_id: runId, source_id: source?.name, platform: source?.platform,
-    query: source?.current_query ?? (publicHtmlAdapters.has(source?.adapter) ? 'Bounded public employer JobPosting details'
+    query: source?.current_query ?? (publicHtmlAdapters.has(source?.adapter) ? 'Bounded public listing and JobPosting details'
       : source?.source_class === 'employer_ats' ? 'All published employer vacancies' : 'Broad public market feed'),
     geography: source?.current_geography ?? (source?.source_class === 'poland_board' ? 'Poland' : 'Global / Europe / Poland; eligibility unverified'), ...details });
   const checkAbort = () => { if (signal?.aborted) throw new Error('DISCOVERY_CANCELLED'); };
@@ -349,19 +363,29 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
           }
           await emit(source, { event: 'source_progress', status: 'RUNNING', count: metrics.raw_count,
             cursor: metrics.pages, processed: metrics.raw_count, unique_count: sourceUnique.size,
-            new_count: sourceNew, duplicates: metrics.raw_count - sourceNew - metrics.normalization_errors.length,
+            new_count: sourceNew, duplicates: Math.max(0, metrics.raw_count - sourceNew - metrics.normalization_errors.length),
             errors: metrics.normalization_errors.length,
             message: `${source.platform}: ${metrics.raw_count} vacancies, ${sourceNew} new, page ${metrics.pages}` });
         };
         if (publicHtmlAdapters.has(source.adapter)) {
           const listing = await read(source.url);
           metrics.listing_url = listing.url;
-          metrics.bounded_job_urls = source.job_urls.length;
-          for (const url of source.job_urls.slice(0, source.max_pages)) {
-            const verification = await verifyPublicJobPosting({ source, url, fetchOptions, listingText: listing.text, robotsText: robots });
-            metrics.pages++; metrics.last_request_at = new Date().toISOString();
-            if (!verification.raw) metrics.normalization_errors.push({ source_url: url, error: verification.reason });
-            else await ingest([verification.raw]);
+          const jobUrls = source.adapter === 'public_listing_html' ? publicListingJobUrls(source, listing.text) : source.job_urls;
+          const offset = source.adapter === 'public_listing_html' ? Number(prior?.metadata?.next_listing_offset ?? 0) % (jobUrls.length || 1) : 0;
+          const bounded = jobUrls.slice(offset, offset + source.max_pages);
+          metrics.bounded_job_urls = jobUrls.length;
+          metrics.next_listing_offset = offset + bounded.length;
+          metrics.truncated = offset + bounded.length < jobUrls.length;
+          for (const url of bounded) {
+            try {
+              const verification = await verifyPublicJobPosting({ source, url, fetchOptions, listingText: listing.text, robotsText: robots });
+              metrics.pages++; metrics.last_request_at = new Date().toISOString();
+              if (!verification.raw) metrics.normalization_errors.push({ source_url: url, error: verification.reason });
+              else await ingest([verification.raw]);
+            } catch (error) {
+              if (error.message === 'DISCOVERY_CANCELLED' || /ROBOTS|SOURCE_HTTP_40[1369]/.test(error.message)) throw error;
+              metrics.normalization_errors.push({ source_url: url, error: error.message });
+            }
           }
         } else if (source.adapter === 'sitemap_html') {
           const queue = [source.url]; const urls = []; const visited = new Set();
@@ -431,7 +455,7 @@ export async function runMarketDiscovery({ repository, observer = async () => {}
     metrics.latency_ms = Math.round(performance.now() - t); metrics.unique_count = sourceUnique.size;
     if (['OPERATIONAL', 'OPERATIONAL_PARTIAL'].includes(metrics.status)) metrics.next_request_at = source.min_scan_interval_ms
       ? new Date(Date.now() + source.min_scan_interval_ms).toISOString() : null;
-    metrics.new_count = sourceNew; metrics.duplicate_count = metrics.raw_count - sourceNew - metrics.normalization_errors.length;
+    metrics.new_count = sourceNew; metrics.duplicate_count = Math.max(0, metrics.raw_count - sourceNew - metrics.normalization_errors.length);
     await saveSourceHealth(repository, runId, source, metrics); results.push(metrics);
     await emit(source, { event: 'source_completed', status: metrics.status, count: metrics.raw_count,
       processed: metrics.raw_count, unique_count: metrics.unique_count, new_count: metrics.new_count,

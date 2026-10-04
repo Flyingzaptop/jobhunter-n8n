@@ -15,10 +15,25 @@ test('technical product-support bridge roles are queued from source troubleshoot
 });
 test('remote unknown geography remains unknown and changed facts/model/policy/prompt invalidate fit receipt hash',()=>{
  const job={title:'Python Engineer',description_text:'Scientific tools',work_mode:'REMOTE',availability_status:'OPEN'};
- const q=screenRelevance(job,{now});assert.equal(q.location_class,'UNKNOWN');assert.equal(q.employment_eligibility,'UNKNOWN');
+ const q=screenRelevance(job,{now});assert.equal(q.location_class,'REMOTE_ELIGIBILITY_UNKNOWN');assert.equal(q.employment_eligibility,'UNKNOWN');
  const base={job,profile:{facts:['a']},policy:{threshold:78},model:'qwen3.5:4b'};const a=fitInputHash(base);
  for(const other of [{...base,profile:{facts:['b']}},{...base,policy:{threshold:79}},{...base,model:'other'},{...base,promptVersion:'next'},{...base,job:{...job,description_text:'Changed'}}])assert.notEqual(a,fitInputHash(other));
  assert.equal(screenRelevance({...job,availability_status:'CLOSED'},{now}).status,'CLOSED');
+});
+test('remote geography is equally prioritized worldwide and local mechanical hybrid receives slight preference',()=>{
+ const base={title:'Mechanical Engineer',description_text:'Design mechanical systems',work_mode:'REMOTE',availability_status:'OPEN'};
+ const us=screenRelevance({...base,country:'US',location:'United States'},{now});
+ const eu=screenRelevance({...base,country:'DE',location:'Germany'},{now});
+ const world=screenRelevance({...base,location:'Worldwide'},{now});
+ assert.equal(us.relevance_score,eu.relevance_score);assert.equal(us.relevance_score,world.relevance_score);
+ assert.equal(us.status,'QUEUED');assert.equal(us.employment_eligibility,'UNKNOWN');
+ assert.ok(!us.reasons.some(reason=>reason.signal==='NON_EUROPE_DEPRIORITIZED'));
+ const local=screenRelevance({...base,work_mode:'ONSITE',location:'Wrocław',country:'PL'},{now});
+ const hybrid=screenRelevance({...base,work_mode:'HYBRID',location:'Wrocław',country:'PL'},{now});
+ assert.equal(hybrid.relevance_score-local.relevance_score,3);
+ assert.equal(hybrid.location_class,'MECHANICAL_WROCLAW_HYBRID_HINT');
+ const other=screenRelevance({title:'Customer Care Associate',work_mode:'REMOTE',country:'US',availability_status:'OPEN'},{now});
+ assert.equal(other.status,'LOW_PRIORITY');assert.equal(other.employment_eligibility,'UNKNOWN');
 });
 test('manual reference comparison exposes extraction gaps and false-positive/hard-blocker risks without rewriting analyses',()=>{
  const label={source_quote:'Completed degree required.',category:'EDUCATION',importance:'MANDATORY',candidate_match:'NO'};
@@ -27,6 +42,14 @@ test('manual reference comparison exposes extraction gaps and false-positive/har
  assert.equal(compareCalibrationLabel(label,{requirements:[]}).status,'EXACT_REQUIREMENT_NOT_MAPPED');
  const falseBlock=compareCalibrationLabel({...label,candidate_match:'YES'},{requirements:[{...analysis.requirements[0],match:'NO'}]});
  assert.ok(falseBlock.error_signals.includes('FALSE_HARD_BLOCKER_RISK'));
+});
+test('salary amounts and missing salary do not filter or penalize discovery relevance',()=>{
+ const job={title:'Mechanical Engineer',work_mode:'REMOTE',country:'DE',availability_status:'OPEN'};
+ const low=screenRelevance({...job,salary:{min:1,max:2,currency:'PLN'}},{now});
+ const high=screenRelevance({...job,salary:{min:100000,max:200000,currency:'PLN'}},{now});
+ const missing=screenRelevance(job,{now});
+ assert.equal(low.relevance_score,high.relevance_score);assert.equal(low.relevance_score,missing.relevance_score);
+ assert.equal(low.status,'QUEUED');assert.equal(low.status,missing.status);
 });
 test('real PostgreSQL queue resumes unique analyses, skips unchanged receipts and separates transient/semantic failures',{skip:!process.env.DATABASE_URL},async t=>{
  const repo=new Repository(),admin=repo.pool,schema='relevance_test_'+randomUUID().replaceAll('-','');await admin.query(`CREATE SCHEMA ${schema}`);

@@ -6,6 +6,42 @@ defaults:
   max_response_bytes: 15000000
   max_pages: 1
 sources:
+  - name: praca
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: '_[0-9]+\.html$'
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    search_url: https://www.praca.pl/
+    required: true
+    reason: Live ordinary public listing and detail GET return 200; bounded dynamic vacancy links and JobPosting extraction, without private APIs.
+  - name: praca-wroclaw
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/wroclaw.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: '_[0-9]+\.html$'
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    search_url: https://www.praca.pl/wroclaw.html
   - name: pracuj
     platform: Pracuj.pl
     adapter: policy_probe
@@ -18,8 +54,7 @@ sources:
     permitted_access: false
     allowed_hosts:
       - www.pracuj.pl
-    reason: No documented permitted automatic vacancy feed configured. Only
-      robots/access policy is inspected; no protected search request.
+    reason: 2026-10-04 ordinary robots GET returns 200 and advertises current-offers sitemap; ordinary search and advertised sitemap GET return 403 challenge. Public page readable through search tooling; Node automatic discovery remains blocked, manual fallback retained.
     search_url: https://www.pracuj.pl/praca
     required: true
   - name: olx

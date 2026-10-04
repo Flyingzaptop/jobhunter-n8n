@@ -1,5 +1,11 @@
-version: market-query-v2
+version: market-query-v2.1-worldwide-remote
 purpose: Broad search plans and observer metadata. ATS catalogs fetch all published jobs without title prefiltering.
+review_priorities:
+  - mechanical engineering near Wroclaw, with slight preference for hybrid
+  - candidate-relevant remote jobs worldwide and Europe at equal geography priority
+  - other candidate-relevant jobs
+remote_eligibility: Explicit work-country restrictions require actual fit verification; employer HQ does not exclude remote discovery.
+compensation_filter_enabled: false
 role_families:
   MECHANICAL_RD:
     en: [mechanical engineer, junior mechanical engineer, graduate mechanical engineer, R&D engineer, research engineer, product development engineer, mechanical design engineer, CAD engineer, CAE engineer, simulation engineer, FEA engineer, CFD engineer, prototype engineer, test engineer, validation engineer, automotive engineer, aerospace engineer]

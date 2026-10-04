@@ -6,7 +6,7 @@ import { computePriority } from './priority.mjs';
 import { retryPlan } from './analysis-retry.mjs';
 import { runObserved, observe, operationContext } from './observability.mjs';
 
-export const RELEVANCE_VERSION = 'relevance-v1.2-deterministic';
+export const RELEVANCE_VERSION = 'relevance-v1.3-wroclaw-and-worldwide-remote';
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/gi,'l').toLowerCase();
 const europe = /^(?:pl|de|fr|gb|uk|ie|nl|be|cz|at|se|fi|dk|no|ch|es|it|pt|lt|lv|ee|ro|hu|sk|si|hr|poland|germany|france|united kingdom|ireland|netherlands|belgium|czechia|austria|sweden|finland|denmark|norway|switzerland|spain|italy|portugal|european union|europe)$/;
@@ -46,8 +46,13 @@ export function screenRelevance(job,{now=new Date()}={}) {
   if(senior)add('SENIOR_TITLE_DEPRIORITIZED',-26,senior[0],'title');
   if(!junior&&!senior)add('SENIORITY_UNKNOWN',4,'No explicit seniority; not assumed junior','title');
   if(/\b(?:account(?:ant|ing)|bookkeep\w*|clerk|recruiter|sales|marketing|finance|legal counsel)\b/.test(title))add('NONTARGET_TITLE_DEPRIORITIZED',-45,title,'title');
+  const remote=j.work_mode==='REMOTE';
+  const nearby=/wroclaw|wrocław/.test(location);
+  const localMechanical=nearby&&reasons.some(reason=>reason.signal==='TITLE_MECHANICAL_RD');
   let locationClass='UNKNOWN';
-  if(/wroclaw|wrocław/.test(location)){locationClass='WROCLAW_LOCATION_HINT';add('WROCLAW_PREFERENCE',22,j.location,'location');}
+  if(localMechanical&&!remote){locationClass=j.work_mode==='HYBRID'?'MECHANICAL_WROCLAW_HYBRID_HINT':'MECHANICAL_WROCLAW_HINT';add('MECHANICAL_NEAR_WROCLAW_PREFERENCE',24,j.location,'location');if(j.work_mode==='HYBRID')add('LOCAL_MECHANICAL_HYBRID_SLIGHT_PREFERENCE',3,'Hybrid mechanical role near Wroclaw','work_mode');}
+  else if(remote){locationClass='REMOTE_ELIGIBILITY_UNKNOWN';add('WORLDWIDE_REMOTE_EQUAL_PRIORITY',24,`${j.country??''} ${j.location??''}; country restrictions require actual fit verification`,'country/location/work_mode');}
+  else if(nearby){locationClass='WROCLAW_LOCATION_HINT';add('WROCLAW_PREFERENCE',4,j.location,'location');}
   else if(country==='pl'||country==='poland'||/\bpoland\b|warszawa|warsaw/.test(location)){locationClass='POLAND_LOCATION_HINT';add('POLAND_PREFERENCE',16,j.country||j.location,'country/location');}
   else if(europe.test(country)){locationClass='EUROPE_RELOCATION_REVIEW';add('EUROPE_DISCOVERY_PREFERENCE',10,j.country,'country');}
   else if(/\b(?:worldwide|europe|eu|eea|emea)\b/.test(location)){locationClass='BROAD_REGION_ELIGIBILITY_UNKNOWN';add('BROAD_REGION_PRIORITY_ONLY',10,j.location,'location');}
@@ -55,7 +60,6 @@ export function screenRelevance(job,{now=new Date()}={}) {
   else if(country==='us'||country==='united states'||/\b(?:united states|usa)\b/.test(location)){locationClass='NON_EUROPE_ELIGIBILITY_REVIEW';add('NON_EUROPE_DEPRIORITIZED',-10,j.country||j.location,'country/location');}
   else if(['nz','new zealand','au','australia','ca','canada'].includes(country)||/\bnew zealand\b|\baustralia\b|(?:,\s*|^)nz$/.test(location)){locationClass='NON_EUROPE_ELIGIBILITY_REVIEW';add('NON_EUROPE_DEPRIORITIZED',-10,j.country||j.location,'country/location');}
   else add('LOCATION_UNKNOWN',0,'Location/eligibility must be verified; no Poland permission inferred','location');
-  if(j.work_mode==='REMOTE')add('REMOTE_PRIORITY_ELIGIBILITY_UNKNOWN',6,'Remote label is not work-from-Poland permission','work_mode');
   const date=Date.parse(j.published_at??j.first_seen_at??'');
   if(Number.isFinite(date)&&now-date<=14*86400000)add('RECENT_PUBLICATION_OR_SEEN',4,j.published_at??j.first_seen_at,'published_at/first_seen_at');
   if(/\b(?:phd|doctorate|doctoral)\b/.test(title))add('ADVANCED_DEGREE_TITLE_REVIEW',-15,title,'title');
@@ -87,9 +91,8 @@ export async function listRelevanceCandidates(repository,{limit=500,minScore=40}
   if(!Number.isInteger(limit)||limit<1||limit>5000)throw new Error('INVALID_RELEVANCE_LIMIT');
   return (await repository.pool.query(`SELECT j.*,q.relevance_score,q.role_hints,q.reasons,q.location_class,q.seniority_class,q.needs_hydration,q.status AS queue_status
     FROM relevance_queue q JOIN jobs j USING(job_id) WHERE q.relevance_score>=$1 AND q.status<>'CLOSED'
-    ORDER BY CASE WHEN q.location_class IN('WROCLAW_LOCATION_HINT','POLAND_LOCATION_HINT') THEN 0
-      WHEN q.location_class IN('EUROPE_RELOCATION_REVIEW','EUROPE_CITY_HINT_COUNTRY_UNVERIFIED','BROAD_REGION_ELIGIBILITY_UNKNOWN') THEN 1
-      WHEN q.location_class='NON_EUROPE_ELIGIBILITY_REVIEW' THEN 3 ELSE 2 END,
+    ORDER BY CASE WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
+      WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 1 ELSE 2 END,
       q.relevance_score DESC,CASE WHEN q.seniority_class='JUNIOR_STUDENT' THEN 0 ELSE 1 END,j.first_seen_at,job_id LIMIT $2`,[minScore,limit])).rows.map(jobSnapshot);
 }
 
@@ -114,9 +117,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         const ready=(await repository.pool.query(`SELECT q.*,j.metadata AS job_metadata,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id)
           WHERE q.status IN('QUEUED','RETRY','ANALYZED','DEAD_LETTER','OPEN_UNVERIFIED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
           AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),CASE
-            WHEN q.location_class IN('WROCLAW_LOCATION_HINT','POLAND_LOCATION_HINT') THEN 0
-            WHEN q.location_class IN('EUROPE_RELOCATION_REVIEW','EUROPE_CITY_HINT_COUNTRY_UNVERIFIED','BROAD_REGION_ELIGIBILITY_UNKNOWN') THEN 1
-            WHEN q.location_class='NON_EUROPE_ELIGIBILITY_REVIEW' THEN 3 ELSE 2 END,
+            WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0
+            WHEN q.location_class='REMOTE_ELIGIBILITY_UNKNOWN' THEN 1 ELSE 2 END,
             q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];

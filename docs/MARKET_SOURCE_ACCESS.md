@@ -1,6 +1,6 @@
 # Discovery v2 source access and scope
 
-Checked 2026-10-03. This is real public job-market discovery. The old mock board
+Checked 2026-10-04 for Praca.pl, Pracuj.pl and OLX; remaining source audit 2026-10-03. This is real public job-market discovery. The old mock board
 remains regression-only. Discovery performs GET requests only; final employer
 submission remains disabled. No user cookies, passwords, CAPTCHA solutions,
 undocumented protected search APIs or user-agent impersonation are used.
@@ -14,8 +14,9 @@ Wrong/retired board tokens remain visible as FAILED/404, not invented vacancies.
 
 | Source | Access used / restriction | Current implementation |
 |---|---|---|
-| Pracuj.pl | Ordinary GET of robots returned HTTP 406 | ACCESS_BLOCKED; manual/approved-feed fallback; no retry through stealth browser |
-| OLX Praca | Ordinary GET of robots returned HTTP 403 | ACCESS_BLOCKED; manual/approved-feed fallback |
+| Praca.pl | Ordinary robots, homepage, Wrocław listing and job detail GET succeed; public job paths allowed, account/apply/API paths excluded | Dynamic same-origin current vacancy links → bounded JobPosting details with persistent scan offset; source and Wrocław source configured |
+| Pracuj.pl | Fresh ordinary robots GET returns 200 and advertises current-offers sitemap; Node search and advertised sitemap GET return 403 challenge; ordinary existing-profile Chrome public listing loads without CAPTCHA | HTTP adapter remains unavailable; browser public listing is readable and must be distinguished from a universal site ban or the Node transport failure |
+| OLX Praca | Ordinary listing GET returns 200 but robots GET returns 403; public listing also readable through web search tooling | Node adapter remains policy/manual fallback with unknown usable policy; zero automatic imports, public readability distinguished from implemented discovery |
 | Just Join IT | robots advertises active-jobs sitemap; individual job-offer HTML allowed; `/api/` disallowed | Public sitemap → bounded JobPosting HTML extraction; no internal API |
 | RocketJobs.pl | robots advertises active-jobs sitemap; individual offers allowed; `/api/` disallowed | Public sitemap → bounded JobPosting HTML extraction; no internal API |
 | No Fluff Jobs | robots disallows `/api/`, `/posting/` and country-prefixed posting paths | MANUAL_DISCOVERY_FALLBACK; no prohibited listing crawl |

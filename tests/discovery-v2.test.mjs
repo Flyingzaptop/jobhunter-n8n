@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import YAML from 'yaml';
-import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting,extractExplicitApplicationDeadlines,officialDeadlineConflict } from '../services/core/discovery-v2.mjs';
+import { robotsAllows, loadMarketSources, parseMarketPayload, runMarketDiscovery, queryEvidence, reverifyMarketJob, verifyPublicJobPosting,extractExplicitApplicationDeadlines,officialDeadlineConflict,publicListingJobUrls } from '../services/core/discovery-v2.mjs';
 import { normalizeRaw } from '../services/core/normalization.mjs';
 
 test('robots wildcard, query patterns and specific agent groups cannot be bypassed', () => {
@@ -18,10 +18,31 @@ test('robots wildcard, query patterns and specific agent groups cannot be bypass
 test('catalog covers real source classes without presenting unverified boards as operational', async () => {
   const sources = await loadMarketSources();
   assert.ok(sources.filter(source => source.source_class === 'employer_ats').length >= 100);
-  for (const name of ['pracuj', 'olx', 'justjoin', 'nofluff', 'rocketjobs', 'linkedin']) assert.ok(sources.some(source => source.name === name));
+  for (const name of ['praca', 'pracuj', 'olx', 'justjoin', 'nofluff', 'rocketjobs', 'linkedin']) assert.ok(sources.some(source => source.name === name));
   assert.equal(sources.some(source => source.profile === 'mock'), false);
   assert.equal(sources.find(source => source.name === 'linkedin').permitted_access, false);
   assert.equal(sources.find(source => source.name === 'nofluff').permitted_access, false);
+});
+test('public board discovery uses unique current same-origin vacancy links without profile/API links',()=>{
+ const source={url:'https://www.praca.pl/',job_link_pattern:'_[0-9]+\\.html$'};
+ const html='<a href="/mechanical_123.html">Engineer</a><a href="https://www.praca.pl/mechanical_123.html">dup</a><a href="https://evil.example/job_123.html">offhost</a><a href="/api/jobs">api</a><a href="/wroclaw.html">city</a>';
+ assert.deepEqual(publicListingJobUrls(source,html),['https://www.praca.pl/mechanical_123.html']);
+ assert.throws(()=>publicListingJobUrls({url:source.url},html),/PUBLIC_LISTING_JOB_PATTERN_REQUIRED/);
+});
+test('public board scan continues after malformed detail and preserves source provenance for valid vacancies',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'public-board-'));const path=join(dir,'registry.yaml');
+ await writeFile(path,YAML.stringify({sources:[{name:'praca-test',platform:'Praca.pl',adapter:'public_listing_html',url:'https://board.example/',robots_url:'https://board.example/robots.txt',profile:'real',enabled:true,source_class:'poland_board',permitted_access:true,allowed_hosts:['board.example'],job_link_pattern:'_[0-9]+\\.html$',max_pages:3}]}));
+ const sources=[];const repository={async listCanonicalJobs(){return[];},async insertRaw(raw){sources.push(raw);return{raw_id:'raw'};},async upsertCanonicalJob(job){return{job_id:job.job_id,is_new:true};}};
+ const listing='<a href="/bad_1.html">bad</a><a href="/engineer_2.html">engineer</a>';
+ try{const result=await runMarketDiscovery({repository,registryPath:path,fetchOptions:{lookupImpl:async()=>[{address:'8.8.8.8',family:4}],sleepImpl:async()=>{},fetchImpl:async(url)=>{
+  if(url.pathname==='/robots.txt')return new Response('User-agent: *\nDisallow: /api/');
+  if(url.pathname==='/')return new Response(listing);
+  const data=url.pathname==='/bad_1.html'?{'@type':'JobPosting'}:{'@type':'JobPosting',title:'Mechanical engineer',hiringOrganization:{name:'Employer'},description:'Mechanical engineering and CAD design. '.repeat(6),jobLocation:{address:{addressLocality:'Wrocław',addressCountry:'PL'}}};
+  return new Response(`<script type="application/ld+json">${JSON.stringify(data)}</script>`);
+ }}});
+ assert.equal(result.sources[0].status,'OPERATIONAL_PARTIAL');assert.equal(result.raw_vacancies,1);assert.equal(result.sources[0].duplicate_count,0);
+ assert.equal(sources[0].source_name,'praca-test');assert.equal(sources[0].source_url,'https://board.example/engineer_2.html');
+ }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('remote board metadata preserves restrictions and unknown employer freshness', () => {
   const source = { name: 'remotive', adapter: 'remotive', url: 'https://remotive.com/api/remote-jobs' };
