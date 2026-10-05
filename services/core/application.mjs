@@ -25,6 +25,12 @@ export class BrowserClient {
 const known = value => value !== undefined && value !== null && value !== '' && value !== 'UNKNOWN';
 const norm = value => String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[^a-z0-9+#]+/g,' ').trim();
 const country = value => /^(pl|poland|polska)$/i.test(value) ? 'PL' : String(value||'').toUpperCase();
+export function missingRequiredFields(fields=[]){
+  return fields.filter(f=>f.visible&&f.required&&(
+    f.type==='radio'?!fields.some(other=>other.visible&&other.type==='radio'&&other.checked&&(f.field_path?other.field_path===f.field_path:other.name===f.name)):
+    f.type==='checkbox'?!f.checked:Boolean(f.validation_message||!String(f.value??'').trim())
+  ));
+}
 export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const identity=profile.onboarding??{},name=identity.legal_name;
   const values=(view.fields??[]).filter(f=>f.visible&&!['password','hidden','file'].includes(f.type)).map(f=>String(f.value??''));
@@ -32,7 +38,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
     upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').includes(f.filename))),
-    questions:outstanding===0,required_fields:!(view.fields??[]).some(f=>f.visible&&f.required&&(f.validation_message||(!f.value&&f.type!=='checkbox')||(f.type==='checkbox'&&!f.checked))),
+    questions:outstanding===0,required_fields:missingRequiredFields(view.fields).length===0,
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
   return {pass:Object.values(checks).every(Boolean),checks,observed_at:new Date().toISOString(),form_fingerprint:view.fingerprint,cv_sha256:cv.sha256};
 }

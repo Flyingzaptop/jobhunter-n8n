@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {finalReviewEvidence,employerAutomationPolicy} from '../services/core/application.mjs';
+import {finalReviewEvidence,employerAutomationPolicy,missingRequiredFields} from '../services/core/application.mjs';
+test('mandatory radio groups require a checked option rather than nonempty option values',()=>{
+ const fields=[{visible:true,required:true,type:'radio',name:'source',value:'job-board',checked:false},{visible:true,required:true,type:'radio',name:'source',value:'other',checked:false}];
+ assert.equal(missingRequiredFields(fields).length,2);
+ fields[0].checked=true;assert.equal(missingRequiredFields(fields).length,0);
+ assert.equal(missingRequiredFields([...fields,{visible:true,required:true,type:'text',value:'   '}]).length,1);
+});
 test('actual final review reads supplied form values and verified PDF hash, never missing answers or anti-AI attestations',()=>{
  const profile={onboarding:{legal_name:'Example Candidate',email:'fixture@example.invalid'}},job={title:'Technical internship'},cv={pdf_path:'data/cv-v2/cv.pdf',sha256:'verified-hash',qa_json:{pass:true}};
  const view={title:'Technical internship — employer',text:'Apply now',fields:[{type:'text',visible:true,required:true,value:'Example Candidate'},{type:'email',visible:true,required:true,value:'fixture@example.invalid'}],uploaded_file_hashes:[{sha256:'verified-hash',filename:'cv.pdf',evidence:'SERVER_UPLOAD_RECEIPT'}],captcha:false};

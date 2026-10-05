@@ -138,7 +138,7 @@ export async function createBrowserService(config = browserConfig()) {
       if(['fill','select','check','upload'].includes(operation))await dismissPracaUploadError(session.page);
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);
       const registerFieldWindow=()=>{if(atsAdapterFor(before.url)==='ashby'&&field?.field_path&&field.form_render_id&&(payload.verified_facts===true||payload.approval==='USER_CONFIRMED')){
-        session.ashbyFieldWindows??=new Map();session.ashbyFieldWindows.set(field.field_path,{url:before.url,form_render_id:field.form_render_id,value:operation==='check'?payload.checked!==false:payload.value,label:field.label,type:field.type,role:field.role,expires_at:Date.now()+15000});
+        session.ashbyFieldWindows??=new Map();session.ashbyFieldWindows.set(field.field_path,{url:before.url,form_render_id:field.form_render_id,value:operation==='check'?payload.checked!==false:payload.value,option_value:field.type==='radio'&&payload.checked!==false?field.value:undefined,label:field.label,type:field.type,role:field.role,expires_at:Date.now()+15000});
       }};
       if (operation === 'submit' && session.submit_attempted) return { ...before, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_id: session.submission_confirmation?.confirmation_id || null };
       if (!field && !button) throw new Error('SELECTOR_NOT_IN_CURRENT_SNAPSHOT');

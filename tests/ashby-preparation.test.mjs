@@ -3,6 +3,12 @@ import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,rev
 import {isModelAnswerable} from '../services/core/application-prose.mjs';import {resolveField} from '../services/core/application.mjs';
 const specs=JSON.parse(readFileSync(new URL('../config/ats_preparation_queries.json',import.meta.url))).queries;
 const call=(name,variables)=>({url:'https://jobs.ashbyhq.com/api/non-user-graphql?op='+name,body:JSON.stringify({operationName:name,query:specs.find(s=>s.operation_name===name).query,variables})});
+test('radio save accepts only the selected DOM option in its bound field window',()=>{
+ const variables={organizationHostedJobsPageName:'fixture',formRenderIdentifier:'render',path:'source',value:'option-123',formDefinitionIdentifier:'definition'};
+ const windows=new Map([['source',{url:'https://jobs.ashbyhq.com/fixture/job/application',form_render_id:'render',type:'radio',value:true,label:'Job board',option_value:'option-123',expires_at:Date.now()+10000}]]),definitions=new Set(['definition']);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',variables),windows,definitions}),true);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',{...variables,value:'other-option'}),windows,definitions}),false);
+});
 test('only captured country autocomplete is a read; form mutations cannot piggyback',()=>{const read=call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['Country']});assert.equal(reviewedAshbyGeoRead(read),true);assert.equal(reviewedAshbyGeoRead(call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['City']})),false);assert.equal(reviewedAshbyGeoRead({...read,body:read.body.replace('query Api','mutation Api')}),false);});
 test('upload initializer is scoped to this board, PDF name, size and a live window',()=>{const window={url:'https://jobs.ashbyhq.com/fixture/11111111-1111-1111-1111-111111111111/application',filename:'cv.pdf',byte_length:100,expires_at:Date.now()+10000};const input=call('ApiCreateFileUploadHandle',{organizationHostedJobsPageName:'fixture',fileUploadContext:'NonUserFormEngine',filename:'cv.pdf',contentType:'application/pdf',contentLength:100});assert.equal(reviewedAshbyUploadInit({...input,window}),true);assert.equal(reviewedAshbyUploadInit({...input,window:{...window,byte_length:101}}),false);assert.equal(reviewedAshbyUploadInit({...input,window:{...window,expires_at:0}}),false);});
 test('storage POST requires exact issued URL, signed fields and the approved PDF bytes',()=>{

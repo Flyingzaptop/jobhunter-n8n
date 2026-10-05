@@ -31,7 +31,7 @@ export function reviewedAshbyFieldSave({url,body,windows,definitions,suggestions
  const w=windows?.get(v.path);if(!w||w.expires_at<=now||v.formRenderIdentifier!==w.form_render_id||!definitions?.has(v.formDefinitionIdentifier))return false;
  let form;try{form=new URL(w.url);}catch{return false;}if(v.organizationHostedJobsPageName!==form.pathname.split('/')[1])return false;
  let value=v.value;if(typeof value==='string'){try{value=JSON.parse(value);}catch{}}
- const allowed=[w.value];if(w.type==='radio')allowed.push(w.label);
+ const allowed=[w.value];if(w.type==='radio'){allowed.push(w.label);if(typeof w.option_value==='string'&&w.option_value.length>0)allowed.push(w.option_value);}
  if(w.role==='combobox')for(const suggestion of suggestions.filter(s=>s.name===w.value)){
   const country=suggestion.geoLocationPath?.find(p=>p.type==='Country');if(country?.providerLocationId)allowed.push({text:w.value,providerLocationId:country.providerLocationId});
  }
