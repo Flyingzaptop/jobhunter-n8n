@@ -33,6 +33,9 @@ test('actual PostgreSQL: durable exact binding, busy inference stays pending, mo
  const busy=await drain({repo,profile,policy,mutex:async()=>({blocked_reason:'INFERENCE_BATCH_BUSY',processed:0}),llm:{provider:'local',json:()=>{throw new Error('Busy must not infer');}}});assert.ok(busy.blocked_reason);
  let calls=0;const result=await drain({repo,profile,policy,mutex:async(_,operation)=>operation(),llm:{provider:'local',model:'isolated-gemma',json:async()=>++calls===1?document:{checks:[{segment_id:'s0',verdict:'SUPPORTED'},{segment_id:'s1',verdict:'SUPPORTED'}]}}});assert.equal(result.results[0].status,'READY');
  const ready=await getReady(args);assert.equal(ready.provenance,'MODEL_GROUNDED');assert.ok(ready.text_answer.includes('personal project'));assert.equal(await getReady({...args,view:{fingerprint:'changed-form'}}),null);assert.equal(await getReady({...args,policy:{remote_only:false}}),null);
+ const newField={...field,selector:'#new-random-id'};
+ assert.equal((await getReady({...args,field:newField,view:{...view,fields:[newField]}})).draft_id,ready.draft_id);
+ assert.equal(await getReady({...args,field:newField,view:{...view,fields:[newField,{...newField,selector:'#other'}]}}),null);
  await consume({repo,appId,draftId:ready.draft_id});await assert.rejects(consume({repo,appId,draftId:ready.draft_id}),/ALREADY_CONSUMED/);assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_answer_receipts')).rows[0].n,0);assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_questions')).rows[0].n,0);
  const pending=await enqueue({...args,field:{...field,selector:'#approach',label:'How would you approach this work?'}});
  const operation={repo,profile,policy,mutex:async(_,run)=>run(),llm:{provider:'local',json:async()=>{throw Object.assign(new Error('private detail'),{code:'INPUT_BUDGET_EXCEEDED'});}}};

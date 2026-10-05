@@ -194,6 +194,7 @@ export async function createBrowserService(config = browserConfig()) {
         const after = await checkpoint(session); return { ...after, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null };
       } else throw new Error('UNKNOWN_OPERATION');
     }
+    if(['fill','select','check','upload'].includes(operation))session.recovery_attempts=0;
     await session.page.waitForTimeout(350); session.history.push({ operation, selector: payload.selector, timestamp: new Date().toISOString() }); return checkpoint(session);
   }
   const server = http.createServer(async (req, res) => {

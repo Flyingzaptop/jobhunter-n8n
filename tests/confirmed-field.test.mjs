@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {confirmedFieldMatches} from '../services/core/confirmed-field.mjs';
+import {confirmedFieldMatches,confirmedConsentScopeMatches} from '../services/core/confirmed-field.mjs';
 test('only a current explicitly answered field can skip repeat questions, never a site default',()=>{
  const field={selector:'#work',label:'Work Authorization',type:'select-one',value:'authorized'};
  const view={fingerprint:'current'};
@@ -19,6 +19,8 @@ test('same scoped consent survives unrelated upload UI changes but not a changed
  const context={profile_hash:'profile',job_country:'PL',cv_sha256:'approved-pdf'},field={selector:'#terms',label:'Regulation',type:'checkbox',value:'on',checked:true,required:true,form_action:'https://fixture.invalid/apply'};
  const view={fingerprint:'after-upload',url:field.form_action},confirmed={...field,question_id:'answer',question_type:'CONSENT',fingerprint:'before-upload',page_url:view.url,context};
  assert.equal(confirmedFieldMatches(field,view,confirmed,context),true);
+ assert.equal(confirmedConsentScopeMatches({...field,checked:false,value:'0'},view,confirmed,context),true);
+ assert.equal(confirmedConsentScopeMatches({...field,checked:false},view,confirmed,{...context,cv_sha256:'other'}),false);
  assert.equal(confirmedFieldMatches(field,view,confirmed,{...context,cv_sha256:'different-pdf'}),false);
  assert.equal(confirmedFieldMatches(field,{...view,fingerprint:confirmed.fingerprint},confirmed,{...context,cv_sha256:'different-pdf'}),false);
  assert.equal(confirmedFieldMatches(field,view,confirmed,{...context,job_country:'DE'}),false);

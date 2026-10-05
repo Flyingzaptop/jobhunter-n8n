@@ -91,7 +91,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- let nextModel='fit',proseTurn=false,scheduleLoaded=false;const states={};
+ let nextModel='fit',proseTurn=false,scheduleLoaded=false,proseBurst=0;const states={};
  const saveSchedule=async()=>{if(store.saveModelSchedule)await store.saveModelSchedule({nextModel,proseTurn});};
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
@@ -112,7 +112,8 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='model'){
     if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
     if(!scheduleLoaded){if(store.loadModelSchedule)({nextModel,proseTurn}=await store.loadModelSchedule());scheduleLoaded=true;}
-    if(prose&&proseTurn){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
+    if(prose&&(proseTurn||proseBurst<2)){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){proseBurst++;states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
+    proseBurst=0;
     const candidates=await store.cvCandidates(profile,policy);
     const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
      if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context)))return true;}return false;};
@@ -134,7 +135,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  async function laneLoop(lane,signal){const release=await store.acquireLane(lane);if(!release)return;
   try{while(!signal.aborted){await tick(lane);if(signal.aborted)break;
    await new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
-    const delay=lane==='model'?Math.min(intervalMs,1000):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
+    const delay=lane==='model'?Math.min(intervalMs,100):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
     const timer=setTimeout(done,delay);signal.addEventListener('abort',done,{once:true});});}
   }finally{await release();}}
  const lanes=['ingestion','screening','model','preparation-1','preparation-2','notifications'];

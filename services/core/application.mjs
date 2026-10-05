@@ -6,7 +6,7 @@ import { browserConfig } from '../browser-service/server.mjs';
 import {persistPendingApplicationQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 import {settleApplicationForm} from './form-settling.mjs';
-import {confirmedFieldMatches} from './confirmed-field.mjs';
+import {confirmedFieldMatches,confirmedConsentScopeMatches} from './confirmed-field.mjs';
 import {enqueueCaptchaHandoff} from './captcha-handoff.mjs';
 import {currentPreparationPolicy} from './preparation-policy.mjs';
 import YAML from 'yaml';
@@ -186,7 +186,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);
       view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
-    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
+    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
     view=initialScope.view;
@@ -236,6 +236,11 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
       fieldsToFill.sort((a,b)=>Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
+        const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
+        if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
+          view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
+          await repository.event('application',application.application_id,'CONFIRMED_CONSENT_RESTORED',{question_id:previouslyConfirmed.question_id});continue;
+        }
         if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector],acknowledgementContext(view,job,profile,cv)))continue;
         if(field.type==='file'){
           const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
@@ -282,7 +287,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(final){
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
-        const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL',[application.application_id])).rows[0].n;
+        const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL AND closed_at IS NULL',[application.application_id])).rows[0].n;
         const review=finalReviewEvidence({view,profile,job,cv,outstanding});
         if(!review.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED',final_review:review});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
         await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{final_review:review}]);
