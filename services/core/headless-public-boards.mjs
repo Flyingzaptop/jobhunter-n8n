@@ -26,6 +26,9 @@ export function challengeState({status,title,text,captchaVisible=false}){
   if(status>=400)return'HTTP_ERROR';
   return null;
 }
+export function definitiveClosedDetail({status,challenge}){
+ return [404,410].includes(status)&&challenge!=='CHALLENGE_OR_CAPTCHA';
+}
 export function publicBrowserRequestAllowed(url,method){
   if(!['GET','HEAD'].includes(method))return false;
   const parsed=new URL(url);const path=parsed.pathname;
@@ -85,7 +88,8 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
           const detail={url:job.url,status:'UNKNOWN'};try{
             const detailResponse=await page.goto(job.url,{waitUntil:'domcontentloaded',timeout:navigationTimeoutMs});
             const detailState=await inspectPage(page,detailResponse);Object.assign(detail,{http_status:detailState.status,status:detailState.challenge??'PUBLIC_DETAIL_READABLE',title:detailState.title});
-            if(!detailState.challenge){
+            if(definitiveClosedDetail(detailState))detail.status='CONFIRMED_CLOSED';
+            else if(!detailState.challenge){
               const html=await page.content();detail.job_postings=extractJobPostings(html);
               if(name==='pracuj'&&detail.job_postings.length===1){
                 const badges=await page.locator('[data-test="offer-badge-title"]').allTextContents();

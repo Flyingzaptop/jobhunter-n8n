@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {boardVacancyLinks,challengeState,publicBrowserRequestAllowed} from '../scripts/headless-board-probe.mjs';
+import {definitiveClosedDetail} from '../services/core/headless-public-boards.mjs';
+
+test('only explicit missing or gone details end retries; denial and disguised CAPTCHA remain unresolved',()=>{
+ for(const status of [404,410]){
+  assert.equal(definitiveClosedDetail({status,challenge:'HTTP_ERROR'}),true);
+  assert.equal(definitiveClosedDetail({status,challenge:'CHALLENGE_OR_CAPTCHA'}),false);
+ }
+ for(const status of [200,401,403,429,500,null])assert.equal(definitiveClosedDetail({status}),false);
+});
 
 test('board links require exact public platform host and vacancy path, dedupe and discard tracking',()=>{
  const links=[{href:'https://www.pracuj.pl/praca/mechanical-engineer-wroclaw,oferta,1001234567?utm_source=x',text:'Mechanical engineer'},

@@ -221,7 +221,7 @@ export async function verifyPublicBoardPosting({source,url,fetchOptions={}}){
     if(robots&&(!robotsAllows(robots,url)||!robotsAllows(robots,source.url)))throw new Error('ROBOTS_ACCESS_BLOCKED');
     const report=await probeHeadlessBoards({names:[source.board_key??source.name],maxDetails:1,exactJobUrl:url,allowUrl:input=>!robots||robotsAllows(robots,input)});
     const board=report.sources[0];const detail=board.details[0];
-    if(detail?.http_status===404)return{status:'CLOSED',reason:'PUBLIC_BOARD_POSTING_NOT_FOUND',method:'PUBLIC_BOARD_POSTING_NOT_FOUND'};
+    if([404,410].includes(detail?.http_status)&&detail?.status!=='CHALLENGE_OR_CAPTCHA')return{status:'CLOSED',reason:'PUBLIC_BOARD_POSTING_NOT_FOUND',method:'PUBLIC_BOARD_POSTING_NOT_FOUND'};
     if(board.status!=='PUBLIC_PAGE_READABLE'||detail?.status!=='PUBLIC_DETAIL_READABLE')return{status:'UNKNOWN',reason:detail?.status??board.status};
     return verifyPublicBoardPayload({source,url,postings:detail.job_postings});
   }
@@ -472,6 +472,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
           if(board.status!=='PUBLIC_PAGE_READABLE') throw new Error('HEADLESS_PUBLIC_LISTING_UNAVAILABLE');
           for(const detail of board.details) {
             if(robots&&!robotsAllows(robots,detail.url)) throw new Error('ROBOTS_ACCESS_BLOCKED');
+            if(detail.status==='CONFIRMED_CLOSED'){metrics.closed_details=(metrics.closed_details??0)+1;continue;}
             if(detail.status!=='PUBLIC_DETAIL_READABLE'||detail.structured_job_count!==1){metrics.normalization_errors.push({source_url:detail.url,error:detail.status});continue;}
             const records=parseSourcePayload({...source,adapter:'json'},{jobs:detail.job_postings.map(item=>({...item,url:item.url??detail.url}))},detail.url)
               .map(raw=>({...raw,adapter:source.adapter}));
