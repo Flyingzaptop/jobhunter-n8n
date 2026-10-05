@@ -5,4 +5,4 @@ export function missingRequiredFields(fields=[]){
   f.type==='checkbox'?!f.checked:Boolean(f.validation_message||!String(f.value??'').trim())
  ));
 }
-export function unsavedRequiredFields(fields=[]){return fields.filter(f=>f.visible&&f.required&&!f.disabled&&f.type!=='file'&&(f.type!=='radio'||f.checked)&&f.server_saved===false);}
+export function unsavedRequiredFields(fields=[]){return fields.filter(f=>f.visible&&f.required&&!f.disabled&&(f.type!=='radio'||f.checked)&&f.server_saved===false);}

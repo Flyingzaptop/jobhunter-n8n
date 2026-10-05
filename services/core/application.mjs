@@ -242,7 +242,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});try{await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});}catch{await repository.event('application',application.application_id,'CAPTCHA_HANDOFF_PERSIST_FAILED',{reason:'DURABLE_HANDOFF_REQUIRED'});}return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
-      fieldsToFill.sort((a,b)=>Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
+      fieldsToFill.sort((a,b)=>Number(a.type==='file')-Number(b.type==='file')||Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
         if(!field.required&&field.type!=='file'&&!resolveField(field,{profile,job,answerMemory}))continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
@@ -253,7 +253,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector],acknowledgementContext(view,job,profile,cv)))continue;
         if(field.type==='file'){
           const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
-          if(field.value&&(praca?confirmed:view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256)))continue;
+          if(field.value&&field.server_saved!==false&&(praca?confirmed:view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256)))continue;
           const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);
           if(!field.required&&!resume)continue;
           if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}
@@ -290,7 +290,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);
       const saveDeadline=Date.now()+5000;
-      while(view.fields.some(f=>f.visible&&f.required&&f.type!=='file'&&(f.type!=='radio'||f.checked)&&f.server_saved===false)&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
+      while(unsavedRequiredFields(view.fields).length&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}

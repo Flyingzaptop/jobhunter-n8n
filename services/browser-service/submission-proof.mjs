@@ -12,3 +12,9 @@ export function submissionPageSucceeded(view){
  return !(view.validation_errors??[]).length&&!(view.fields??[]).some(f=>f.visible&&f.required)
   && /thank you for (?:your |applying|submitting)|application (?:has been |was )?(?:successfully )?(?:submitted|received)|dziękujemy za (?:aplikację|zgłoszenie)|twoja aplikacja.*(?:wysłana|otrzymana)/i.test(view.text??'');
 }
+export function ashbySuccessPage(view,expectedUrl){
+ let url,expected;try{url=new URL(view.url);expected=new URL(expectedUrl);}catch{return false;}
+ return url.origin==='https://jobs.ashbyhq.com'&&url.href===expected.href&&/^\/[\w-]+\/[a-f0-9-]{36}\/application\/?$/i.test(url.pathname)
+  && submissionPageSucceeded(view)&&/\bSuccess\s+Thank you\s*[—-]\s*your application was successfully submitted\./i.test(view.text??'')
+  && !(view.buttons??[]).some(b=>b.visible!==false&&/submit application/i.test(b.text??''));
+}

@@ -19,7 +19,7 @@ import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,reviewedAshbyFieldSave,bindAshbyStorageUpload,reviewedAshbyStoragePost,restoreOmittedMultipartPdf,chooseCombobox} from './ashby-preparation.mjs';
 import {gunzipSync,brotliDecompressSync,inflateSync} from 'node:zlib';
 import {ashbyFormFields,ashbyFieldSaved} from './ashby-form-evidence.mjs';
-import {explicitSubmissionReceipt,submissionPageSucceeded} from './submission-proof.mjs';
+import {explicitSubmissionReceipt,submissionPageSucceeded,ashbySuccessPage} from './submission-proof.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from './required-fields.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -90,9 +90,9 @@ export async function createBrowserService(config = browserConfig()) {
           session.ashbyDefinitions??=new Set();for(const form of [job?.applicationForm,...(job?.surveyForms??[])])if(typeof form?.sourceFormDefinitionId==='string')session.ashbyDefinitions.add(form.sourceFormDefinitionId);
           session.ashbySchema=ashbyFormFields(job?.applicationForm);
         }catch{/* Only observed public form definitions can authorize an attachment. */}}
-        if(request.url().includes('op=ApiSetFormValue')&&reply.status===200){try{
+        if(/op=ApiSetFormValue(?:ToFile)?$/.test(request.url())&&reply.status===200){try{
           let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);
-          const response=JSON.parse(bytes.toString('utf8')),form=response.data?.setFormValue;
+          const response=JSON.parse(bytes.toString('utf8')),form=response.data?.setFormValue??response.data?.setFormValueToFile;
           if(!response.errors&&form){session.ashbySaved=ashbyFormFields(form);session.ashbyFormErrors=(form.formErrors??[]).map(e=>e.message).filter(Boolean);}
         }catch{/* A missing acknowledgement never establishes saved fields. */}}
         if(uploadInit&&reply.status>=200&&reply.status<300){let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);
@@ -125,7 +125,7 @@ export async function createBrowserService(config = browserConfig()) {
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
     if(atsAdapterFor(result.url)==='ashby'){
-      for(const field of result.fields){const schema=session.ashbySchema?.get(field.field_path);if(schema){field.required=schema.required;field.required_source='ATS_SCHEMA';if(field.type!=='file')field.server_saved=ashbyFieldSaved(field,session.ashbySaved?.get(field.field_path));}}
+      for(const field of result.fields){const schema=session.ashbySchema?.get(field.field_path);if(schema){field.required=schema.required;field.required_source='ATS_SCHEMA';const saved=session.ashbySaved?.get(field.field_path);field.server_saved=ashbyFieldSaved(field,saved);if(field.type==='file'){field.server_saved=field.server_saved&&session.uploads.some(upload=>upload.receipt_id==='ashby-file:'+hash(saved.value.id)&&upload.filename===saved.value.filename);field.value=field.server_saved?saved.value.filename:'';}}}
       result.validation_errors=[...new Set([...result.validation_errors,...(session.ashbyFormErrors??[])])];
     }
     const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
@@ -147,6 +147,12 @@ export async function createBrowserService(config = browserConfig()) {
     else if(operation==='human-captcha-completion')return inspectHumanCaptchaCompletion(session,config);
     else if(operation==='captcha-observation')return observePendingCaptcha(session.page,config);
     else if(operation==='observe-image'){const mask=session.page.frames().map(frame=>frame.locator('input[type=password],input[autocomplete=one-time-code],input[name*=token i],input[name*=otp i],input[name*=totp i],input[name*=authentication_code i]'));const png=await session.page.screenshot({fullPage:false,mask,maskColor:'#18212a'});return {png_base64:png.toString('base64'),captured_at:new Date().toISOString(),persisted:false};}
+    else if(operation==='reconcile-submit'){
+      const view=await snapshot(session);if(!session.submit_attempted||!session.history.some(a=>a.operation==='submit_intent')||!ashbySuccessPage(view,payload.expected_url))return {...view,status:'SUBMISSION_UNKNOWN'};
+      const screenshotPath=path.join(config.stateRoot,`${session.id}-submit-${Date.now()}.png`);await session.page.screenshot({path:screenshotPath,fullPage:true});
+      const id='ashby-success:'+hash(await fs.readFile(screenshotPath));session.submission_confirmation={confirmation_id:id,timestamp:new Date().toISOString(),evidence:'ATS_SUCCESS_PAGE_AND_SCREENSHOT'};
+      await checkpoint(session);return {status:'SUBMITTED',confirmation_id:id,confirmation_evidence:'ATS_SUCCESS_PAGE_AND_SCREENSHOT',screenshot_path:screenshotPath};
+    }
     else {
       if(['fill','select','check','upload'].includes(operation))await dismissPracaUploadError(session.page);
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);
@@ -228,6 +234,7 @@ export async function createBrowserService(config = browserConfig()) {
         const afterView = await snapshot(session);
         if (networkConfirmation && (afterView.confirmation_id === networkConfirmation.confirmation_id||submissionPageSucceeded(afterView))) session.submission_confirmation = { confirmation_id: networkConfirmation.confirmation_id, timestamp: new Date().toISOString(), evidence: 'NETWORK_AND_PAGE' };
         const screenshotPath=path.join(config.stateRoot,`${session.id}-submit-${Date.now()}.png`);await session.page.screenshot({path:screenshotPath,fullPage:true});session.history.push({operation:'submit_result',timestamp:new Date().toISOString(),screenshot_path:screenshotPath,validation_errors:afterView.validation_errors,email:before.fields.filter(f=>f.visible&&(/email|e-mail/i.test(f.label)||f.type==='email')).map(f=>f.value)});
+        if(!session.submission_confirmation&&ashbySuccessPage(afterView,before.url))session.submission_confirmation={confirmation_id:'ashby-success:'+hash(await fs.readFile(screenshotPath)),timestamp:new Date().toISOString(),evidence:'ATS_SUCCESS_PAGE_AND_SCREENSHOT'};
         const after = await checkpoint(session); return { ...after, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null,screenshot_path:screenshotPath,validation_errors:afterView.validation_errors };
       } else throw new Error('UNKNOWN_OPERATION');
     }

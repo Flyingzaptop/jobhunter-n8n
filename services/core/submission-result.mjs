@@ -1,6 +1,6 @@
 export function confirmedSubmissionResult(result) {
  const confirmed=result?.status==='SUBMITTED' && typeof result.confirmation_id==='string'
-  && result.confirmation_id.trim().length>0 && result.confirmation_evidence==='NETWORK_AND_PAGE';
+  && result.confirmation_id.trim().length>0 && (result.confirmation_evidence==='NETWORK_AND_PAGE'||result.confirmation_evidence==='ATS_SUCCESS_PAGE_AND_SCREENSHOT'&&typeof result.screenshot_path==='string'&&result.confirmation_id.startsWith('ashby-success:'));
  return {
   status:confirmed?'SUBMITTED':'SUBMISSION_UNKNOWN',
   confirmation_id:confirmed?result.confirmation_id:null,
