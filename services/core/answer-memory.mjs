@@ -24,7 +24,7 @@ export function answerIntent(field,{country,roleContext,employmentType}={}){
  return {key,scope};
 }
 export async function rememberQuestionAnswer(client,{question,application,answer,source}){
- const job=(await client.query('SELECT country,title,employment_type,metadata FROM jobs WHERE job_id=$1',[application.job_id])).rows[0];
+ const job=(await client.query("SELECT country,title,metadata->>'employment_type' AS employment_type,metadata FROM jobs WHERE job_id=$1",[application.job_id])).rows[0];
  const pending=application.last_state?.pending_question??{};
  const intent=answerIntent({...pending,label:question.raw_question},{country:job?.country,roleContext:job?.metadata?.role_family??job?.title??application.job_id,employmentType:job?.employment_type});
  if(!intent)return null;
