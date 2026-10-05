@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {acceptQuestionAnswerWithClient} from './hitl.mjs';
 import {acceptCaptchaTelegramReply,acceptCaptchaTransportReply} from './captcha-telegram.mjs';
+import {acceptTelegramSubmit,escapeTelegram} from './telegram-applications.mjs';
 const updateId = value => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid Telegram update ID');
   return value;
@@ -11,7 +12,7 @@ const rejectionCodes = new Map([
   ['Unknown or already answered question', 'UNKNOWN_OR_ANSWERED_QUESTION'], ['Invalid Telegram message', 'INVALID_MESSAGE'],
 ]);
 const needsDispatch = accepted => Boolean(accepted.application_id || accepted.command);
-const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome','captcha_handoff_id','verify_requested','transport_request_id','transport_valid']
+const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome','captcha_handoff_id','verify_requested','transport_request_id','transport_valid','approval_id','binding_digest','idempotency_key']
   .filter(key => accepted[key] !== undefined).map(key => [key, accepted[key]]));
 
 export async function getTelegramPollingCursor(repo) {
@@ -60,15 +61,17 @@ export class Telegram {
   async send(text) {
     return this.call("sendMessage", { text });
   }
+  async sendHtml(text){return this.call('sendMessage',{text,parse_mode:'HTML',link_preview_options:{is_disabled:true}});}
   async request(repo, applicationId, text) {
     const previous=(await repo.pool.query(`SELECT q.* FROM application_questions q JOIN applications a USING(application_id) WHERE q.application_id=$1 AND q.raw_question=$2 AND q.answered_at IS NULL AND q.telegram_request_id::text=a.last_state->'pending_question'->>'request_id'`,[applicationId,text])).rows[0];
     let requestId=previous?.telegram_request_id??randomUUID(),questionId=previous?.question_id??randomUUID();
     if(previous?.telegram_message_id)return requestId;
     if(!previous)await repo.pool.query(`WITH persisted AS (INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id,telegram_chat_id) VALUES($1,$2,$3,$3,$4,$5) RETURNING telegram_request_id) UPDATE applications SET last_state=last_state || jsonb_build_object('pending_question',COALESCE(last_state->'pending_question','{}'::jsonb)||jsonb_build_object('request_id',(SELECT telegram_request_id::text FROM persisted))) WHERE application_id=$2`,[questionId,applicationId,text,requestId,this.chatId]);
     let message;
-    try{message = await this.send(
-      `Need your answer\nApplication: ${applicationId}\nRequest: ${requestId}\n\n${text}\nReply to this message.`,
-    );}catch(error){
+    try{
+      const context=(await repo.pool.query('SELECT j.title,j.company,j.location FROM applications a JOIN jobs j USING(job_id) WHERE a.application_id=$1',[applicationId])).rows[0];
+      message = await this.sendHtml(`<b>НУЖНО ТВОЁ РЕШЕНИЕ</b>\n\n<b>${escapeTelegram(context?.title??'Заявка')}</b>\n${escapeTelegram(context?.company??'')} · ${escapeTelegram(context?.location??'')}\n\n<b>Что требуется</b>\n${escapeTelegram(text)}\n\n<b>Твоё действие</b>\nОтветь на это сообщение. Для обязательного согласия: <b>ДА</b> или <b>НЕТ</b>.\nФинальная отправка подтверждается отдельно.\n\n<code>Заявка ${applicationId.slice(0,8)}</code>`);
+    }catch(error){
       await repo.event('application',applicationId,'HITL_NOTIFICATION_FAILED',{question_id:questionId,request_id:requestId,reason:this.token&&this.chatId?'DELIVERY_FAILED':'TELEGRAM_NOT_CONFIGURED'});
       return requestId;
     }
@@ -84,6 +87,7 @@ export class Telegram {
       throw new Error("Unauthorized Telegram chat");
     const text = message.text ?? "";
     if (typeof text !== 'string' || text.length > 4096) throw new Error('Invalid Telegram message');
+    if(/^ОТПРАВИТЬ$/iu.test(text.trim()))return acceptTelegramSubmit(repo,message,this.chatId);
     if (text === "/pause" || text === "/resume") {
       await repo.pool.query(
         "UPDATE runtime_control SET paused=$1,updated_at=now() WHERE id=true",
@@ -154,7 +158,7 @@ export class Telegram {
       let accepted; let outcome = 'ACCEPTED'; let errorCode = null;
       try { accepted = await this.accept(transactional, update); }
       catch (error) {
-        errorCode = rejectionCodes.get(error.message)??(error.code&&/^(?:INVALID_USER_ANSWER|QUESTION_|APPLICATION_NOT_WAITING|SECURITY_QUESTION|CAPTCHA_REPLY_|CAPTCHA_TRANSPORT_)/.test(error.code)?error.code:null);
+        errorCode = rejectionCodes.get(error.message)??(error.code&&/^(?:INVALID_USER_ANSWER|QUESTION_|APPLICATION_NOT_WAITING|SECURITY_QUESTION|CAPTCHA_REPLY_|CAPTCHA_TRANSPORT_|TELEGRAM_SUBMIT_)/.test(error.code)?error.code:null);
         if (!errorCode) throw error;
         accepted = {}; outcome = 'REJECTED';
       }

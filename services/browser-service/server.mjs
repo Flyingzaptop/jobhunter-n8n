@@ -14,6 +14,7 @@ import {verifySubmitCapability} from './submit-capability.mjs';
 import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from './preparation-network.mjs';
 import {selectedCookieButton} from '../core/form-settling.mjs';
 import {dismissPracaCookies,dismissPracaUploadError} from './praca-cookies.mjs';
+import {setCheckedControl} from './check-control.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -136,7 +137,7 @@ export async function createBrowserService(config = browserConfig()) {
           if (consent.consent_type === 'TRUTH_ATTESTATION' && payload.verified_facts !== true && payload.approval !== 'USER_CONFIRMED') throw new Error('TRUTH_ATTESTATION_REQUIRES_VERIFIED_FACTS');
           session.history.push({ ...consent, application_id: session.application_id, timestamp: new Date().toISOString(), user_confirmed: payload.approval === 'USER_CONFIRMED' });
         }
-        await locator.setChecked(payload.checked !== false); session.filled_fields[payload.selector] = payload.checked !== false;
+        await setCheckedControl(session.page,locator,payload.checked !== false); session.filled_fields[payload.selector] = payload.checked !== false;
       }
       else if (operation === 'upload') {
         if (field.type !== 'file' || field.disabled) throw new Error('NOT_UPLOAD_FIELD');

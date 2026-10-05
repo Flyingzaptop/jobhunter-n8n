@@ -17,9 +17,10 @@ const reviewUrl=()=>{
  if(!['http:','https:'].includes(base.protocol)||base.username||base.password)throw new Error('DOCUMENT_REVIEW_URL_INVALID');
  return new URL('/#human-review',base.origin).href;
 };
-export function registeredCvCaption(job,url){
+export function registeredCvCaption(job,url,analysis={}){
  const clean=value=>String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,180);
- return `Готовое CV\n${clean(job.company)} — ${clean(job.title)}\nВакансия ${String(job.job_id).slice(0,8)}\nПроверить: ${url}`.slice(0,1024);
+ const matches=(analysis.requirements??[]).filter(r=>['YES','PARTIAL'].includes(r.match)).slice(0,2).map(r=>clean(r.requirement??r.source_quote).slice(0,70));
+ return `Готовое CV для конкретной вакансии · заявка ещё не отправлена\n${clean(job.company).slice(0,70)} — ${clean(job.title).slice(0,120)}\n${clean(job.location).slice(0,60)} · ${clean(job.work_mode).slice(0,30)}\nFit: ${analysis.overall_fit??'не оценено'}/100 · ${analysis.decision??'ожидается'}\nПодходит: ${matches.join('; ')||'см. оценку'}\nОписание: ${clean(job.description_text).slice(0,180)}\nВакансия ${String(job.job_id).slice(0,8)}\nПроверить: ${url}`.slice(0,1024);
 }
 async function currentEvidence(repo,cvId){
  const cv=(await repo.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[cvId])).rows[0];
@@ -98,7 +99,7 @@ export async function drainRegisteredCvDocuments({repo,profile,telegram,limit=3}
   const evidence=await currentEvidence(repo,row.cv_id);const verification=await verifyCurrentCvEvidence({...evidence,profile});
   if(!verification.pass||evidence.cv.sha256!==row.pdf_sha256){results.push(await finish(repo,row,'STALE',{error:safeCode(verification.reasons?.[0]??'CV_BYTES_CHANGED')}));continue;}
   let bytes;try{bytes=await approvedBytes(evidence.cv);}catch(error){results.push(await finish(repo,row,'BLOCKED',{error:safeCode(error.message)}));continue;}
-  let caption;try{caption=registeredCvCaption(evidence.job,reviewUrl());}catch{results.push(await finish(repo,row,'BLOCKED',{error:'DOCUMENT_REVIEW_URL_INVALID'}));continue;}
+  let caption;try{caption=registeredCvCaption(evidence.job,reviewUrl(),evidence.analysis);}catch{results.push(await finish(repo,row,'BLOCKED',{error:'DOCUMENT_REVIEW_URL_INVALID'}));continue;}
   const form=new FormData();form.set('chat_id',String(telegram.chatId));form.set('caption',caption);
   form.set('document',new Blob([bytes],{type:'application/pdf'}),`CV-${String(evidence.job.job_id).slice(0,8)}.pdf`);
   const sending=(await repo.pool.query("UPDATE telegram_document_deliveries SET status='SENDING',telegram_chat_id=$3,sending_at=now(),attempt_count=attempt_count+1,updated_at=now() WHERE delivery_id=$1 AND claim_token=$2 AND status='CLAIMED' RETURNING delivery_id",[row.delivery_id,row.claim_token,String(telegram.chatId)])).rows[0];

@@ -163,10 +163,10 @@ export async function createProductionContinuousWorker({repository,configDir='co
   prepare:async(jobId,cvId,context)=>{await ensureCurrent(context);return createControlledPreparation({repository,jobId,cvId,profile:context.profile,policy:context.policy});},
   apply:async(jobId,applicationId,context)=>{await ensureCurrent(context);return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
    config:{...config,dryRun:true,allowRealSubmit:false}});},
-  notify:async({profile})=>{const {enqueueRegisteredCvDocuments,drainRegisteredCvDocuments}=await import('./document-delivery.mjs');
+  notify:async({profile})=>{
+   const {sendReadyApplications}=await import('./telegram-applications.mjs');
    const results=await Promise.allSettled([drainCaptchaHandoffs({repository,browser,telegram}),
-    (async()=>{await enqueueRegisteredCvDocuments({repo:repository,profile,since:workerStartedAt});
-     return drainRegisteredCvDocuments({repo:repository,profile,telegram});})()]);
+    sendReadyApplications({repository,profile,browser,telegram})]);
    if(results.some(result=>result.status==='rejected'))throw new Error('NOTIFICATION_LANE_PARTIAL_FAILURE');
    return results.map(result=>result.value);},
   onError:event=>console.error(JSON.stringify({event:'CONTINUOUS_LANE_RETRY',...event}))});

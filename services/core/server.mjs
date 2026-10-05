@@ -252,6 +252,11 @@ export function createCore({
   }
   const telegramService=telegramAdapter??telegram;
   async function dispatchTelegram(accepted){
+    if(accepted.command==='/confirm_submit'){
+      const profile=await load(`${configDir}/candidate_profile.yaml`);
+      const {dispatchTelegramSubmit}=await import('./telegram-applications.mjs');
+      return dispatchTelegramSubmit({repository,profile,browser:browserClient??new BrowserClient(),telegram:telegramService,accepted});
+    }
     if(accepted.captcha_handoff_id){const profile=await load(testProfilePath??`${configDir}/candidate_profile.yaml`);return dispatchCaptchaTelegramReply({repository,browser:browserClient??new BrowserClient(),telegram:telegramService,accepted,profileId:profile.profile_id});}
     if(accepted.command==='/captcha_queue'||accepted.command==='/start'){const profile=await load(testProfilePath??`${configDir}/candidate_profile.yaml`);return sendCaptchaQueue(repository,telegramService,{profileId:profile.profile_id});}
     if(accepted.command==='/captcha_transport_reply'){await telegramService.send(`[TRANSPORT_TEST] Request ${accepted.transport_request_id.slice(0,8)}: ${accepted.transport_valid?'your photo reply matched its code.':'that code does not match this photo. Please reply to the correct photo and try again.'} No real CAPTCHA was verified and no application changed.`);return {scope:'TRANSPORT_TEST',code_valid:accepted.transport_valid};}
@@ -261,12 +266,14 @@ export function createCore({
       if(accepted.question_id){const dispatched=await dispatchQuestionAnswer(repository,accepted.question_id,()=>resumeAnsweredApplication(accepted.application_id));return dispatched.result??dispatched;}
       return resumeAnsweredApplication(accepted.application_id);
     }
-    if(accepted.command==='/summary')return stage(6);
+    if(accepted.command==='/summary')accepted={...accepted,command:'/status'};
     if(accepted.command==='/weekly')return stage(6,{weekly:true});
     if(accepted.command==='/status'){
+      const {searchCounts,countsHtml}=await import('./telegram-applications.mjs');
+      const profile=await load(`${configDir}/candidate_profile.yaml`);
       const rows=(await repository.pool.query('SELECT status,count(*)::int AS count FROM applications GROUP BY status')).rows;
       const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
-      await telegramService.send(`JobHunter status\nPaused: ${Boolean(paused)}\n${rows.map(r=>`${r.status}: ${r.count}`).join('\n')}`);
+      await telegramService.sendHtml(`${countsHtml(await searchCounts(repository,profile))}\n\nПоиск: ${paused?'приостановлен':'работает'}`);
       return {paused:Boolean(paused),statuses:rows};
     }
     if(['/pause','/resume'].includes(accepted.command))await telegramService.send(accepted.command==='/pause'?'JobHunter paused. Saved application state is retained.':'JobHunter resumed. Queue processing is enabled.');

@@ -1,12 +1,13 @@
 import {randomUUID} from 'node:crypto';
 import {consumeApplicationReview,digest,formBinding} from '../dashboard/review-gates.mjs';
 import {issueSubmitCapability} from '../browser-service/submit-capability.mjs';
-import {productionGateStatus} from './production-gate.mjs';
+import {assertControlledApplicationReady} from './controlled-submit-gate.mjs';
 import {transition} from './state.mjs';
 import {hitlError} from './hitl.mjs';
 import {confirmedSubmissionResult} from './submission-result.mjs';
 import {finalSubmitLabel} from '../browser-service/ats-adapters.mjs';
-export async function executeConfirmedSubmit({repository,applicationId,approvalId,bindingDigest,idempotencyKey,profile,browser,secret=process.env.BROWSER_SERVICE_TOKEN}){
+export async function executeConfirmedSubmit({repository,applicationId,approvalId,bindingDigest,idempotencyKey,profile,browser,confirmationSource='USER_DASHBOARD',secret=process.env.BROWSER_SERVICE_TOKEN}){
+ if(!['USER_DASHBOARD','USER_TELEGRAM'].includes(confirmationSource))throw hitlError('INVALID_CONFIRMATION_SOURCE');
  for(const id of [applicationId,approvalId,idempotencyKey])if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id??''))throw hitlError('INVALID_SUBMIT_COMMAND',400);
  if(!/^[a-f0-9]{64}$/i.test(bindingDigest??''))throw hitlError('INVALID_SUBMIT_BINDING',400);
  const client=await repository.pool.connect();let locked=false,command;
@@ -19,7 +20,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   if(previous){if(previous.idempotency_key!==idempotencyKey||previous.approval_id!==approvalId||previous.binding_digest!==bindingDigest)throw hitlError('APPLICATION_ALREADY_HAS_SUBMIT_COMMAND');return {command_id:previous.command_id,status:previous.status,confirmation_id:previous.result_json?.confirmation_id??null,duplicate:true};}
   const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
   if(paused)throw hitlError('PAUSED');
-  const gate=await productionGateStatus({repository,profile});if(!gate.pass)throw hitlError('PRODUCTION_EVIDENCE_GATE_REQUIRED');
+  await assertControlledApplicationReady({repository,applicationId,profile});
   const review=(await repository.pool.query('SELECT * FROM application_review_gates WHERE approval_id=$1 AND application_id=$2 AND binding_digest=$3',[approvalId,applicationId,bindingDigest])).rows[0];
   if(!review||review.status!=='APPROVED'||review.candidate_profile_id!==profile.profile_id)throw hitlError('DASHBOARD_APPROVAL_REQUIRED');
   // Reserve durably before consuming the approval. A crash must leave an
@@ -30,7 +31,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   if(digest(formBinding(snapshot))!==review.digests?.form)throw hitlError('APPROVED_FORM_CHANGED_BEFORE_SUBMIT');
   const button=snapshot.buttons.find(b=>b.visible!==false&&!b.disabled&&(b.final_submit||finalSubmitLabel(b.text)));
   if(!button||snapshot.captcha||snapshot.validation_errors?.length)throw hitlError('FORM_NOT_READY');
-  const capability=issueSubmitCapability({secret,approvalId,applicationId,snapshot});
+  const capability=issueSubmitCapability({secret,approvalId,applicationId,snapshot,source:confirmationSource});
   await transition(repository,applicationId,'SUBMITTING',{confirmed_submit_command_id:command.command_id});
   await repository.pool.query("UPDATE confirmed_submit_commands SET status='SUBMITTING',updated_at=now() WHERE command_id=$1",[command.command_id]);
   const result=await browser.call(`/sessions/${sessionId}/submit`,{selector:button.selector,confirmation_capability:capability});
