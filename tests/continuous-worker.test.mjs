@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createContinuousWorker,ContinuousStore,cvWorkKey,eligibleAnalysis,currentTailoredCv} from '../services/core/continuous-worker.mjs';
+import {createContinuousWorker,ContinuousStore,cvWorkKey,eligibleAnalysis,eligibleCvAnalysis,currentTailoredCv} from '../services/core/continuous-worker.mjs';
 import {CV_V2_VERSION} from '../services/core/cv-v2.mjs';
 import {PROMPT_VERSION} from '../services/core/fit.mjs';
 import {canonicalAnalysisHash} from '../services/core/evidence-hash.mjs';
@@ -16,6 +16,14 @@ const job={job_id:'00000000-0000-0000-0000-000000000001',content_hash:'source-v1
 test('previous fit prompt receipts cannot authorize fresh CV or preparation',()=>{
  assert.equal(eligibleAnalysis(job,analysis,profile,policy),true);
  assert.equal(eligibleAnalysis(job,{...analysis,prompt_version:'fit-analysis-v3.2-polish-boundaries'},profile,policy),false);
+});
+test('CV may be drafted while work format remains unresolved, but form preparation still requires compatible location',()=>{
+ const uncertainJob={...job,work_mode:'UNKNOWN'};
+ const uncertainAnalysis={...analysis,work_format:{remote_allowed:false},employment_eligibility:{work_from_poland_allowed:true}};
+ assert.equal(eligibleCvAnalysis(uncertainJob,uncertainAnalysis,profile,policy),true);
+ assert.equal(eligibleAnalysis(uncertainJob,uncertainAnalysis,profile,policy),false);
+ assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,employment_eligibility:{work_from_poland_allowed:null}},profile,policy),false);
+ assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,hard_blockers:['NONLOCAL_PRESENCE']},profile,policy),false);
 });
 function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[];
  const store={status:async()=>{},paused:async()=>false,acquireLane:async()=>async()=>{},cvCandidates:async()=>[job],
