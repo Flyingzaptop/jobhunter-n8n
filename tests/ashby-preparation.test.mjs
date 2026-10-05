@@ -1,6 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';import {createHash} from 'node:crypto';
 import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,reviewedAshbyFieldSave,bindAshbyStorageUpload,reviewedAshbyStoragePost,restoreOmittedMultipartPdf} from '../services/browser-service/ashby-preparation.mjs';
 import {isModelAnswerable} from '../services/core/application-prose.mjs';import {resolveField} from '../services/core/application.mjs';
+import {matchingLocationSuggestions} from '../services/browser-service/ashby-preparation.mjs';
+test('city selection uses exact confirmed city and country, never a similar town',()=>{
+ const suggestion=(city,country)=>({name:`${city}, region, ${country}`,geoLocationPath:[{type:'Country',name:country,providerLocationId:'country'},{type:'City',name:city,providerLocationId:'city'}]});
+ const exact=suggestion('Wrocław','Poland');assert.deepEqual(matchingLocationSuggestions([exact,suggestion('Wrocławki','Poland'),suggestion('Wrocław','Germany')],'Wroclaw, Poland'),[exact]);
+ assert.equal(resolveField({type:'text',role:'combobox',label:'Location',description:'City, State, Country'},{profile:{candidate:{base_location:{city:'Wroclaw',country:'Poland'}}},job:{}}).value,'Wroclaw, Poland');
+ const variables={organizationHostedJobsPageName:'fixture',formRenderIdentifier:'render',path:'location',value:{text:exact.name,providerLocationId:'city'},formDefinitionIdentifier:'definition'};
+ const windows=new Map([['location',{url:'https://jobs.ashbyhq.com/fixture/job/application',form_render_id:'render',role:'combobox',value:'Wroclaw, Poland',expires_at:Date.now()+10000}]]),definitions=new Set(['definition']);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',variables),windows,definitions,suggestions:[exact]}),true);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',{...variables,value:{...variables.value,providerLocationId:'foreign'}}),windows,definitions,suggestions:[exact]}),false);
+});
 const specs=JSON.parse(readFileSync(new URL('../config/ats_preparation_queries.json',import.meta.url))).queries;
 const call=(name,variables)=>({url:'https://jobs.ashbyhq.com/api/non-user-graphql?op='+name,body:JSON.stringify({operationName:name,query:specs.find(s=>s.operation_name===name).query,variables})});
 test('radio save accepts only the selected DOM option in its bound field window',()=>{
@@ -8,8 +18,10 @@ test('radio save accepts only the selected DOM option in its bound field window'
  const windows=new Map([['source',{url:'https://jobs.ashbyhq.com/fixture/job/application',form_render_id:'render',type:'radio',value:true,label:'Job board',option_value:'option-123',expires_at:Date.now()+10000}]]),definitions=new Set(['definition']);
  assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',variables),windows,definitions}),true);
  assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',{...variables,value:'other-option'}),windows,definitions}),false);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',{...variables,value:'Job board '}),windows,definitions}),true);
+ assert.equal(reviewedAshbyFieldSave({...call('ApiSetFormValue',{...variables,value:'Job board referral'}),windows,definitions}),false);
 });
-test('only captured country autocomplete is a read; form mutations cannot piggyback',()=>{const read=call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['Country']});assert.equal(reviewedAshbyGeoRead(read),true);assert.equal(reviewedAshbyGeoRead(call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['City']})),false);assert.equal(reviewedAshbyGeoRead({...read,body:read.body.replace('query Api','mutation Api')}),false);});
+test('only observed country and city autocomplete scopes are reads; form mutations cannot piggyback',()=>{const read=call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['Country']});assert.equal(reviewedAshbyGeoRead(read),true);assert.equal(reviewedAshbyGeoRead(call('ApiAutocompleteGeoLocation',{text:'Wroclaw',locationTypes:['Country','Region','City']})),true);assert.equal(reviewedAshbyGeoRead(call('ApiAutocompleteGeoLocation',{text:'Poland',locationTypes:['City']})),false);assert.equal(reviewedAshbyGeoRead({...read,body:read.body.replace('query Api','mutation Api')}),false);});
 test('upload initializer is scoped to this board, PDF name, size and a live window',()=>{const window={url:'https://jobs.ashbyhq.com/fixture/11111111-1111-1111-1111-111111111111/application',filename:'cv.pdf',byte_length:100,expires_at:Date.now()+10000};const input=call('ApiCreateFileUploadHandle',{organizationHostedJobsPageName:'fixture',fileUploadContext:'NonUserFormEngine',filename:'cv.pdf',contentType:'application/pdf',contentLength:100});assert.equal(reviewedAshbyUploadInit({...input,window}),true);assert.equal(reviewedAshbyUploadInit({...input,window:{...window,byte_length:101}}),false);assert.equal(reviewedAshbyUploadInit({...input,window:{...window,expires_at:0}}),false);});
 test('storage POST requires exact issued URL, signed fields and the approved PDF bytes',()=>{
  const pdf=Buffer.from('%PDF-1.4 exact fixture bytes'),window={sha256:createHash('sha256').update(pdf).digest('hex'),filename:'cv.pdf',expires_at:Date.now()+10000};

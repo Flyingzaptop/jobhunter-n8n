@@ -145,7 +145,7 @@ export async function createBrowserService(config = browserConfig()) {
       const locator = session.page.locator(payload.selector);
       if (operation === 'fill') { if (!field.visible || field.disabled || field.readOnly || ['hidden', 'file', 'checkbox', 'radio', 'submit','password'].includes(field.type)||field.autocomplete==='one-time-code') throw new Error('UNSAFE_FILL'); registerFieldWindow(); await locator.fill(String(payload.value)); session.filled_fields[payload.selector] = String(payload.value); }
       else if (operation === 'select') { if (!field.visible || !field.options) throw new Error('NOT_SELECT'); registerFieldWindow(); await locator.selectOption(payload.value); session.filled_fields[payload.selector] = payload.value; }
-      else if(operation==='choose'){if(!field.visible||field.role!=='combobox'||payload.verified_facts!==true)throw Error('VERIFIED_COMBOBOX_REQUIRED');registerFieldWindow();await chooseCombobox(session.page,locator,payload.value);session.filled_fields[payload.selector]=payload.value;}
+      else if(operation==='choose'){if(!field.visible||field.role!=='combobox'||payload.verified_facts!==true)throw Error('VERIFIED_COMBOBOX_REQUIRED');registerFieldWindow();await chooseCombobox(session.page,locator,payload.value,()=>session.ashbySuggestions??[]);session.filled_fields[payload.selector]=payload.value;}
       else if (operation === 'check') {
         if (!field.visible || !['checkbox', 'radio'].includes(field.type)) throw new Error('NOT_CHECKABLE');
         const consent = classifyConsent(field.label, field.required);
