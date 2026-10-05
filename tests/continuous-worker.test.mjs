@@ -140,5 +140,9 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
   await client.query('INSERT INTO job_analysis VALUES($1,$2,$3,now())',[randomUUID(),job.job_id,analysis]);
   const store=new ContinuousStore({pool:{query:(...args)=>client.query(...args)}});
   assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);
+  const better=randomUUID();await client.query("INSERT INTO jobs VALUES($1,$2,'OPEN',now(),$3,$4,$5)",[better,job.content_hash,job.location,job.country,job.work_mode]);
+  await client.query('INSERT INTO job_analysis VALUES($1,$2,$3,now())',[randomUUID(),better,{...analysis,overall_fit:85,application_priority:0}]);
+  assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[better,job.job_id]);
+  await client.query('UPDATE jobs SET content_hash=$2 WHERE job_id=$1',[better,'changed-offer']);assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);
  }finally{await client.query(`DROP SCHEMA ${schema} CASCADE`);client.release();await repo.close();}
 });

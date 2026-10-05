@@ -14,6 +14,7 @@ test('observed Ashby success page belongs to the exact attempted application and
  const url='https://jobs.ashbyhq.com/linear/820d0d5a-0930-475c-b494-23e18ad2aa68/application',view={url,text:'Success\n\nThank you — your application was successfully submitted.',fields:[],buttons:[],validation_errors:[]};
  assert.equal(ashbySuccessPage(view,url),true);assert.equal(ashbySuccessPage(view,url.replace('/linear/','/other/')),false);
  assert.equal(ashbySuccessPage({...view,buttons:[{visible:true,text:'Submit Application'}]},url),false);
+ const elevenUrl=url.replace('/linear/','/elevenlabs/');assert.equal(ashbySuccessPage({...view,url:elevenUrl,text:"Success\nThank you for applying to ElevenLabs! We'll be in touch via email shortly."},elevenUrl),true);
 });
 test('submission receipts cannot come from draft saves or validation failures',()=>{
  const payload={data:{submitForm:{success:true}}};

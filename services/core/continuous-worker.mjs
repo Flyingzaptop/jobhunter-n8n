@@ -1,6 +1,6 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
-import {CV_V2_VERSION} from './cv-v2.mjs';
+import {CV_V2_VERSION,compatibleCvTemplate} from './cv-v2.mjs';
 import {workFormatAnalysis,PROMPT_VERSION} from './fit.mjs';
 
 const digest=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
@@ -56,6 +56,7 @@ export class ContinuousStore {
   VALUES($1,$2,$3,$4,1) ON CONFLICT(lane) DO UPDATE SET owner_id=EXCLUDED.owner_id,state=EXCLUDED.state,outcome_code=EXCLUDED.outcome_code,
   ticks=continuous_worker_status.ticks+1,updated_at=now()`,[lane,this.ownerId,state,code&&safeCode(code)]);}
  async paused(){return (await this.repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused===true;}
+
  async cvCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,
   (SELECT coalesce(jsonb_agg(c.manifest_json),'[]'::jsonb) FROM cv_versions c WHERE c.job_id=j.job_id AND c.profile_version=$1) existing_cv_manifests FROM jobs j JOIN LATERAL
   (SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
@@ -66,14 +67,14 @@ export class ContinuousStore {
   AND a.analysis_json->>'policy_hash'=$2
   AND a.analysis_json->>'job_content_hash'=j.content_hash
   AND a.analysis_json->>'prompt_version'=$3
-  ORDER BY coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION])).rows;
+  ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION])).rows;
   return rows.filter(row=>eligibleCvAnalysis(row,row.analysis_json,profile,policy)&&!row.existing_cv_manifests.some(manifest=>
    currentTailoredCv(manifest,row,row.analysis_json)));}
  async preparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
   app.last_state FROM jobs j JOIN LATERAL (SELECT * FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
   JOIN cv_versions c ON c.job_id=j.job_id AND c.profile_version=$1 AND c.qa_json->>'pass'='true'
   AND c.manifest_json->>'application_eligible'='true' AND c.manifest_json->>'job_content_hash'=j.content_hash
-  AND c.template_version=$3 AND c.qa_json->'tailoring'->>'pass'='true'
+  AND c.template_version IN ($3,'cv-factory-v2.3-exact-vacancy') AND c.qa_json->'tailoring'->>'pass'='true'
   LEFT JOIN applications app ON app.job_id=j.job_id AND app.candidate_profile_id=$2
   WHERE j.availability_status='OPEN' AND a.decision IN('REVIEW','STRETCH','AUTO_APPLY') AND a.overall_fit>=45
   AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'job_content_hash'=j.content_hash
@@ -81,7 +82,7 @@ export class ContinuousStore {
   AND a.analysis_json->>'prompt_version'=$5
   AND (app.application_id IS NULL OR (app.status IN('QUEUED','OPENING','FILLING') AND app.dry_run=true))
   ORDER BY j.first_seen_at,c.created_at DESC LIMIT 100`,[digest(profile),profile.profile_id,CV_V2_VERSION,digest(policy),PROMPT_VERSION])).rows;
-  const seen=new Set();return rows.filter(row=>{if(seen.has(row.job_id)||!eligibleAnalysis(row,row.analysis_json,profile,policy)||!currentTailoredCv(row.cv_manifest_json,row,row.analysis_json))return false;seen.add(row.job_id);return true;});}
+  const seen=new Set();return rows.filter(row=>{const continuing=row.application_id&&compatibleCvTemplate(row.cv_manifest_json?.template_version)&&row.cv_manifest_json?.qa?.tailoring?.pass&&row.cv_manifest_json.job_content_hash===row.content_hash&&row.cv_manifest_json.analysis_hash===canonicalAnalysisHash(row.analysis_json);if(seen.has(row.job_id)||!eligibleAnalysis(row,row.analysis_json,profile,policy)||!currentTailoredCv(row.cv_manifest_json,row,row.analysis_json)&&!continuing)return false;seen.add(row.job_id);return true;});}
 }
 
 /** Independent lane ticks are injectable for deterministic scheduler tests. */
@@ -156,7 +157,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
   modelBusy:async()=>{const {localModelBusy}=await import('./model-busy.mjs');return localModelBusy(llm.model);},
   discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});return applyDeterministicHardRejects({repository,profile,policy});},
   prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
-  fit:({profile,policy})=>runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:1,maxRuntimeMs:llm.timeoutMs+60000,inferenceAuthorized:true}),
+  fit:({profile,policy})=>runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:8,maxRuntimeMs:120000,inferenceAuthorized:true}),
   cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId});
    if(manifest?.blocked_reason||manifest?.status!=='PASS')return manifest;
    await ensureCurrent(context);

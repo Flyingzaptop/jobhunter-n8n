@@ -1,6 +1,7 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {answerIntent,reusableQuestionAnswer} from '../services/core/answer-memory.mjs';
 test('personal GitHub profile links reuse across job countries without borrowing repository answers',()=>{const a=answerIntent({label:'Link to your Github profile'},{country:'PL'}),b=answerIntent({label:'Link to your Github profile'},{country:'DE'});assert.equal(a.key,'github_profile_url');assert.deepEqual(a,b);assert.equal(answerIntent({label:'Link to the GitHub repository for this project'}),null);});
+test('optional Github or personal website uses the same confirmed personal profile memory',()=>{assert.deepEqual(answerIntent({label:'Github or personal website'}),answerIntent({label:'Link to your Github profile'}));});
 
 test('salary memory separates explicit contracts and role context without inferring a contract from full time',()=>{
  const field={label:'Expected gross monthly salary in PLN B2B'};

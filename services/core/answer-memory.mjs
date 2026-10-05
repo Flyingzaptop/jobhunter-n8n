@@ -20,7 +20,7 @@ export function answerIntent(field,{country,roleContext,employmentType}={}){
  else if(/notice period|okres wypowiedzenia/.test(text+' '+name))key='notice_period';
  else if(/work authori|right to work|prawo do pracy/.test(text)){if(!jurisdiction)return null;key='work_authorization';scope.country=jurisdiction;}
  else if(/sponsor|visa|wiza/.test(text)){if(!jurisdiction)return null;key='visa_sponsorship';scope.country=jurisdiction;}
- else if(/github profile|github profile url|link to your github profile/.test(text)){key='github_profile_url';scope.host='github.com';}
+ else if(/github profile|github profile url|link to your github profile|^github(?: or personal website)?$/.test(text)){key='github_profile_url';scope.host='github.com';}
  else if(/linkedin profile|linkedin profile url|link to your linkedin profile/.test(text)){key='linkedin_profile_url';scope.host='www.linkedin.com';}
  else return null;
  return {key,scope};

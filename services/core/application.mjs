@@ -244,7 +244,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
       fieldsToFill.sort((a,b)=>Number(a.type==='file')-Number(b.type==='file')||Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
-        if(!field.required&&field.type!=='file'&&!resolveField(field,{profile,job,answerMemory}))continue;
+        const knownOptional=resolveField(field,{profile,job,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
+        if(!field.required&&field.type!=='file'&&!knownOptional)continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
         if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
@@ -270,7 +271,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         }
         if(field.type==='checkbox' && field.checked || radioGroupAnswered(field,view.fields))continue;
         if(!field.options && !['checkbox','radio'].includes(field.type)&&known(field.value))continue;
-        const answer=resolveField(field,{profile,job,answerMemory})??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
+        const answer=knownOptional??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
         if(!answer){
           if(isModelAnswerable(field)){
             const prosePolicy=policy??YAML.parse(await readFile('config/search_policy.yaml','utf8'));
