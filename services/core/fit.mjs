@@ -815,6 +815,10 @@ export function routeAnalysis({job, profile, policy = {}, analysis, score}) {
 
 export async function analyzeJob({job, profile, policy = {}, llm = new OllamaClient()}) {
   const hard=deterministicHardReject({job,profile,policy});if(hard)return hard;
+  if(process.env.FIT_EVALUATION_MODE==='fast' && llm instanceof OllamaClient){
+    const {analyzeFastFit}=await import('./fit-fast.mjs');
+    return analyzeFastFit({job,profile,policy,llm});
+  }
   const compact = llm instanceof OllamaClient || llm.wireFormat === 'compact';
   const system = await readFile(new URL(compact ? '../../prompts/fit_analysis_compact.md' : '../../prompts/fit_analysis.md', import.meta.url), 'utf8');
   const catalog = compact ? sourceFragmentCatalog(job) : null;

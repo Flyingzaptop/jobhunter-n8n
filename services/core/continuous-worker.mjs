@@ -134,7 +134,8 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  async function laneLoop(lane,signal){const release=await store.acquireLane(lane);if(!release)return;
   try{while(!signal.aborted){await tick(lane);if(signal.aborted)break;
    await new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
-    const timer=setTimeout(done,intervalMs);signal.addEventListener('abort',done,{once:true});});}
+    const delay=lane==='model'?Math.min(intervalMs,1000):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
+    const timer=setTimeout(done,delay);signal.addEventListener('abort',done,{once:true});});}
   }finally{await release();}}
  const lanes=['ingestion','screening','model','preparation-1','preparation-2','notifications'];
  return {tick,states,start:signal=>Promise.all(lanes.map(lane=>laneLoop(lane,signal)))};

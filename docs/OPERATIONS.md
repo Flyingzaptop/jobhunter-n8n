@@ -1,5 +1,22 @@
 # Running the local stack
 
+Current runtime (2026-10-05): local LM Studio Gemma, `FIT_EVALUATION_MODE=fast`.
+Fit inference returns one overall 0–100 integer, with a 15-second operation
+deadline and 16 output tokens. A timeout remains a retry, never a fabricated
+score. Location and factual CV guards run separately in code. CV generation
+starts only after a current evaluation passes the configured fit threshold.
+Model work has a one-second idle delay; form preparation and notifications do
+not wait for the entire fit queue. Unchanged screening inputs reuse stored
+results instead of rewriting every queue row on every pass.
+
+Telegram `?` or `/status` requests the structured work summary. Automatic
+Telegram delivery is limited to required human actions and ready application
+reviews. Final submission requires `ОТПРАВИТЬ` as a reply to that application's
+current review card. No Codex or Windows scheduled tasks are used.
+
+The older Ollama/n8n activation notes below describe the original workflow,
+not the currently running continuous worker. Do not enable their schedules.
+
 From the project root on Windows:
 
 ```powershell

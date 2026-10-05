@@ -122,9 +122,9 @@ export class OllamaClient {
     this.sdkPredict = sdkPredict;
   }
 
-  withModels({model = this.model, strongModel = this.strongModel} = {}) {
+  withModels({model = this.model, strongModel = this.strongModel, timeoutMs = this.timeoutMs} = {}) {
     return new OllamaClient({provider:this.provider, baseUrl:this.baseUrl, apiKey:this.#apiKey,
-      model,strongModel,timeoutMs:this.timeoutMs,contextLimit:this.contextLimit,structuredFormat:this.structuredFormat,tokenCounter:this.tokenCounter,sdkPredict:this.sdkPredict,fetchImpl:this.fetch});
+      model,strongModel,timeoutMs,contextLimit:this.contextLimit,structuredFormat:this.structuredFormat,tokenCounter:this.tokenCounter,sdkPredict:this.sdkPredict,fetchImpl:this.fetch});
   }
 
   requestOptions(options = {}) {

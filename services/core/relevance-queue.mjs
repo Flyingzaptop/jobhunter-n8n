@@ -26,7 +26,7 @@ export function relevanceInputHash(job) {
     work_mode:j.work_mode,canonical_url:j.canonical_url,application_url:j.application_url,availability:j.availability_status});
 }
 export function fitInputHash({job,profile,policy,model,promptVersion=PROMPT_VERSION,gatewayVersion=LLM_GATEWAY_VERSION}) {
-  return hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),model,promptVersion,gatewayVersion});
+  return hash({job:relevanceInputHash(job),profile:hash(profile),policy:hash(policy),model,promptVersion,gatewayVersion,fit_mode:process.env.FIT_EVALUATION_MODE??'detailed'});
 }
 export function availabilityVerificationDue(job,{now=new Date(),maxAgeMs=86400000}={}){
   const j=jobSnapshot(job);const checked=Date.parse(j.last_verified_open_at??j.last_open_verification?.verified_at??'');
@@ -56,7 +56,8 @@ export async function recordDeterministicHardReject({repository,job,profile,poli
 }
 export async function applyDeterministicHardRejects({repository,profile,policy,jobIds}={}){
   const jobs=(await repository.listCanonicalJobs()).filter(job=>job.profile==='real'&&(!jobIds||jobIds.includes(job.job_id)));
-  const results=[];for(const job of jobs){const rejected=await recordDeterministicHardReject({repository,job,profile,policy});if(rejected)results.push({job_id:rejected.job_id,inserted:rejected.inserted,reasons:rejected.analysis.reasons});}
+  const cached=new Map((await repository.pool.query("SELECT job_id,analysis_json->>'hard_gate_job_input_hash' input_hash,analysis_json->'reasons' reasons FROM job_analysis WHERE analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE' AND analysis_json->>'profile_hash'=$1 AND analysis_json->>'policy_hash'=$2",[hash(profile),hash(policy)])).rows.map(row=>[row.job_id,row]));
+  const results=[];for(const job of jobs){const previous=cached.get(job.job_id);if(previous?.input_hash===relevanceInputHash(job)){results.push({job_id:job.job_id,inserted:false,reasons:previous.reasons,cached:true});continue;}const rejected=await recordDeterministicHardReject({repository,job,profile,policy});if(rejected)results.push({job_id:rejected.job_id,inserted:rejected.inserted,reasons:rejected.analysis.reasons});}
   return{scope:'DETERMINISTIC_HARD_GATE',model:null,inference_performed:false,total_checked:jobs.length,rejected:results.length,new_rejections:results.filter(row=>row.inserted).length,results};
 }
 export function screenRelevance(job,{now=new Date()}={}) {
@@ -104,7 +105,10 @@ export function screenRelevance(job,{now=new Date()}={}) {
 
 export async function buildRelevanceQueue({repository,observer=async()=>{},now=new Date()}={}) {
   const jobs=(await repository.listCanonicalJobs()).filter(j=>j.profile==='real'); const counts={}; let changed=0;
-  for(const job of jobs){const q=screenRelevance(job,{now});
+  const cached=new Map((await repository.pool.query('SELECT job_id,relevance_version,input_hash,status FROM relevance_queue')).rows.map(row=>[row.job_id,row]));
+  for(const job of jobs){const previous=cached.get(job.job_id);
+    if(previous?.relevance_version===RELEVANCE_VERSION&&previous.input_hash===relevanceInputHash(job)){counts[previous.status]=(counts[previous.status]??0)+1;continue;}
+    const q=screenRelevance(job,{now});
     const saved=await repository.pool.query(`INSERT INTO relevance_queue(job_id,relevance_version,input_hash,relevance_score,status,role_hints,reasons,location_class,seniority_class,needs_hydration)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(job_id) DO UPDATE SET relevance_version=EXCLUDED.relevance_version,input_hash=EXCLUDED.input_hash,
       relevance_score=EXCLUDED.relevance_score,role_hints=EXCLUDED.role_hints,reasons=EXCLUDED.reasons,location_class=EXCLUDED.location_class,
@@ -154,8 +158,10 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           AND NOT EXISTS(SELECT 1 FROM job_analysis h WHERE h.job_id=q.job_id AND h.analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE'
             AND h.analysis_json->>'profile_hash'=$2 AND h.analysis_json->>'policy_hash'=$3
             AND h.analysis_json->>'hard_gate_job_input_hash'=q.input_hash)
+          AND NOT EXISTS(SELECT 1 FROM applications app JOIN cv_versions cv USING(cv_id) WHERE app.job_id=q.job_id AND app.candidate_profile_id=$4
+            AND app.status IN('FILLING','NEEDS_USER','CAPTCHA_WAIT','READY_TO_SUBMIT','SUBMITTING','SUBMITTED') AND cv.manifest_json->>'job_content_hash'=j.content_hash)
           AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),${RELEVANCE_LOCATION_ORDER_SQL},
-            q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null,hash(profile),hash(policy)])).rows;
+            q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null,hash(profile),hash(policy),profile.profile_id??''])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
           const key=fitInputHash({job,profile,policy,model:llm.model});
