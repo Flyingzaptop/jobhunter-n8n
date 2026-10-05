@@ -7,12 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { validateDestination, controlledSubmitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
-import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl} from './ats-adapters.mjs';
+import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl,finalSubmitLabel} from './ats-adapters.mjs';
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
 import {verifySubmitCapability} from './submit-capability.mjs';
 import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from './preparation-network.mjs';
 import {selectedCookieButton} from '../core/form-settling.mjs';
+import {dismissPracaCookies,dismissPracaUploadError} from './praca-cookies.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -100,7 +101,7 @@ export async function createBrowserService(config = browserConfig()) {
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
     const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
-    return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename})=>({sha256,filename})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
+    return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename,evidence,receipt_id})=>({sha256,filename,evidence,...(receipt_id?{receipt_id}:{} )})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
   async function checkpoint(session) {
     const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
@@ -109,6 +110,7 @@ export async function createBrowserService(config = browserConfig()) {
   async function action(session, operation, payload) {
     session.current_action={operation,selector:payload.selector??null,started_at:new Date().toISOString()};
     if (operation === 'navigate') {session.humanCaptchaViews?.clear();session.humanCaptchaWindow=null;session.humanCaptchaAction=null; await validateDestination(payload.url, config); await session.page.goto(payload.url, { waitUntil: 'domcontentloaded' }); }
+    else if (operation === 'dismiss-cookies') {const result=await dismissPracaCookies(session.page);return {...await checkpoint(session),cookie_dismissal:result};}
     else if (operation === 'checkpoint') { session.pending_question = payload.pending_question ?? session.pending_question; return checkpoint(session); }
     else if (operation === 'screenshot') { const name = `${session.id}-${Date.now()}.png`, output = path.join(config.stateRoot, name); await session.page.screenshot({ path: output, fullPage: true }); return { path: output }; }
     else if(operation==='captcha-image')return captureCaptchaImage(session.page);
@@ -141,18 +143,20 @@ export async function createBrowserService(config = browserConfig()) {
         const root = await fs.realpath(config.artifactRoot), target = await fs.realpath(path.resolve(payload.path));
         const relative = path.relative(root, target); if (relative.startsWith('..') || path.isAbsolute(relative) || path.extname(target).toLowerCase() !== '.pdf') throw new Error('ARTIFACT_NOT_APPROVED');
         const bytes = await fs.readFile(target); if (bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-' || !payload.sha256 || hash(bytes) !== payload.sha256) throw new Error('ARTIFACT_HASH_OR_FORMAT_INVALID');
-        session.uploadWindow={url:before.url,sha256:payload.sha256,expires_at:Date.now()+30000};
+        await dismissPracaUploadError(session.page);
+        session.uploadWindow={url:before.url,sha256:payload.sha256,filename:path.basename(target),expires_at:Date.now()+30000};
         const upload={selector:payload.selector,sha256:payload.sha256,filename:path.basename(target),evidence:'LOCAL_FILE_SELECTION'};
         const receipt=async response=>{try{
           const request=response.request();
           if(!response.ok()||!reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow}))return;
-          const result=verifiedUploadReceipt(await response.json(),upload.filename);
+          const result=verifiedUploadReceipt(await response.json(),upload.filename,{url:request.url()});
           if(result){
             upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id=result.receipt_id;
           }
         }catch{/* No receipt is inferred from an arbitrary successful response. */}};
         session.page.on('response',receipt);const cleanup=setTimeout(()=>session.page.off('response',receipt),30000);cleanup.unref();
         await locator.setInputFiles(target);session.uploads.push(upload);
+        if(atsAdapterFor(before.url)==='praca')for(let i=0;i<20&&upload.evidence!=='SERVER_UPLOAD_RECEIPT';i++)await new Promise(resolve=>setTimeout(resolve,250));
       }
       else if (operation === 'click') {
         const safeEntry=button&&safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields});
@@ -173,7 +177,7 @@ export async function createBrowserService(config = browserConfig()) {
           verifySubmitCapability(payload.confirmation_capability,{secret:config.token,applicationId:session.application_id,snapshot:before});
         }else if(reason) return { ...before, status: 'READY_TO_SUBMIT', dry_run: config.dryRun, submit_blocked_reason: reason };
         if (session.submit_attempted) return { ...before, status: before.confirmation_id ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN' };
-        if (!button || (!button.final_submit && !/submit|send application/i.test(button.text))) throw new Error('FINAL_BUTTON_REQUIRED');
+        if (!button || (!button.final_submit && !finalSubmitLabel(button.text))) throw new Error('FINAL_BUTTON_REQUIRED');
         if (before.captcha || before.fields.some(f => f.visible && f.required && f.validation_message)) throw new Error('FORM_NOT_READY');
         session.submit_attempted = true; session.history.push({ operation: 'submit_intent', timestamp: new Date().toISOString() }); await checkpoint(session);
         session.submitActive = true;

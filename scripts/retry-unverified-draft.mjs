@@ -12,8 +12,22 @@ try{
  const profile=YAML.parse(await readFile('config/candidate_profile.yaml','utf8')),policy=YAML.parse(await readFile('config/search_policy.yaml','utf8'));
  const app=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
  const falseClosure=app?.status==='SKIPPED'&&app.skip_reason==='JOB_CLOSED_OR_UNVERIFIED';
- const cookieFailure=app?.status==='FAILED'&&(String(app.last_state?.failure_reason).startsWith('locator.click: Timeout')||app.last_state?.failure_reason==='UNCLASSIFIED_CLICK_NEEDS_USER')
-  &&app.last_state?.browser_session_id&&!!selectedCookieButton(await browser.call(`/sessions/${app.last_state.browser_session_id}/snapshot`));
+ const correctedCookiePolicy=app?.status==='FAILED'&&app.last_state?.failure_reason==='UNCLASSIFIED_CLICK_NEEDS_USER'&&app.last_state?.repair_reason==='POLISH_COOKIE_OVERLAY_FIXED';
+ let observedCookie=false;
+ if(app?.status==='FAILED'&&String(app.last_state?.failure_reason).startsWith('locator.click: Timeout')&&app.last_state?.browser_session_id){
+  let view;
+  try{view=await browser.call(`/sessions/${app.last_state.browser_session_id}/snapshot`);}
+  catch(error){
+   if(error.message!=='SESSION_NOT_FOUND')throw error;
+   const recovery=await browser.call(`/sessions/${app.last_state.browser_session_id}/recover`,{});
+   if(recovery.status!=='FILLING')throw new Error('MANUAL_SESSION_RECOVERY_REQUIRED');
+   await new Promise(resolve=>setTimeout(resolve,3000));
+   view=await browser.call(`/sessions/${recovery.session_id}/snapshot`);
+   await browser.call(`/sessions/${recovery.session_id}`,undefined,'DELETE');
+  }
+  observedCookie=!!selectedCookieButton(view)||new URL(view.url).hostname==='www.praca.pl'&&view.text.includes('Dostosuj zgody');
+ }
+ const cookieFailure=correctedCookiePolicy||observedCookie;
  if(!app||!falseClosure&&!cookieFailure||!app.dry_run||app.submitted_at||app.confirmation_id)throw new Error('DRAFT_NOT_ELIGIBLE_FOR_REPAIR');
  const repairReason=cookieFailure?'POLISH_COOKIE_OVERLAY_FIXED':'POLISH_OPEN_CHECK_FIXED';
  const row=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[app.job_id])).rows[0],job={...row.metadata,...row};

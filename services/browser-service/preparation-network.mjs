@@ -1,6 +1,14 @@
 import {createHash} from 'node:crypto';
-export function verifiedUploadReceipt(result,filename){
+export function verifiedUploadReceipt(result,filename,{url}={}){
  if(!result||typeof result!=='object'||result.error||result.errors)return null;
+ if(url){
+  let target;try{target=new URL(url);}catch{return null;}
+  if(target.origin==='https://www.praca.pl'&&target.pathname==='/applying/upload-file'&&!target.search){
+   const data=result.data;
+   if(result.status!=='success'||!data||typeof data!=='object'||data.error||data.name!==filename||!Number.isSafeInteger(data.id)||data.id<1)return null;
+   return {receipt_id:String(data.id),filename};
+  }
+ }
  const specific=result.attachment_id??result.file_id??result.document_id;
  const named=result.filename??result.file_name??result.name;
  const id=specific??(named===filename?result.id:null);
@@ -25,7 +33,20 @@ export function reviewedDraftRequest({url,method,body,contentType,window,now=Dat
 export function reviewedUploadRequest({url,method,body,contentType,window,now=Date.now()}){
  if(!window||window.expires_at<=now||method!=='POST'||!Buffer.isBuffer(body)||body.length>6*1024*1024)return false;
  const target=new URL(url),origin=new URL(window.url);
- if(target.origin!==origin.origin||!/\/(?:upload|uploads|attachment|attachments|files|documents)\/?$/i.test(target.pathname))return false;
+ const pracaUpload=origin.hostname==='www.praca.pl'&&/^\/apply\/internal\/\d+\.html$/.test(origin.pathname)
+  &&target.pathname==='/applying/upload-file'&&!target.search;
+ if(target.origin!==origin.origin||!pracaUpload&&!/\/(?:upload|uploads|attachment|attachments|files|documents)\/?$/i.test(target.pathname))return false;
+ if(pracaUpload&&/^application\/json(?:;|$)/i.test(contentType??'')){
+  try{
+   const data=JSON.parse(body.toString('utf8'));
+   if(Object.keys(data).length!==2||Object.keys(data).some(key=>!['file','isCv'].includes(key))||data.isCv!==true||!data.file||Array.isArray(data.file)||Object.keys(data.file).length!==2||Object.keys(data.file).some(key=>!['file','fileName'].includes(key))||data.file.fileName!==window.filename)return false;
+   if(typeof data.file.file!=='string'||!data.file.file.startsWith('data:application/pdf;base64,'))return false;
+   const encoded=data.file.file.slice('data:application/pdf;base64,'.length);
+   if(!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded))return false;
+   const decoded=Buffer.from(encoded,'base64');
+   return decoded.toString('base64')===encoded&&createHash('sha256').update(decoded).digest('hex')===window.sha256;
+  }catch{return false;}
+ }
  if(/^application\/pdf(?:;|$)/i.test(contentType??''))return createHash('sha256').update(body).digest('hex')===window.sha256;
  const boundary=String(contentType??'').match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
  if(!boundary||!/^multipart\/form-data/i.test(contentType))return false;

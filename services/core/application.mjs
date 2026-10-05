@@ -13,7 +13,7 @@ import YAML from 'yaml';
 import {isModelAnswerable,enqueue as enqueueProse,getReady as readyProse,consume as consumeProse} from './application-prose.mjs';
 import {scopeApplicationForm} from '../browser-service/application-form-scope.mjs';
 import {reusableQuestionAnswer} from './answer-memory.mjs';
-import {atsAdapterFor,safeNavigationButton} from '../browser-service/ats-adapters.mjs';
+import {atsAdapterFor,safeNavigationButton,finalSubmitLabel} from '../browser-service/ats-adapters.mjs';
 export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
@@ -104,12 +104,22 @@ async function ask({repository,telegram,application,browser,sessionId,field,snap
 }
 
 export function postingOpenEvidence(view,job){
+ if(view.captcha||/^(?:access denied|forbidden|just a moment)/i.test(view.title??''))return 'UNKNOWN';
  if(/job (?:is )?(?:closed|expired)|no longer accepting applications|position (?:is )?filled|oferta (?:pracy )?(?:jest )?(?:nieaktualna|wygasla|wygasła)|ogloszenie wygaslo|ogłoszenie wygasło/i.test(view.text??''))return 'CLOSED';
  const title=norm(job.title),body=norm(view.text),label=norm(view.title);
  let samePage=false;try{const actual=new URL(view.url),expected=new URL(job.canonical_url);samePage=actual.origin===expected.origin&&actual.pathname===expected.pathname;}catch{}
  const identified=!!title&&(body.includes(title)||label.includes(title));
  const apply=(view.buttons??[]).some(button=>button.visible!==false&&!button.disabled&&/^(?:apply(?: now| for (?:this|the) (?:job|position))?|easy apply|aplikuj(?: teraz| szybko)?|latwe aplikowanie)$/i.test(norm(button.text)));
  return samePage&&identified&&apply?'OPEN':'UNKNOWN';
+}
+export function radioGroupAnswered(field,fields){
+ return field.type==='radio'&&!!field.name&&fields.some(other=>other.type==='radio'&&other.name===field.name&&other.form===field.form&&other.checked&&other.visible!==false&&!other.disabled);
+}
+export function humanConsentAnswer(value){
+ const text=String(value??'').trim().replace(/[.!]$/,'').trim();
+ if(/^(?:yes|agree|approved|true|tak|да|согласен|согласна|разрешаю(?: для этой заявки)?)$/iu.test(text))return true;
+ if(/^(?:no|false|nie|нет|отказываюсь|не согласен|не согласна|не разрешаю(?:\s*[—-]\s*пропустить заявку)?)$/iu.test(text))return false;
+ return null;
 }
 export async function reverify({browser,job,applicationId}) {
   const opened=await browser.call('/sessions',{application_id:applicationId,url:job.canonical_url});
@@ -151,7 +161,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}
       const open=await verifyOpen({browser,job,applicationId:application.application_id});
       if(open!==true){const status=open===false?'SKIPPED':'MANUAL_TAKEOVER';await transition(repository,application.application_id,status,open===false?{skip_reason:'JOB_CONFIRMED_CLOSED'}:{reason:'JOB_OPEN_VERIFICATION_UNCERTAIN'});return {status,application_id:application.application_id};}
-      const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
+      const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;
+      await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);
+      view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
     else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
@@ -164,7 +176,14 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const generation=view.fields.find(f=>f.name==='captcha_generation')?.value;
       if(!field || !field.visible || field.disabled || view.fingerprint!==pending.fingerprint || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
       const answer=answerRow.answer;
-      if(field.type==='checkbox'||field.type==='radio'){if(!/^(yes|agree|approved|true)$/i.test(String(answer)))return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});}
+      if(field.type==='checkbox'||field.type==='radio'){
+        const consent=humanConsentAnswer(answer);
+        if(consent===false&&field.required&&pending.type==='CONSENT'){
+          await transition(repository,application.application_id,'SKIPPED',{skip_reason:'USER_DECLINED_REQUIRED_CONSENT',pending_question:null});return {application_id:application.application_id,status:'SKIPPED',reason:'USER_DECLINED_REQUIRED_CONSENT'};
+        }
+        if(consent!==true)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});
+        view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
+      }
       else if(field.options)view=await browser.call(`/sessions/${sessionId}/select`,{selector:field.selector,value:answer});
       else view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:answer});
       const observed=view.fields.find(f=>f.selector===field.selector);
@@ -178,7 +197,10 @@ export async function runApplication({ repository, jobId, applicationId, profile
     if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
     for(let count=0;count<maxSteps;count++){
       const entry=view.buttons?.find(button=>safeNavigationButton({adapter:atsAdapterFor(view.url),url:view.url,button,fields:view.fields??[]}));
-      if(entry&&!view.fields?.some(f=>f.type==='file')){view=await browser.call(`/sessions/${sessionId}/click`,{selector:entry.selector});view=await settleApplicationForm({browser,sessionId,initialView:view});continue;}
+      if(entry&&!view.fields?.some(f=>f.type==='file')){
+        view=entry.href?await browser.call(`/sessions/${sessionId}/navigate`,{url:new URL(entry.href,view.url).href}):await browser.call(`/sessions/${sessionId}/click`,{selector:entry.selector});
+        view=await settleApplicationForm({browser,sessionId,initialView:view});continue;
+      }
       const stepScope=scopeApplicationForm(view);
       if(!stepScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:stepScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:stepScope.reason};}
       view=stepScope.view;
@@ -187,15 +209,26 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});try{await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});}catch{await repository.event('application',application.application_id,'CAPTCHA_HANDOFF_PERSIST_FAILED',{reason:'DURABLE_HANDOFF_REQUIRED'});}return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
-      for(const field of view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type))){
+      const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
+      fieldsToFill.sort((a,b)=>Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
+      for(const field of fieldsToFill){
         if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector]))continue;
-        if(field.type==='file'){if(field.value)continue;const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);if(!field.required&&!resume)continue;if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});continue;}
-        if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment/i.test(field.label)) {
+        if(field.type==='file'){
+          const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
+          if(field.value&&(!praca||confirmed))continue;
+          const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);
+          if(!field.required&&!resume)continue;
+          if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}
+          view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});
+          if(praca&&!view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT')){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'CV_UPLOAD_UNCONFIRMED'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'CV_UPLOAD_UNCONFIRMED'};}
+          continue;
+        }
+        if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment|zgod|regulamin|zapozn|oświadcz|oswiadcz|przetwarzan/iu.test(field.label)) {
           if(field.checked)continue;const consent=classifyConsent(field.label,field.required);if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED'))continue;
           if(consent.consent_type==='USER_REQUIRED')return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,verified_facts:true});await repository.pool.query('INSERT INTO consents(consent_id,application_id,consent_text,consent_text_hash,consent_type,source) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),application.application_id,consent.consent_text,consent.consent_text_hash,consent.consent_type,'RECRUITMENT_POLICY']);continue;
         }
-        if(field.type==='checkbox' && field.checked || field.type==='radio' && field.checked)continue;
+        if(field.type==='checkbox' && field.checked || radioGroupAnswered(field,view.fields))continue;
         if(!field.options && !['checkbox','radio'].includes(field.type)&&known(field.value))continue;
         const answer=resolveField(field,{profile,job,answerMemory})??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
         if(!answer){
@@ -219,7 +252,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
       view=finalScope.view;
-      const final=view.buttons.find(b=>b.final_submit||/submit(?: your)? application|send application/i.test(b.text));
+      const final=view.buttons.find(b=>b.final_submit||finalSubmitLabel(b.text));
       if(final){
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];

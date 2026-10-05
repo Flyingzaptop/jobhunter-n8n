@@ -1,10 +1,29 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {createHash} from 'node:crypto';
 import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from '../services/browser-service/preparation-network.mjs';
 
+test('observed Praca upload route permits only the current PDF from an internal application page',()=>{
+ const body=Buffer.from('%PDF-1.4 fixture');const now=Date.now();
+ const input={url:'https://www.praca.pl/applying/upload-file',method:'POST',body,contentType:'application/pdf',now,window:{url:'https://www.praca.pl/apply/internal/11537866.html',sha256:createHash('sha256').update(body).digest('hex'),expires_at:now+1000}};
+ assert.equal(reviewedUploadRequest(input),true);
+ for(const override of [{url:'https://www.praca.pl/applying/send'},{url:input.url+'?action=submit'},{body:Buffer.from('%PDF-other')},{window:{...input.window,url:'https://www.praca.pl/search'}}])assert.equal(reviewedUploadRequest({...input,...override}),false);
+});
+test('observed Praca JSON upload validates exact PDF data URI, filename and CV-only shape',()=>{
+ const pdf=Buffer.from('%PDF-1.4 fixture'),data={file:{file:'data:application/pdf;base64,'+pdf.toString('base64'),fileName:'cv.pdf'},isCv:true};
+ const input={url:'https://www.praca.pl/applying/upload-file',method:'POST',body:Buffer.from(JSON.stringify(data)),contentType:'application/json',window:{url:'https://www.praca.pl/apply/internal/11537866.html',filename:'cv.pdf',sha256:createHash('sha256').update(pdf).digest('hex'),expires_at:Date.now()+1000}};
+ assert.equal(reviewedUploadRequest(input),true);
+ for(const changed of [{...data,action:'submit'},{...data,isCv:false},{...data,file:{...data.file,fileName:'other.pdf'}},{...data,file:{...data.file,file:'data:application/pdf;base64,'+Buffer.from('other').toString('base64')}}])assert.equal(reviewedUploadRequest({...input,body:Buffer.from(JSON.stringify(changed))}),false);
+});
+
 test('upload receipts require document identity or exact filename and reject unrelated successful JSON',()=>{
  for(const result of [{id:'generic-request-id'},{file_id:''},{attachment_id:'doc',filename:'other.pdf'},{file_id:'doc',error:'failed'},{file_id:'doc',errors:['invalid']}])assert.equal(verifiedUploadReceipt(result,'cv.pdf'),null);
  assert.equal(verifiedUploadReceipt({file_id:'doc'},'cv.pdf').receipt_id,'doc');
  assert.equal(verifiedUploadReceipt({id:123,filename:'cv.pdf'},'cv.pdf').receipt_id,'123');
+});
+test('Praca nested upload receipt requires success, exact name and a positive file ID at the reviewed endpoint',()=>{
+ const result={status:'success',data:{id:123,name:'cv.pdf',downloadLink:'/private-file',size:500}},context={url:'https://www.praca.pl/applying/upload-file'};
+ assert.equal(verifiedUploadReceipt(result,'cv.pdf',context).receipt_id,'123');
+ assert.equal(verifiedUploadReceipt(result,'cv.pdf'),null);
+ for(const changed of [{...result,status:'error'},{...result,data:{...result.data,name:'other.pdf'}},{...result,data:{...result.data,id:0}}])assert.equal(verifiedUploadReceipt(changed,'cv.pdf',context),null);
 });
 
 test('multipart PDF authorization cannot piggyback a final submit action',()=>{

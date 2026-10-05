@@ -57,7 +57,9 @@ test('real Playwright: complex application, human CAPTCHA, recovery, validation,
   for(const [name,value] of Object.entries({first_name:'Test',last_name:'Candidate',email:'fixture@example.invalid',phone:'+48123456789',city:'Wroclaw'}))await fill(name,value);await select('country','Poland');assert.equal((await next()).current_step,2);
   for(const [name,value] of Object.entries({current_title:'Independent R&D designer',years_experience:'0',education:'Mechanical engineering degree'}))await fill(name,value);await select('employment_type','Full-time');await call('/sessions/'+id+'/check',{selector:'#eu_yes'});await call('/sessions/'+id+'/check',{selector:'#cad_experience'});await select('skills',['Fusion 360','Prototyping']);await fill('portfolio_url','https://example.invalid/portfolio');assert.equal((await next()).current_step,3);
   const outside=await fetch(base+'/sessions/'+id+'/upload',{method:'POST',headers:{authorization:'Bearer fixture-browser-token','content-type':'application/json'},body:JSON.stringify({selector:'#cv',path:path.join(directory,'secret.pdf'),sha256})});assert.equal(outside.status,400);
-  await call('/sessions/'+id+'/upload',{selector:'#cv',path:cv,sha256});assert.equal((await next()).current_step,4);
+  const upload=await call('/sessions/'+id+'/upload',{selector:'#cv',path:cv,sha256});
+  assert.equal(upload.uploaded_file_hashes[0].evidence,'LOCAL_FILE_SELECTION');
+  assert.equal((await next()).current_step,4);
   await select('authorized_poland','Yes');await fill('salary_expectation','10000-12000');await fill('fusion_projects','Verified fixture Fusion 360 prototype project');
   let view=await snapshot(); assert.equal(view.fields.find(f=>f.name==='start_date').required,true); assert.equal(view.fields.find(f=>f.name==='start_date').value,'');
   // This deliberately missing answer is supplied by a simulated human, not guessed by production.

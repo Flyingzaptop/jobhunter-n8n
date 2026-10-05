@@ -6,7 +6,7 @@ test('Praca cookie settling selects only the explicit selected-cookie action, ne
  assert.equal(selectedCookieButton({...view,url:'https://employer.example/apply'}),null);
  assert.equal(selectedCookieButton({...view,buttons:[{...view.buttons[1],final_submit:true}]}),null);
  const calls=[];let dismissed=false;
- const browser={call:async(endpoint,payload)=>{if(endpoint.endsWith('/click')){calls.push(payload.selector);dismissed=true;}return dismissed?{...view,text:'Form',buttons:[],fingerprint:'ready',fields:[{visible:true,type:'email'}]}:view;}};
+ const browser={call:async(endpoint,payload)=>{if(endpoint.endsWith('/dismiss-cookies')){calls.push('COOKIE_ONLY');dismissed=true;}return dismissed?{...view,text:'Form',cookie_dismissal:{status:'DISMISSED'},buttons:[],fingerprint:'ready',fields:[{visible:true,type:'email'}]}:view;}};
  await settleApplicationForm({browser,sessionId:'fixture',initialView:view,maxMs:1200});
- assert.deepEqual(calls,['#selected']);
+ assert.deepEqual(calls,['COOKIE_ONLY']);
 });

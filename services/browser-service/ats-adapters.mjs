@@ -2,6 +2,10 @@ import {createHash} from 'node:crypto';
 import {readFileSync} from 'node:fs';
 const ASHBY_PUBLIC_QUERIES=JSON.parse(readFileSync(new URL('../../config/ats_public_read_queries.json',import.meta.url),'utf8')).queries;
 export function atsAdapterFor(value){let host;try{host=new URL(value).hostname.toLowerCase();}catch{return 'generic';}for(const [id,domains] of Object.entries({greenhouse:['greenhouse.io'],lever:['lever.co'],ashby:['ashbyhq.com'],smartrecruiters:['smartrecruiters.com'],teamtailor:['teamtailor.com'],workday:['myworkdayjobs.com'],erecruiter:['erecruiter.pl'],praca:['praca.pl'],pracuj:['pracuj.pl'],olx:['olx.pl'],linkedin:['linkedin.com']}))if(domains.some(d=>host===d||host.endsWith('.'+d)))return id;return 'generic';}
+export function finalSubmitLabel(text){
+ const label=String(text??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().trim();
+ return /^(?:submit(?: your)? application|send application|submit|wyslij(?: aplikacje| zgloszenie)?)$/.test(label);
+}
 export function reviewedReadPost({url,body,adapter}){
  const target=new URL(url);if(atsAdapterFor(url)!==adapter)return {allowed:false,reason:'ADAPTER_ORIGIN_MISMATCH'};
  let data;try{data=JSON.parse(body??'');}catch{return {allowed:false,reason:'UNREVIEWED_PAYLOAD'};}

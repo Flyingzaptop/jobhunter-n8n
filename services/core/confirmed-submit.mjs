@@ -5,6 +5,7 @@ import {productionGateStatus} from './production-gate.mjs';
 import {transition} from './state.mjs';
 import {hitlError} from './hitl.mjs';
 import {confirmedSubmissionResult} from './submission-result.mjs';
+import {finalSubmitLabel} from '../browser-service/ats-adapters.mjs';
 export async function executeConfirmedSubmit({repository,applicationId,approvalId,bindingDigest,idempotencyKey,profile,browser,secret=process.env.BROWSER_SERVICE_TOKEN}){
  for(const id of [applicationId,approvalId,idempotencyKey])if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id??''))throw hitlError('INVALID_SUBMIT_COMMAND',400);
  if(!/^[a-f0-9]{64}$/i.test(bindingDigest??''))throw hitlError('INVALID_SUBMIT_BINDING',400);
@@ -27,7 +28,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   await consumeApplicationReview(repository,applicationId,approvalId,profile,browser,{assertProductionGate:async()=>true});
   const sessionId=app.last_state.browser_session_id,snapshot=await browser.call(`/sessions/${sessionId}/snapshot`);
   if(digest(formBinding(snapshot))!==review.digests?.form)throw hitlError('APPROVED_FORM_CHANGED_BEFORE_SUBMIT');
-  const button=snapshot.buttons.find(b=>b.visible!==false&&!b.disabled&&(b.final_submit||/^(?:submit(?: your)? application|send application|wyslij(?: aplikacje| zgloszenie)?|aplikuj)$/i.test(b.text)));
+  const button=snapshot.buttons.find(b=>b.visible!==false&&!b.disabled&&(b.final_submit||finalSubmitLabel(b.text)));
   if(!button||snapshot.captcha||snapshot.validation_errors?.length)throw hitlError('FORM_NOT_READY');
   const capability=issueSubmitCapability({secret,approvalId,applicationId,snapshot});
   await transition(repository,applicationId,'SUBMITTING',{confirmed_submit_command_id:command.command_id});
