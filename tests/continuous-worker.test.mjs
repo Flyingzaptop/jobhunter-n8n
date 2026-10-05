@@ -134,6 +134,7 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
   await client.query('CREATE TABLE jobs(job_id uuid PRIMARY KEY,content_hash text,availability_status text,first_seen_at timestamptz,location text,country text,work_mode text)');
   await client.query('CREATE TABLE job_analysis(analysis_id uuid,job_id uuid,analysis_json jsonb,created_at timestamptz)');
   await client.query('CREATE TABLE cv_versions(job_id uuid,profile_version text,manifest_json jsonb)');
+  await client.query('CREATE TABLE applications(job_id uuid,candidate_profile_id text,status text)');
   await client.query("INSERT INTO jobs SELECT gen_random_uuid(),'old','OPEN',now()-interval '1 day',NULL,NULL,NULL FROM generate_series(1,1001)");
   await client.query("INSERT INTO job_analysis SELECT gen_random_uuid(),job_id,'{\"decision\":\"REJECT\"}'::jsonb,now() FROM jobs");
   await client.query("INSERT INTO jobs VALUES($1,$2,'OPEN',now(),$3,$4,$5)",[job.job_id,job.content_hash,job.location,job.country,job.work_mode]);
@@ -143,6 +144,7 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
   const better=randomUUID();await client.query("INSERT INTO jobs VALUES($1,$2,'OPEN',now(),$3,$4,$5)",[better,job.content_hash,job.location,job.country,job.work_mode]);
   await client.query('INSERT INTO job_analysis VALUES($1,$2,$3,now())',[randomUUID(),better,{...analysis,overall_fit:85,application_priority:0}]);
   assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[better,job.job_id]);
+  await client.query("INSERT INTO applications VALUES($1,$2,'SUBMITTED')",[better,profile.profile_id]);assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);await client.query('DELETE FROM applications');
   await client.query('UPDATE jobs SET content_hash=$2 WHERE job_id=$1',[better,'changed-offer']);assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);
  }finally{await client.query(`DROP SCHEMA ${schema} CASCADE`);client.release();await repo.close();}
 });

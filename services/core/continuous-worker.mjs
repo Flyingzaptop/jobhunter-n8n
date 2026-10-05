@@ -67,7 +67,8 @@ export class ContinuousStore {
   AND a.analysis_json->>'policy_hash'=$2
   AND a.analysis_json->>'job_content_hash'=j.content_hash
   AND a.analysis_json->>'prompt_version'=$3
-  ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION])).rows;
+  AND NOT EXISTS(SELECT 1 FROM applications app WHERE app.job_id=j.job_id AND app.candidate_profile_id=$4 AND app.status IN ('SUBMITTED','SKIPPED','ALREADY_APPLIED','SUBMISSION_UNKNOWN','READY_TO_SUBMIT','NEEDS_USER','CAPTCHA_WAIT','MANUAL_TAKEOVER'))
+  ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION,profile.profile_id])).rows;
   return rows.filter(row=>eligibleCvAnalysis(row,row.analysis_json,profile,policy)&&!row.existing_cv_manifests.some(manifest=>
    currentTailoredCv(manifest,row,row.analysis_json)));}
  async preparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
