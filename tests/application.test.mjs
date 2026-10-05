@@ -12,6 +12,7 @@ import { createCv } from '../services/core/cv.mjs';
 import { browserConfig, createBrowserService } from '../services/browser-service/server.mjs';
 import { createMockBoard } from '../services/mock-job-board/server.mjs';
 import { fixtureHumanCaptcha } from '../services/mock-job-board/test-human-adapter.mjs';
+test('a past professional role is not invented as current employment',()=>{const profile={experience:[{provenance:'PROFESSIONAL',role:'IT Specialist'}]};assert.equal(resolveField({name:'current_title',label:'Current job title',type:'text'},{profile,job:{}}),null);assert.equal(resolveField({name:'current_title',label:'Current job title',type:'text'},{profile:{...profile,onboarding:{current_job_title:'Declared current role'}},job:{}}).value,'Declared current role');});
 
 test('form answers preserve professional provenance and country-scoped user memory',()=>{
  const profile={candidate:{eu_citizen:true,base_location:{country:'Poland'}},onboarding:{legal_name:'Alex Example',email:'alex@example.invalid'},experience:[{provenance:'PROFESSIONAL',exact_start_date:'2024-01-01',exact_end_date:'2025-12-31'},{provenance:'PROFESSIONAL',exact_start_date:'2025-01-01',exact_end_date:'2025-12-31'},{provenance:'INDEPENDENT_R_AND_D',duration_approx_years:8}],skills:{software:['Python']}};
@@ -31,7 +32,7 @@ test('PostgreSQL and Chromium application runner pauses for correlated human ans
  const board=createMockBoard({testMode:true,testToken:'fixture-test-human'});await board.listen();t.after(()=>board.close());
  const directory=await mkdtemp(path.join(os.tmpdir(),'jobhunter-application-')),config={...browserConfig({BROWSER_SERVICE_TOKEN:'fixture-application-browser',ALLOW_MOCK_NETWORK:'true',ALLOW_MOCK_SUBMIT:'true',ARTIFACT_DIR:directory,BROWSER_STATE_DIR:path.join(directory,'browser')}),port:0};const service=await createBrowserService(config);await service.listen();t.after(()=>service.close());
  const browser=new BrowserClient({baseUrl:'http://127.0.0.1:'+service.server.address().port,token:config.token});
- const profile=YAML.parse(await readFile('tests/fixtures/candidate_profile_test.yaml','utf8'));profile.candidate.legal_name=profile.onboarding.legal_name;profile.onboarding.earliest_start_date='UNKNOWN';
+ const profile=YAML.parse(await readFile('tests/fixtures/candidate_profile_test.yaml','utf8'));profile.candidate.legal_name=profile.onboarding.legal_name;profile.onboarding.earliest_start_date='UNKNOWN';profile.onboarding.current_job_title=profile.experience.find(f=>f.provenance==='PROFESSIONAL')?.role;
  const jobId=randomUUID(),job={job_id:jobId,canonical_url:'http://127.0.0.1:3002/jobs/mechanical-engineer-42',application_url:'http://127.0.0.1:3002/apply/mechanical-engineer-42',company:'Fixture Engineering',title:'Mechanical R&D Engineer',country:'PL',availability_status:'OPEN'};
  await client.query('INSERT INTO jobs(job_id,canonical_url,application_url,company,title,country,description_text,availability_status) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[jobId,job.canonical_url,job.application_url,job.company,job.title,'PL','Fixture Fusion 360 prototyping role','OPEN']);await repo.saveAnalysis(jobId,{decision:'AUTO_APPLY',overall_fit:90,application_priority:90});
  await createCv({job,profile,analysis:{cv_focus_fact_ids:['exp_design','project_mech']},repository:repo,outputRoot:directory});

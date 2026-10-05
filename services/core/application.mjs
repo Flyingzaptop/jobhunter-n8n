@@ -33,7 +33,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
     upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').includes(f.filename))),
     questions:outstanding===0,required_fields:!(view.fields??[]).some(f=>f.visible&&f.required&&(f.validation_message||(!f.value&&f.type!=='checkbox')||(f.type==='checkbox'&&!f.checked))),
-    claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha};
+    claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
   return {pass:Object.values(checks).every(Boolean),checks,observed_at:new Date().toISOString(),form_fingerprint:view.fingerprint,cv_sha256:cv.sha256};
 }
 
@@ -50,9 +50,12 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
+  if(field.type==='radio'&&/how did you hear|where did you (?:hear|find)/i.test(field.group_label??''))return /^job board$/i.test(field.label.trim())?{value:true,source:'VACANCY_SOURCE'}:{skip:true};
+  if(/github.*(?:profile|link)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
+  if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
   if(/birth|born|urodze/.test(label)&&!['first_name','last_name','email','phone'].includes(field.name))return null;
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
-  const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL')?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
+  const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:identity.current_job_title||(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   if(/linkedin/i.test(label)&&known(identity.linkedin_url)&&['text','url'].includes(field.type))return {value:identity.linkedin_url,source:'PROFILE'};
   value=direct[field.name];
   if(field.name==='name'&&field.type==='text')value=legal;
@@ -186,7 +189,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);
       view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
-    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
+    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=await settleApplicationForm({browser,sessionId,initialView:recovery.snapshot});await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
     view=initialScope.view;
@@ -196,7 +199,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       await transition(repository,application.application_id,'FILLING',{pending_question:null});application.status='FILLING';
       const field=view.fields.find(f=>f.selector===pending.selector);
       const generation=view.fields.find(f=>f.name==='captcha_generation')?.value;
-      if(!field || !field.visible || field.disabled || view.fingerprint!==pending.fingerprint || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
+      if(!field || !field.visible || field.disabled || (view.fingerprint!==pending.fingerprint&&!(pending.type==='FACT'&&['text','url'].includes(field.type)&&/^Link to your (?:Github|LinkedIn) profile$/i.test(field.label))) || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
       const answer=answerRow.answer;
       if(field.type==='checkbox'||field.type==='radio'){
         const consent=humanConsentAnswer(answer);
@@ -244,7 +247,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector],acknowledgementContext(view,job,profile,cv)))continue;
         if(field.type==='file'){
           const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
-          if(field.value&&(!praca||confirmed))continue;
+          if(field.value&&(praca?confirmed:view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256)))continue;
           const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);
           if(!field.required&&!resume)continue;
           if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}
@@ -276,7 +279,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
           }
           if(field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
         }
-        const operation=field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
+        const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
         if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);

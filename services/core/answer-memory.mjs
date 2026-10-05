@@ -20,6 +20,8 @@ export function answerIntent(field,{country,roleContext,employmentType}={}){
  else if(/notice period|okres wypowiedzenia/.test(text+' '+name))key='notice_period';
  else if(/work authori|right to work|prawo do pracy/.test(text)){if(!jurisdiction)return null;key='work_authorization';scope.country=jurisdiction;}
  else if(/sponsor|visa|wiza/.test(text)){if(!jurisdiction)return null;key='visa_sponsorship';scope.country=jurisdiction;}
+ else if(/github profile|github profile url|link to your github profile/.test(text)){key='github_profile_url';scope.host='github.com';}
+ else if(/linkedin profile|linkedin profile url|link to your linkedin profile/.test(text)){key='linkedin_profile_url';scope.host='www.linkedin.com';}
  else return null;
  return {key,scope};
 }
@@ -28,6 +30,7 @@ export async function rememberQuestionAnswer(client,{question,application,answer
  const pending=application.last_state?.pending_question??{};
  const intent=answerIntent({...pending,label:question.raw_question},{country:job?.country,roleContext:job?.metadata?.role_family??job?.title??application.job_id,employmentType:job?.employment_type});
  if(!intent)return null;
+ if(intent.key.endsWith('_profile_url')){let url;try{url=new URL(answer);}catch{return null;}if(url.protocol!=='https:'||url.username||url.password||!(intent.key==='github_profile_url'?url.hostname==='github.com'&&/^\/[A-Za-z0-9-]{1,39}\/?$/.test(url.pathname):['www.linkedin.com','linkedin.com'].includes(url.hostname)&&/^\/in\/[^/]+\/?$/.test(url.pathname)))return null;}
  const row=(await client.query(`INSERT INTO candidate_answer_memory(memory_id,candidate_profile_id,semantic_key,scope_json,answer_json,question_id,source)
  VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(candidate_profile_id,semantic_key,scope_json) DO UPDATE SET
  answer_json=EXCLUDED.answer_json,question_id=EXCLUDED.question_id,source=EXCLUDED.source,

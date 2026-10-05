@@ -9,6 +9,7 @@ test('Praca format comes from the actual offer badge, never a navigation remote 
  assert.equal(enrichPostingWorkMode({description:'Real'}, {html:'<nav>praca zdalna</nav>',url:'https://www.praca.pl/engineer_1.html'}).work_mode,undefined);
 });
 test('hybrid is not accidentally downgraded to remote and unknown work format stays unknown',()=>{
+ assert.equal(explicitWorkMode({description_text:'This role is not remote.'}).mode,'ONSITE');
  assert.equal(declaredWorkMode('hybrid / remote'),'HYBRID');assert.equal(explicitWorkMode({description_text:'Work format: praca hybrydowa'}).mode,'HYBRID');
  assert.equal(explicitWorkMode({title:'Engineer',location:'Wroclaw',description_text:'Engineering skills required.'}).mode,'UNKNOWN');
  assert.equal(explicitWorkMode({description_text:'This role is not on-site.'}).mode,'UNKNOWN');

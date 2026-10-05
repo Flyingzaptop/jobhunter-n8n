@@ -125,7 +125,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
      const key='prepare:'+digest([profile.profile_id,row.job_id,digest(profile),digest(policy),CV_V2_VERSION,row.cv_id]);
      if(await claimed(key,'preparation',row.job_id,async()=>{
       const app=row.application_id?row:await prepare(row.job_id,row.cv_id,context);
-      return apply(row.job_id,app.application_id,context);
+      return apply(row.job_id,app.application_id,context,row.cv_id);
      }))break;
     }
    } else if(lane==='notifications')await notify(context);
@@ -163,7 +163,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
    const {registerIndependentCv}=await import('./cv-independent-qa.mjs');
    return registerIndependentCv({repository,manifest,profile:context.profile});},
   prepare:async(jobId,cvId,context)=>{await ensureCurrent(context);return createControlledPreparation({repository,jobId,cvId,profile:context.profile,policy:context.policy});},
-  apply:async(jobId,applicationId,context)=>{await ensureCurrent(context);return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
+  apply:async(jobId,applicationId,context,cvId)=>{await ensureCurrent(context);if(cvId){const {refreshPreparationCv}=await import('./controlled-preparation.mjs');const refreshed=await refreshPreparationCv({repository,applicationId,cvId,profile:context.profile,policy:context.policy});if(refreshed.blocked_reason)return refreshed;}return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
    config:{...config,dryRun:true,allowRealSubmit:false}});},
   notify:async({profile})=>{
    const {sendReadyApplications}=await import('./telegram-applications.mjs');

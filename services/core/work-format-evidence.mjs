@@ -1,6 +1,7 @@
 const fold=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().trim();
 export function declaredWorkMode(value){const text=fold(value);
  if(/hybrid|hybryd/.test(text))return 'HYBRID';
+ if(/\b(?:not|non|no)[-_ ]+(?:fully[-_ ]+)?remote\b|\b(?:brak|nie ma)\s+pracy zdalnej\b/.test(text))return 'ONSITE';
  if(/remote|telecommute|zdaln/.test(text))return 'REMOTE';
  if(/on[-_ ]?site|in[-_ ]?office|stacjonarn/.test(text))return 'ONSITE';return 'UNKNOWN';}
 export function explicitWorkMode(job){
