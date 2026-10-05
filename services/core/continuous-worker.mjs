@@ -1,13 +1,14 @@
 import {randomUUID,createHash} from 'node:crypto';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 import {CV_V2_VERSION} from './cv-v2.mjs';
-import {workFormatAnalysis} from './fit.mjs';
+import {workFormatAnalysis,PROMPT_VERSION} from './fit.mjs';
 
 const digest=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
 const safeCode=value=>/^[A-Z][A-Z0-9_]{0,79}$/.test(value??'')?value:'OPERATION_FAILED';
 const waiting=new Set(['NEEDS_USER','CAPTCHA_WAIT','MANUAL_TAKEOVER','MANUAL','READY_STOP','READY_TO_SUBMIT']);
 export function cvWorkKey(job,analysis,profile,templateVersion=CV_V2_VERSION){return 'cv:'+digest([templateVersion,job.job_id,job.content_hash,canonicalAnalysisHash(analysis),digest(profile)]);}
 export function eligibleAnalysis(job,analysis,profile,policy={}){return job.availability_status==='OPEN'
+ && analysis?.prompt_version===PROMPT_VERSION
  && ['REVIEW','STRETCH','AUTO_APPLY'].includes(analysis?.decision) && Number(analysis.overall_fit)>=45
  && analysis.profile_hash===digest(profile)&&analysis.job_content_hash===job.content_hash
  && analysis.policy_hash===digest(policy)&&!policy.excluded_job_ids?.includes(job.job_id)
@@ -47,7 +48,8 @@ export class ContinuousStore {
   AND a.analysis_json->>'profile_hash'=$1
   AND a.analysis_json->>'policy_hash'=$2
   AND a.analysis_json->>'job_content_hash'=j.content_hash
-  ORDER BY coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy)])).rows;
+  AND a.analysis_json->>'prompt_version'=$3
+  ORDER BY coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION])).rows;
   return rows.filter(row=>eligibleAnalysis(row,row.analysis_json,profile,policy)&&!row.existing_cv_manifests.some(manifest=>
    currentTailoredCv(manifest,row,row.analysis_json)));}
  async preparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
@@ -59,8 +61,9 @@ export class ContinuousStore {
   WHERE j.availability_status='OPEN' AND a.decision IN('REVIEW','STRETCH','AUTO_APPLY') AND a.overall_fit>=45
   AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'job_content_hash'=j.content_hash
   AND a.analysis_json->>'policy_hash'=$4
+  AND a.analysis_json->>'prompt_version'=$5
   AND (app.application_id IS NULL OR (app.status IN('QUEUED','OPENING','FILLING') AND app.dry_run=true))
-  ORDER BY j.first_seen_at,c.created_at DESC LIMIT 100`,[digest(profile),profile.profile_id,CV_V2_VERSION,digest(policy)])).rows;
+  ORDER BY j.first_seen_at,c.created_at DESC LIMIT 100`,[digest(profile),profile.profile_id,CV_V2_VERSION,digest(policy),PROMPT_VERSION])).rows;
   const seen=new Set();return rows.filter(row=>{if(seen.has(row.job_id)||!eligibleAnalysis(row,row.analysis_json,profile,policy)||!currentTailoredCv(row.cv_manifest_json,row,row.analysis_json))return false;seen.add(row.job_id);return true;});}
 }
 

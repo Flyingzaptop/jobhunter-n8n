@@ -2,16 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createContinuousWorker,ContinuousStore,cvWorkKey,eligibleAnalysis,currentTailoredCv} from '../services/core/continuous-worker.mjs';
 import {CV_V2_VERSION} from '../services/core/cv-v2.mjs';
+import {PROMPT_VERSION} from '../services/core/fit.mjs';
 import {canonicalAnalysisHash} from '../services/core/evidence-hash.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {Repository} from '../services/core/repository.mjs';
 import {readFile} from 'node:fs/promises';
 const profile={profile_id:'fixture',candidate:{base_location:{city:'Wroclaw',country:'Poland'}}};
 const policy={work_location_policy:{no_relocation:true,required_base:{city:'Wroclaw',country:'Poland'}}};
-const analysis={decision:'STRETCH',overall_fit:50,profile_hash:createHash('sha256').update(JSON.stringify(profile)).digest('hex'),
+const analysis={prompt_version:PROMPT_VERSION,decision:'STRETCH',overall_fit:50,profile_hash:createHash('sha256').update(JSON.stringify(profile)).digest('hex'),
  job_content_hash:'source-v1',policy_hash:createHash('sha256').update(JSON.stringify(policy)).digest('hex'),requirements:[{id:'r1'}],hard_blockers:[],
  work_format:{remote_allowed:false,office_location:'Wroclaw',office_country:'Poland'}};
 const job={job_id:'00000000-0000-0000-0000-000000000001',content_hash:'source-v1',location:'Wroclaw',country:'Poland',work_mode:'ONSITE',availability_status:'OPEN',analysis_json:analysis};
+test('previous fit prompt receipts cannot authorize fresh CV or preparation',()=>{
+ assert.equal(eligibleAnalysis(job,analysis,profile,policy),true);
+ assert.equal(eligibleAnalysis(job,{...analysis,prompt_version:'fit-analysis-v3.2-polish-boundaries'},profile,policy),false);
+});
 function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[];
  const store={status:async()=>{},paused:async()=>false,acquireLane:async()=>async()=>{},cvCandidates:async()=>[job],
   preparationCandidates:async()=>[{job_id:job.job_id,cv_id:'cv1'}, {job_id:'second',cv_id:'cv2'}],
