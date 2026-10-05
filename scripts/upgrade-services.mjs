@@ -1,4 +1,5 @@
 import {Repository} from '../services/core/repository.mjs';
+import {localModelBusy} from '../services/core/model-busy.mjs';
 import {mkdir,writeFile,unlink} from 'node:fs/promises';
 import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 import path from 'node:path';
@@ -9,6 +10,7 @@ try{
  await mkdir(directory,{recursive:true});
  console.log(JSON.stringify({event:'UPGRADE_WAITING_FOR_MODEL_IDLE'}));
  while(!pauseToken){
+  if(await localModelBusy(process.env.LLM_STRONG_MODEL??'jobhunter-gemma4')){await wait(5000);continue;}
   const row=(await repository.pool.query("UPDATE runtime_control SET paused=true,updated_at=clock_timestamp() WHERE id=true AND paused=false AND (NOT EXISTS(SELECT 1 FROM continuous_worker_status WHERE lane='model' AND state='RUNNING') OR (NOT EXISTS(SELECT 1 FROM relevance_queue WHERE status='RUNNING') AND NOT EXISTS(SELECT 1 FROM continuous_work WHERE status='RUNNING' AND lane='cv') AND NOT EXISTS(SELECT 1 FROM application_prose_drafts WHERE status='GENERATING'))) RETURNING updated_at::text AS token")).rows[0];
   if(row)pauseToken=row.token;else await wait(5000);
  }

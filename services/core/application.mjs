@@ -121,6 +121,11 @@ export function humanConsentAnswer(value){
  if(/^(?:no|false|nie|нет|отказываюсь|не согласен|не согласна|не разрешаю(?:\s*[—-]\s*пропустить заявку)?)$/iu.test(text))return false;
  return null;
 }
+function acknowledgementContext(view,job,profile,cv){return {
+ job_id:job.job_id,job_content_hash:job.content_hash??null,job_country:job.country??null,job_location:job.location??null,
+ profile_hash:createHash('sha256').update(JSON.stringify(profile)).digest('hex'),cv_sha256:cv.sha256,
+ policy_links:JSON.stringify((view.buttons??[]).filter(button=>button.href&&/regulamin|terms|privacy|polityk/i.test(button.text)).map(button=>button.href).sort()),
+};}
 export async function reverify({browser,job,applicationId}) {
   const opened=await browser.call('/sessions',{application_id:applicationId,url:job.canonical_url});
   try {const evidence=postingOpenEvidence(opened.snapshot,job);return evidence==='OPEN'?true:evidence==='CLOSED'?false:null;}
@@ -188,7 +193,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
       else view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:answer});
       const observed=view.fields.find(f=>f.selector===field.selector);
       if(observed){
-        const confirmed={label:observed.label,type:observed.type,value:observed.value,fingerprint:view.fingerprint,question_id:answerRow.question_id};
+        const confirmed={label:observed.label,type:observed.type,value:observed.value,checked:observed.checked,fingerprint:view.fingerprint,question_id:answerRow.question_id,
+          question_type:pending.type,page_url:view.url,form_action:observed.form_action??null,required:observed.required,
+          context:acknowledgementContext(view,job,profile,cv)};
         application.last_state.confirmed_fields={...(application.last_state.confirmed_fields??{}),[field.selector]:confirmed};
         await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{confirmed_fields:application.last_state.confirmed_fields}]);
       }
@@ -212,7 +219,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
       fieldsToFill.sort((a,b)=>Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
-        if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector]))continue;
+        if(confirmedFieldMatches(field,view,application.last_state?.confirmed_fields?.[field.selector],acknowledgementContext(view,job,profile,cv)))continue;
         if(field.type==='file'){
           const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
           if(field.value&&(!praca||confirmed))continue;
@@ -224,8 +231,10 @@ export async function runApplication({ repository, jobId, applicationId, profile
           continue;
         }
         if(field.type==='checkbox' && /consent|privacy|agree|marketing|newsletter|future|declar|commitment|zgod|regulamin|zapozn|oświadcz|oswiadcz|przetwarzan/iu.test(field.label)) {
-          if(field.checked)continue;const consent=classifyConsent(field.label,field.required);if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED'))continue;
+          const consent=classifyConsent(field.label,field.required);
+          if(consent.consent_type==='OPTIONAL_SKIP'||(!field.required&&consent.consent_type==='USER_REQUIRED')){if(field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:false});continue;}
           if(consent.consent_type==='USER_REQUIRED')return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CONSENT'});
+          if(field.checked)continue;
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,verified_facts:true});await repository.pool.query('INSERT INTO consents(consent_id,application_id,consent_text,consent_text_hash,consent_type,source) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),application.application_id,consent.consent_text,consent.consent_text_hash,consent.consent_type,'RECRUITMENT_POLICY']);continue;
         }
         if(field.type==='checkbox' && field.checked || radioGroupAnswered(field,view.fields))continue;

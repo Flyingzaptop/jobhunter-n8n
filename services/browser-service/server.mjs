@@ -120,6 +120,7 @@ export async function createBrowserService(config = browserConfig()) {
     else if(operation==='captcha-observation')return observePendingCaptcha(session.page,config);
     else if(operation==='observe-image'){const mask=session.page.frames().map(frame=>frame.locator('input[type=password],input[autocomplete=one-time-code],input[name*=token i],input[name*=otp i],input[name*=totp i],input[name*=authentication_code i]'));const png=await session.page.screenshot({fullPage:false,mask,maskColor:'#18212a'});return {png_base64:png.toString('base64'),captured_at:new Date().toISOString(),persisted:false};}
     else {
+      if(['fill','select','check','upload'].includes(operation))await dismissPracaUploadError(session.page);
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);
       if (operation === 'submit' && session.submit_attempted) return { ...before, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_id: session.submission_confirmation?.confirmation_id || null };
       if (!field && !button) throw new Error('SELECTOR_NOT_IN_CURRENT_SNAPSHOT');
