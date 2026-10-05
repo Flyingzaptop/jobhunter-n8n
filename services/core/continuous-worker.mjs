@@ -29,6 +29,16 @@ export function currentTailoredCv(manifest,job,analysis){return manifest?.templa
 
 export class ContinuousStore {
  constructor(repository,{ownerId=randomUUID(),leaseMs=7200000}={}){this.repository=repository;this.ownerId=ownerId;this.leaseMs=leaseMs;}
+ async loadModelSchedule(){
+  const row=(await this.repository.pool.query("SELECT outcome_code FROM continuous_work WHERE work_key='model:scheduler:v1'")).rows[0];
+  try{const state=JSON.parse(row?.outcome_code??'null');if(['fit','cv'].includes(state?.nextModel)&&typeof state.proseTurn==='boolean')return state;}catch{}
+  return {nextModel:'fit',proseTurn:false};
+ }
+ async saveModelSchedule(state){
+  await this.repository.pool.query(`INSERT INTO continuous_work(work_key,lane,status,outcome_code)
+   VALUES('model:scheduler:v1','scheduler','COMPLETED',$1) ON CONFLICT(work_key)
+   DO UPDATE SET outcome_code=EXCLUDED.outcome_code,updated_at=now()`,[JSON.stringify(state)]);
+ }
  async acquireLane(lane){const client=await this.repository.pool.connect();
   try{const {rows}=await client.query('SELECT pg_try_advisory_lock(hashtext($1)) locked',['jobhunter.continuous.'+lane]);
    if(!rows[0].locked){client.release();return null;}
@@ -81,7 +91,8 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- let nextModel='fit',proseTurn=false;const states={};
+ let nextModel='fit',proseTurn=false,scheduleLoaded=false;const states={};
+ const saveSchedule=async()=>{if(store.saveModelSchedule)await store.saveModelSchedule({nextModel,proseTurn});};
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
@@ -100,12 +111,13 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
     if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
-    if(prose&&proseTurn){proseTurn=false;const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
+    if(!scheduleLoaded){if(store.loadModelSchedule)({nextModel,proseTurn}=await store.loadModelSchedule());scheduleLoaded=true;}
+    if(prose&&proseTurn){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
     const candidates=await store.cvCandidates(profile,policy);
     const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
      if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context)))return true;}return false;};
-    if(nextModel==='cv'){nextModel='fit';proseTurn=true;if(!(await generate()))await fit(context);}
-    else {nextModel='cv';await fit(context);}
+    if(nextModel==='cv'){nextModel='fit';proseTurn=true;await saveSchedule();if(!(await generate()))await fit(context);}
+    else {nextModel='cv';await saveSchedule();await fit(context);}
    } else if(lane.startsWith('preparation-')){
     for(const row of await store.preparationCandidates(profile,policy)){
      if(waiting.has(row.application_status)||row.last_state?.ready_stop||row.last_state?.captcha)continue;

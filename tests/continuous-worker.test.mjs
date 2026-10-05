@@ -33,6 +33,15 @@ function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[]
   discovery:async()=>{},buildQueue:async()=>{},fit:async()=>{},cv:async()=>({}),notify:async()=>{},
   prepare:async(jobId)=>({application_id:jobId}),apply:async(jobId)=>{applied.push(jobId);return {status:jobId===job.job_id?'CAPTCHA_WAIT':'READY_STOP'};},...overrides});
  return {worker,store,claims,outcomes,applied};}
+
+test('worker restart resumes the CV turn instead of repeatedly returning to fit',async()=>{
+ let schedule={nextModel:'fit',proseTurn:false},fits=0,cvs=0;
+ const attach=store=>{store.loadModelSchedule=async()=>structuredClone(schedule);store.saveModelSchedule=async state=>{schedule=structuredClone(state);};};
+ const first=harness({fit:async()=>{fits++;},cv:async()=>{cvs++;return{status:'REGISTERED'};}});attach(first.store);
+ await first.worker.tick('model');assert.equal(fits,1);assert.equal(schedule.nextModel,'cv');
+ const restarted=harness({fit:async()=>{fits++;},cv:async()=>{cvs++;return{status:'REGISTERED'};}});attach(restarted.store);
+ await restarted.worker.tick('model');assert.equal(fits,1);assert.equal(cvs,1);assert.equal(schedule.nextModel,'fit');
+});
 test('cheap screening processes arrivals while a slow source scan is still pending',async()=>{
  let finishScan,screened=0;
  const {worker}=harness({discovery:()=>new Promise(resolve=>{finishScan=resolve;}),buildQueue:async()=>{screened++;}});
