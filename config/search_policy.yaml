@@ -88,3 +88,7 @@ application_domains: {allow: [], deny: []}
 compensation_filter:
   enabled: false
   minimum: null
+consent_policy:
+  current_recruitment_data_processing: true
+  authorization_source: USER_CHAT_2026-10-05
+  scope: CURRENT_APPLICATION_RECRUITMENT

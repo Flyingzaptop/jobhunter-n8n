@@ -6,13 +6,13 @@ import { computePriority } from './priority.mjs';
 import { retryPlan } from './analysis-retry.mjs';
 import { runObserved, observe, operationContext } from './observability.mjs';
 
-export const RELEVANCE_VERSION = 'relevance-v1.3-wroclaw-and-worldwide-remote';
+export const RELEVANCE_VERSION = 'relevance-v1.4-autocad-and-engineering';
 export const remoteTransferableTitle=title=>/customer (?:support|service)|service desk|help ?desk|support specialist|data annotat|data label|virtual assistant|content moderat|obsluga klient|obslugi klient|wsparci[ae].*klient/.test(fold(title));
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/gi,'l').toLowerCase();
 const europe = /^(?:pl|de|fr|gb|uk|ie|nl|be|cz|at|se|fi|dk|no|ch|es|it|pt|lt|lv|ee|ro|hu|sk|si|hr|poland|germany|france|united kingdom|ireland|netherlands|belgium|czechia|austria|sweden|finland|denmark|norway|switzerland|spain|italy|portugal|european union|europe)$/;
 const patterns = {
-  mechanical_rd: /\b(?:mechanical|mechatronic\w*|cad|cae|fea|cfd|konstruktor\w*|mechanik\w*|mechatronik\w*|konstruktion|sondermaschinenbau)\b|mechanical design|product development|research (?:engineer|assistant)|ingenieur.*(?:concep|cao|simulation)|aerospace|automotive/,
+  mechanical_rd: /\b(?:mechanical|autocad|draftsman|projektant|kreslarz|mechatronic\w*|cad|cae|fea|cfd|konstruktor\w*|mechanik\w*|mechatronik\w*|konstruktion|sondermaschinenbau)\b|mechanical design|product development|research (?:engineer|assistant)|ingenieur.*(?:concep|cao|simulation)|aerospace|automotive/,
   simulation_test: /simulation|validation|(?:hardware|embedded|system|mechanical) test|test (?:engineer|system)|verifikation|verification|\b(?:hil|sil)\b|prototyp/,
   automation_robotics: /robotic\w*|automat(?:ion|yk\w*|ion engineer)|plc|controls engineer|embedded|mechatron/,
   python_data: /\bpython\b|machine learning|data scient\w*|scientific software|technical software|research software|computer vision|graphics engineer|gpu performance/,

@@ -1,6 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import pg from 'pg';
 import {Repository} from '../services/core/repository.mjs';
-import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel,verificationRetryPlan,availabilityVerificationDue,RELEVANCE_LOCATION_ORDER_SQL} from '../services/core/relevance-queue.mjs';
+import {screenRelevance,fitInputHash,buildRelevanceQueue,runRelevanceFitBatch,compareCalibrationLabel,verificationRetryPlan,availabilityVerificationDue,RELEVANCE_LOCATION_ORDER_SQL,RELEVANCE_VERSION} from '../services/core/relevance-queue.mjs';
 
 test('actual queue SQL gives compatible remote and local engineering equal geography tier ahead of unknown remote',{skip:!process.env.DATABASE_URL},async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -22,8 +22,8 @@ test('incremental SQL screen preserves Unicode hashes, excludes unused metadata 
  const first=await repo.listRelevanceChanges('new');assert.equal(first.length,1);assert.equal(first[0].metadata,undefined);
  assert.equal((await buildRelevanceQueue({repository:repo})).counts.QUEUED,1);
  const again=await buildRelevanceQueue({repository:repo});assert.equal(again.changed_inputs,0);assert.equal(again.total,1);assert.equal(again.counts.QUEUED,1);
- await repo.pool.query("UPDATE jobs SET work_mode='REMOTE' WHERE job_id=$1",[id]);assert.equal((await repo.listRelevanceChanges('relevance-v1.3-wroclaw-and-worldwide-remote')).length,1);
- await buildRelevanceQueue({repository:repo});assert.equal((await repo.listRelevanceChanges('relevance-v1.3-wroclaw-and-worldwide-remote')).length,0);
+ await repo.pool.query("UPDATE jobs SET work_mode='REMOTE' WHERE job_id=$1",[id]);assert.equal((await repo.listRelevanceChanges(RELEVANCE_VERSION)).length,1);
+ await buildRelevanceQueue({repository:repo});assert.equal((await repo.listRelevanceChanges(RELEVANCE_VERSION)).length,0);
 });
 test('cheap screening selects technical junior roles without fake fit/eligibility and deprioritizes incidental body keywords',()=>{
  const technical=screenRelevance({title:'Junior Mechanical Design Engineer',location:'Poland',country:'PL',description_text:'CAD prototyping',availability_status:'OPEN'},{now});

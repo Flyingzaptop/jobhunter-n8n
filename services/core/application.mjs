@@ -18,6 +18,7 @@ export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from '../browser-service/required-fields.mjs';
+import {standingRecruitmentConsent} from './consent-policy.mjs';
 export {missingRequiredFields} from '../browser-service/required-fields.mjs';
 
 export class BrowserClient {
@@ -58,11 +59,12 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   if(/github.*(?:profile|link)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
   if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
   if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*(?:and\s*)?country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
+  if(/date of birth|birth date|\bdob\b|data urodzen/.test(label)&&known(identity.date_of_birth)&&['date','text'].includes(field.type))return {value:identity.date_of_birth,source:'PROFILE'};
   if(/birth|born|urodze/.test(label)&&!['first_name','last_name','email','phone'].includes(field.name))return null;
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:identity.current_job_title||(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   if(/linkedin/i.test(label)&&known(identity.linkedin_url)&&['text','url'].includes(field.type))return {value:identity.linkedin_url,source:'PROFILE'};
-  if(/^(?:school name|university name|college name|school|university|uczelnia)$/.test(label)&&['text','select-one'].includes(field.type)){const schools=[...new Set((profile.education??[]).map(f=>f.institution).filter(known))];if(schools.length===1)return {value:schools[0],source:'PROFILE'};}
+  if(/^(?:school name|university name|college name|school|university|uczelnia)$/.test(label)&&['text','select-one'].includes(field.type)){const primary=profile.education?.find(e=>e.primary_for_forms);const schools=[...new Set((profile.education??[]).map(f=>f.institution).filter(known))];if(primary||schools.length===1)return {value:primary?.institution??schools[0],source:'PROFILE'};}
   value=direct[field.name];
   if(field.name==='name'&&field.type==='text')value=legal;
   if(field.name==='location'&&field.type==='text'&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))value=`${candidate.base_location.city}, ${candidate.base_location.country}`;
@@ -257,6 +259,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
       fieldsToFill.sort((a,b)=>Number(a.type==='file')-Number(b.type==='file')||Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
+        if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
         const knownOptional=resolveField(field,{profile,job,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
         if(!field.required&&field.type!=='file'&&!knownOptional)continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];

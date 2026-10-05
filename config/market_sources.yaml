@@ -3379,3 +3379,105 @@ sources:
     failure_backoff_ms: 300000
     min_scan_interval_ms: 3600000
     continuation_scan_interval_ms: 60000
+  - name: praca-autocad
+    platform: Praca.pl
+    adapter: public_listing_html
+    url: https://www.praca.pl/s-autocad.html
+    robots_url: https://www.praca.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.praca.pl
+    job_link_pattern: _[0-9]+\.html$
+    listing_page_pattern: ^/s-autocad(?:_[0-9]+)?\.html$
+    max_pages: 16
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.praca.pl/s-autocad.html
+    required: false
+    reason: Live ordinary public listing and detail GET return 200; bounded dynamic
+      vacancy links and JobPosting extraction, without private APIs.
+    search_keyword: AutoCAD
+    search_scope: KEYWORD_SEARCH
+  - name: pracuj-autocad
+    platform: Pracuj.pl
+    adapter: public_headless_jobposting
+    url: https://www.pracuj.pl/praca/autocad;kw
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: SESSION_PUBLIC_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.pracuj.pl
+    reason: User-managed ordinary Chrome profile; verified access required.
+      Challenges are never counted as an empty search.
+    search_url: https://www.pracuj.pl/praca/autocad;kw
+    required: false
+    board_key: pracuj
+    robots_url: https://www.pracuj.pl/robots.txt
+    max_pages: 2
+    search_keyword: AutoCAD
+    search_scope: KEYWORD_SEARCH
+    failure_backoff_ms: 300000
+  - name: olx-autocad
+    platform: OLX Praca
+    adapter: public_headless_jobposting
+    url: https://www.olx.pl/praca/q-autocad/
+    robots_url: https://www.olx.pl/robots.txt
+    profile: real
+    enabled: true
+    source_class: poland_board
+    discovery_capability: PUBLIC_HEADLESS_JOBPOSTING
+    application_capability: MANUAL_TAKEOVER
+    permitted_access: true
+    allowed_hosts:
+      - www.olx.pl
+    reason: Ordinary isolated headless Chromium reads public listing and JobPosting
+      details; robots HTTP 403 is recorded separately as unknown policy, without
+      bypassing access challenges or requesting protected endpoints.
+    max_pages: 2
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    search_url: https://www.olx.pl/praca/q-autocad/
+    required: false
+    search_keyword: AutoCAD
+    search_scope: KEYWORD_SEARCH
+    board_key: olx
+    failure_backoff_ms: 300000
+  - name: linkedin-autocad
+    platform: LinkedIn Jobs
+    adapter: public_listing_html
+    url: https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=AutoCAD&location=Wroc%C5%82aw&start=0
+    profile: real
+    enabled: true
+    source_class: global_board
+    discovery_capability: PUBLIC_LISTING_JOBPOSTING
+    application_capability: SESSION_APPLICATION_ADAPTER
+    permitted_access: true
+    allowed_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+    job_link_pattern: ^/jobs/view/(?:[^/]+-)?[0-9]+/?$
+    listing_page_pattern: ^/jobs-guest/jobs/api/seeMoreJobPostings/search.*$
+    max_pages: 4
+    min_scan_interval_ms: 3600000
+    continuation_scan_interval_ms: 60000
+    failure_backoff_ms: 300000
+    search_keyword: AutoCAD
+    search_scope: KEYWORD_SEARCH
+    required: false
+    reason: Verified anonymous public guest results GET 200. Offset protocol
+      reviewed against pinned MIT JobSpy source; HTTP blocks remain explicit and
+      no login/private API bypass is used.
+    regional_listing_hosts:
+      - www.linkedin.com
+      - pl.linkedin.com
+    search_url: https://www.linkedin.com/jobs/search/?keywords=AutoCAD&location=Wroc%C5%82aw
+    pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
+    implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b

@@ -63,7 +63,7 @@ export function cvIdentityQa(profile) {
 const engineeringTerms=/mechanical|engineering|embedded|automation|control|robotic|simulation|cad|prototyp|gearbox|turbine|fea|cfd|plc|arduino|esp32|pid|inzynier|mechanik|automaty|robotyk/;
 export function cvSkillRelevance(skill,family){const text=normalize(skill);
  if(family==='IT_SUPPORT')return /active directory|workstation|network|\blan\b|printer|peripheral|windows|linux/.test(text)?100:0;
- if(family==='MECHANICAL')return /\bcad\b|fusion|mechanical|prototyp|\bfea\b|\bcfd\b|flow.3d|simulation|aerodynamic/.test(text)?100:/robotic|automation|\bplc\b|arduino|esp32|\bpid\b/.test(text)?50:0;
+ if(family==='MECHANICAL')return /\bcad\b|autocad|\bnx\b|technical drawing|3d printing|fusion|mechanical|prototyp|\bfea\b|\bcfd\b|flow.3d|simulation|aerodynamic/.test(text)?100:/robotic|automation|\bplc\b|arduino|esp32|\bpid\b/.test(text)?50:0;
  if(family==='ENGINEERING_AUTOMATION')return /\bplc\b|arduino|esp32|\bpid\b|automation|robotic/.test(text)?100
   :/\bcad\b|mechanical|prototyp|\bfea\b|\bcfd\b|simulation|aerodynamic/.test(text)?70:/python|c\+\+|^c$|linux|git|profiling|benchmark/.test(text)?50:0;
  if(family==='SOFTWARE')return /python|react|django|javascript|typescript|html|css|rest.api|c\+\+|^c$|linux|git/.test(text)?100:0;
@@ -341,7 +341,7 @@ export function renderCvV2Html(document, profile, language, identity,tailoring=n
   const professionalHtml=employed.length?`<h2>${labels.experience}</h2>${sectionHtml(employed)}`:'';
   const projectHtml=projects.length?`<h2>${labels.projects}</h2>${sectionHtml(projects)}`:'';
   const prioritizedSections=document.sections[0] && index.get(document.sections[0].source_fact_id).provenance!=='PROFESSIONAL' ? projectHtml+professionalHtml : professionalHtml+projectHtml;
-  const education=(profile.education??[]).map(f=>`<article><h3>${escape(f.institution)}</h3><p>${escape([f.field,f.specialization].filter(known).join(' · '))}</p><p>${escape(f.status==='degree_in_progress' ? (pl?'Studia w toku':'Degree in progress') : f.status)}</p></article>`).join('');
+  const education=(profile.education??[]).map(f=>`<article><h3>${escape(f.institution)}</h3><p>${escape([f.degree,f.field,f.specialization].filter(known).join(' · '))}</p><p>${escape(f.status==='degree_in_progress' ? (pl?'Studia w toku':'Degree in progress') : f.status)}</p>${known(f.start_date)?`<p class="meta">${escape(f.start_date)} — ${pl?'obecnie':'ongoing'}</p>`:''}${Number.isInteger(f.semesters_completed)?`<p>${escape(f.semesters_completed)} ${pl?'ukończonych semestrów':'semesters completed'}</p>`:''}</article>`).join('');
   const training=(profile.training??[]).filter(f=>!tailoring||tailoring.relevant_training_ids.includes(f.id)).map(f=>`<p>${escape(f.title)}${known(f.provider)?` · ${escape(f.provider)}`:''}${f.certificate?` · ${pl?'certyfikat kursu':'course certificate'}`:''}</p>`).join('');
   const contacts=[identity.email,identity.phone,profile.onboarding?.github_url,profile.onboarding?.portfolio_url].filter(known);
   const location=[profile.candidate?.base_location?.city,profile.candidate?.base_location?.country].filter(known).join(', ');
