@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import YAML from "yaml";
 import { factIndex } from "../core/fit.mjs";
 import { sanitize, STAGE_NAMES } from "../core/observability.mjs";
+import {batchProgress} from '../core/pipeline-batch.mjs';
 const load = async (name) =>
   YAML.parse(await readFile(`config/${name}.yaml`, "utf8"));
 export const uuid = (value) =>
@@ -22,9 +23,10 @@ export async function pipeline(repo) {
   const paused = (
     await repo.pool.query("SELECT paused FROM runtime_control WHERE id=true")
   ).rows[0]?.paused;
+  const progress=await batchProgress(repo,await load('candidate_profile'),await load('search_policy'));
   return STAGE_NAMES.map((title, i) => {
     const run = runs.find((r) => r.stage === i + 1);
-    return {
+    const result={
       stage: i + 1,
       title,
       status: paused ? "PAUSED" : (run?.status ?? "IDLE"),
@@ -42,6 +44,15 @@ export async function pipeline(repo) {
           ? null
           : Math.max(0, run.total_count - run.processed_count),
     };
+    if(progress){const pct=(done,total)=>total?Math.min(100,Math.round(done/total*10000)/100):100;let done=0,total=0,status=result.status;
+      if(i===0){done=total=progress.normalization.total;status=progress.discovery_paused?'PAUSED':'RUNNING';}
+      if(i===1){done=progress.normalization.done;total=progress.normalization.total;result.progress_percent=Math.min(pct(done,total),pct(progress.normalization.screen.done,progress.normalization.screen.total));status=progress.phase==='NORMALIZE'?'RUNNING':'SUCCEEDED';}
+      if(i===2){done=progress.fit.done;total=progress.fit.total;status=progress.phase==='NORMALIZE'?'WAITING':progress.phase==='FIT'?'RUNNING':'SUCCEEDED';}
+      if(i===3){done=progress.cv.done;total=progress.cv.total;status=progress.phase==='CV_HITL'?result.status:'WAITING';}
+      if(i===4){done=progress.applications.filter(r=>['SUBMITTED','SKIPPED','ALREADY_APPLIED'].includes(r.status)).reduce((n,r)=>n+r.count,0);total=progress.applications.reduce((n,r)=>n+r.count,0);status=progress.phase==='CV_HITL'?result.status:'WAITING';}
+      result.progress_percent??=pct(done,total);result.processed_count=done;result.total_count=total;result.status=status;result.batch_phase=progress.phase;result.blocked_count=i===2?progress.fit.blocked:0;result.remaining_count=Math.max(0,total-done);if(paused)result.status='PAUSED';if(i===5&&total===0)result.progress_percent=0;
+    }
+    return result;
   });
 }
 export async function onboarding(providedProfile,providedPolicy) {

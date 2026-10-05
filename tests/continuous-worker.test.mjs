@@ -50,6 +50,13 @@ test('an empty FIT batch cannot start CV when another deep-fit task remains',asy
  let generated=0;const {worker,store}=harness({fit:async()=>({attempted:0}),cv:async()=>{generated++;return {status:'REGISTERED'};}});store.hasPendingFit=async()=>true;
  await worker.tick('model');assert.equal(generated,0);
 });
+test('frozen batch blocks discovery and every later stage until normalization reaches 100 percent',async()=>{
+ const calls=[];const {worker,store,applied}=harness({discovery:async()=>calls.push('SEARCH'),fit:async()=>{calls.push('FIT');return {attempted:0};},cv:async()=>{calls.push('CV');return {status:'REGISTERED'};}});
+ let phase='NORMALIZE';store.phaseBarrier=async()=>({phase,discovery_paused:true,batch_id:'frozen'});store.normalizeBatch=async()=>calls.push('NORMALIZE');
+ await worker.tick('ingestion');await worker.tick('model');await worker.tick('preparation-1');assert.deepEqual(calls,[]);assert.equal(applied.length,0);
+ await worker.tick('screening');assert.deepEqual(calls,['NORMALIZE']);phase='FIT';await worker.tick('model');assert.deepEqual(calls,['NORMALIZE','FIT']);assert.equal(applied.length,0);
+ phase='CV_HITL';await worker.tick('model');assert.equal(calls.at(-1),'CV');await worker.tick('preparation-1');assert.equal(applied.length,1);
+});
 
 test('cheap screening processes arrivals while a slow source scan is still pending',async()=>{
  let finishScan,screened=0;

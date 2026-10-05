@@ -2,6 +2,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 import {CV_V2_VERSION,compatibleCvTemplate} from './cv-v2.mjs';
 import {workFormatAnalysis,PROMPT_VERSION} from './fit.mjs';
+import {batchProgress,finishBatchNormalization} from './pipeline-batch.mjs';
 
 const digest=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
 const safeCode=value=>/^[A-Z][A-Z0-9_]{0,79}$/.test(value??'')?value:'OPERATION_FAILED';
@@ -56,6 +57,11 @@ export class ContinuousStore {
   VALUES($1,$2,$3,$4,1) ON CONFLICT(lane) DO UPDATE SET owner_id=EXCLUDED.owner_id,state=EXCLUDED.state,outcome_code=EXCLUDED.outcome_code,
   ticks=continuous_worker_status.ticks+1,updated_at=now()`,[lane,this.ownerId,state,code&&safeCode(code)]);}
  async paused(){return (await this.repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused===true;}
+ async phaseBarrier(profile,policy){const key=digest([profile,policy]);if(this.batchCache?.key===key&&Date.now()-this.batchCache.at<3000)return this.batchCache.value;
+  const value=await batchProgress(this.repository,profile,policy);this.batchCache={key,at:Date.now(),value};return value;}
+ async normalizeBatch(id){return finishBatchNormalization(this.repository,id);}
+ async resumeTask(){return (await this.repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;}
+ async clearResumeTask(){await this.repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');}
  async pendingFitCount(profile,policy){return Number((await this.repository.pool.query(`SELECT count(*)::int count FROM relevance_queue q JOIN jobs j USING(job_id)
   WHERE q.status IN ('QUEUED','RETRY','OPEN_UNVERIFIED','RUNNING','ANALYZED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
   AND NOT EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'policy_hash'=$2 AND a.analysis_json->>'job_content_hash'=j.content_hash)
@@ -103,7 +109,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- const states={};
+ const states={};let cvHitlTurn=false;
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
@@ -118,18 +124,25 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
   try{if(await store.paused()){states[lane]='PAUSED';await store.status(lane,'PAUSED');return;}
    const context=structuredClone(await loadConfiguration());const {profile,policy}=context;
    if(!profile||!policy)throw new Error('CURRENT_CONFIGURATION_REQUIRED');
+   const barrier=store.phaseBarrier?await store.phaseBarrier(profile,policy):null;
+   const blocked=barrier&&(lane==='ingestion'&&barrier.discovery_paused||barrier.phase==='NORMALIZE'&&!['screening','notifications'].includes(lane)||barrier.phase==='FIT'&&lane.startsWith('preparation-'));
+   if(blocked){states[lane]='WAITING';await store.status(lane,'IDLE',lane==='ingestion'?'DISCOVERY_FROZEN':`${barrier.phase}_BARRIER`);return;}
+   if(lane==='screening'&&barrier?.phase==='NORMALIZE'&&store.normalizeBatch)await store.normalizeBatch(barrier.batch_id);
    if(lane==='ingestion')await discovery(context);
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
     if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
     const fitted=await fit(context);
     if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
+    if(barrier?.phase==='FIT'){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_BATCH_NOT_100_PERCENT');return;}
     if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
+    if(barrier?.phase==='CV_HITL'&&cvHitlTurn&&prose){cvHitlTurn=false;const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE','HITL_WITH_CV_PHASE');return;}}
     const candidates=await (store.runnableCvCandidates?store.runnableCvCandidates(profile,policy):store.cvCandidates(profile,policy));
-    for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
+    const resume=store.resumeTask&&await store.resumeTask();if(resume?.type==='CV'){candidates.sort((a,b)=>Number(b.job_id===resume.job_id)-Number(a.job_id===resume.job_id));if(store.clearResumeTask)await store.clearResumeTask();}
+    for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){cvHitlTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
     if(prose)await prose(context);
    } else if(lane.startsWith('preparation-')){
-    const priority=store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
+    const priority=barrier?.phase==='CV_HITL'?null:store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
     for(const row of await store.preparationCandidates(profile,policy)){
      if(waiting.has(row.application_status)||row.last_state?.ready_stop||row.last_state?.captcha)continue;
      const key='prepare:'+digest([profile.profile_id,row.job_id,digest(profile),digest(policy),CV_V2_VERSION,row.cv_id]);
@@ -166,7 +179,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
   modelBusy:async()=>{const {localModelBusy}=await import('./model-busy.mjs');return localModelBusy(llm.model);},
   discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});return applyDeterministicHardRejects({repository,profile,policy});},
   prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
-  fit:({profile,policy})=>runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:8,maxRuntimeMs:120000,inferenceAuthorized:true}),
+  fit:async({profile,policy})=>{const resume=(await repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;const result=await runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:resume?.type==='FIT'?1:8,jobIds:resume?.type==='FIT'?[resume.job_id]:undefined,maxRuntimeMs:120000,inferenceAuthorized:true});if(resume?.type==='FIT')await repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');return result;},
   cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId});
    if(manifest?.blocked_reason||manifest?.status!=='PASS')return manifest;
    await ensureCurrent(context);

@@ -16,6 +16,7 @@ import * as q from "./queries.mjs";
 import { sanitize } from "../core/observability.mjs";
 import { report } from "../core/reporting.mjs";
 import {llmTaskReport} from '../core/llm-tasks.mjs';
+import {hardwarePause,hardwareResume} from '../core/hardware-pause.mjs';
 import { randomUUID } from "node:crypto";
 import { n8nCli,prepareControlWorkflows } from "../../scripts/n8n-bootstrap.mjs";
 import { answerApplicationQuestion, dispatchQuestionAnswer, questionEligibility, hitlError } from '../core/hitl.mjs';
@@ -522,16 +523,9 @@ export function createDashboard({
         throw Object.assign(new Error("POST required"), { status: 405 });
       const payload = await body(req);
       if (p.endsWith("/pause") || p.endsWith("/resume")) {
-        const paused = p.endsWith("/pause");
-        await repository.pool.query(
-          "UPDATE runtime_control SET paused=$1,updated_at=now() WHERE id=true",
-          [paused],
-        );
-        await repository.event("system", "runtime", "DASHBOARD_CONTROL", {
-          operation: paused ? "PAUSE" : "RESUME",
-        });
-        return send({ paused });
+        return send(await(p.endsWith('/pause')?hardwarePause(repository):hardwareResume(repository)));
       }
+
       if (p.endsWith("/trigger")) {
         const stage = Number(payload.stage);
         if (

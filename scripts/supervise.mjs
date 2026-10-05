@@ -36,6 +36,7 @@ let stopped=false;process.on('SIGINT',()=>stopped=true);process.on('SIGTERM',()=
 const attempts=new Map();
 try{while(!stopped){const states=[];
  for(const service of services){
+  try{const pause=JSON.parse(await readFile(path.join(directory,'hardware-pause.json'),'utf8'));if(pause.paused&&['lmstudio','worker','browser','n8n','telegram'].includes(service.name)){states.push({name:service.name,state:pause.state??'PAUSED'});continue;}}catch{}
   try{const maintenance=JSON.parse(await readFile(path.join(directory,'maintenance.json'),'utf8'));if(maintenance.services?.includes(service.name)){states.push({name:service.name,state:'UPDATING'});continue;}}catch{}
   try{const ids=await pids(service.entry);const ok=await healthy(service,ids);
    if(ok){attempts.delete(service.name);states.push({name:service.name,state:'RUNNING',pids:ids});continue;}
