@@ -1,0 +1,25 @@
+{
+  "source": "Observed first-party public Ashby application UI, requests blocked during inspection",
+  "queries": [
+    {
+      "operation_name": "ApiAutocompleteGeoLocation",
+      "query": "query ApiAutocompleteGeoLocation($text: String!, $locationTypes: [GeoLocationType!]) {\n  result: autocompleteGeoLocation(text: $text, locationTypes: $locationTypes) {\n    ...AutocompleteLocationResultParts\n    __typename\n  }\n}\n\nfragment AutocompleteGeoLocationParts on GeoLocation {\n  name\n  type\n  providerLocationId\n  __typename\n}\n\nfragment AutocompleteLocationParts on AutocompleteLocation {\n  name\n  geoLocationPath {\n    ...AutocompleteGeoLocationParts\n    __typename\n  }\n  __typename\n}\n\nfragment AutocompleteLocationResultParts on AutocompleteLocationResult {\n  suggestions {\n    ...AutocompleteLocationParts\n    __typename\n  }\n  __typename\n}",
+      "query_sha256": "bd60a76c77bdb2a361ed0d6108c284db0ac195d06ea238d6a5a0fc419bf0cfec"
+    },
+    {
+      "operation_name": "ApiSetFormValue",
+      "query": "mutation ApiSetFormValue($organizationHostedJobsPageName: String!, $formRenderIdentifier: String!, $path: String!, $value: JSON, $formDefinitionIdentifier: String) {\n  setFormValue(\n    organizationHostedJobsPageName: $organizationHostedJobsPageName\n    formRenderIdentifier: $formRenderIdentifier\n    path: $path\n    value: $value\n    formDefinitionIdentifier: $formDefinitionIdentifier\n  ) {\n    ...FormRenderParts\n    __typename\n  }\n}\n\nfragment JSONBoxParts on JSONBox {\n  value\n  __typename\n}\n\nfragment FileParts on File {\n  id\n  filename\n  __typename\n}\n\nfragment FormFieldEntryParts on FormFieldEntry {\n  id\n  field\n  fieldValue {\n    ... on JSONBox {\n      ...JSONBoxParts\n      __typename\n    }\n    ... on File {\n      ...FileParts\n      __typename\n    }\n    ... on FileList {\n      files {\n        ...FileParts\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  isRequired\n  descriptionHtml\n  isHidden\n  __typename\n}\n\nfragment FormRenderParts on FormRender {\n  id\n  formControls {\n    identifier\n    title\n    __typename\n  }\n  errorMessages\n  formErrors {\n    message\n    fieldEntryId\n    __typename\n  }\n  sections {\n    title\n    descriptionHtml\n    fieldEntries {\n      ...FormFieldEntryParts\n      __typename\n    }\n    isHidden\n    __typename\n  }\n  sourceFormDefinitionId\n  __typename\n}",
+      "query_sha256": "92e736d6645d95a56dc604468efe7632559b08c350fd470eaf541e39e89f18a7"
+    },
+    {
+      "operation_name": "ApiCreateFileUploadHandle",
+      "query": "mutation ApiCreateFileUploadHandle($organizationHostedJobsPageName: String!, $fileUploadContext: FileUploadContext!, $filename: String!, $contentType: String!, $contentLength: Int!) {\n  fileUploadHandle: createFileUploadHandle(\n    organizationHostedJobsPageName: $organizationHostedJobsPageName\n    fileUploadContext: $fileUploadContext\n    filename: $filename\n    contentType: $contentType\n    contentLength: $contentLength\n  ) {\n    handle\n    url\n    fields\n    __typename\n  }\n}",
+      "query_sha256": "512339bdc70b71ab15852e143749296bc8fcb4e36d425f1237dd1554468b7022"
+    },
+    {
+      "operation_name": "ApiSetFormValueToFile",
+      "query": "mutation ApiSetFormValueToFile($organizationHostedJobsPageName: String!, $formRenderIdentifier: String!, $path: String!, $fileHandle: String, $formDefinitionIdentifier: String) {\n  setFormValueToFile(\n    organizationHostedJobsPageName: $organizationHostedJobsPageName\n    formRenderIdentifier: $formRenderIdentifier\n    path: $path\n    fileHandle: $fileHandle\n    formDefinitionIdentifier: $formDefinitionIdentifier\n  ) {\n    ...FormRenderParts\n    __typename\n  }\n}\n\nfragment JSONBoxParts on JSONBox {\n  value\n  __typename\n}\n\nfragment FileParts on File {\n  id\n  filename\n  __typename\n}\n\nfragment FormFieldEntryParts on FormFieldEntry {\n  id\n  field\n  fieldValue {\n    ... on JSONBox {\n      ...JSONBoxParts\n      __typename\n    }\n    ... on File {\n      ...FileParts\n      __typename\n    }\n    ... on FileList {\n      files {\n        ...FileParts\n        __typename\n      }\n      __typename\n    }\n    __typename\n  }\n  isRequired\n  descriptionHtml\n  isHidden\n  __typename\n}\n\nfragment FormRenderParts on FormRender {\n  id\n  formControls {\n    identifier\n    title\n    __typename\n  }\n  errorMessages\n  formErrors {\n    message\n    fieldEntryId\n    __typename\n  }\n  sections {\n    title\n    descriptionHtml\n    fieldEntries {\n      ...FormFieldEntryParts\n      __typename\n    }\n    isHidden\n    __typename\n  }\n  sourceFormDefinitionId\n  __typename\n}",
+      "query_sha256": "a6798f9c5e490dcde33477f1f5c25a95672376d6959178224dedbc543df21dc2"
+    }
+  ]
+}

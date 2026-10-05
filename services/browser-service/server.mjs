@@ -16,6 +16,8 @@ import {selectedCookieButton} from '../core/form-settling.mjs';
 import {dismissPracaCookies,dismissPracaUploadError} from './praca-cookies.mjs';
 import {setCheckedControl} from './check-control.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
+import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,reviewedAshbyFieldSave,bindAshbyStorageUpload,reviewedAshbyStoragePost,restoreOmittedMultipartPdf,chooseCombobox} from './ashby-preparation.mjs';
+import {gunzipSync,brotliDecompressSync,inflateSync} from 'node:zlib';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -29,9 +31,9 @@ export function browserConfig(env = process.env) {
 
 // Every request is resolved once, checked, then connected to the checked address.
 // Redirects return to Chromium and traverse this policy again. No DNS rebinding gap.
-async function pinnedRequest(request, destination) {
+async function pinnedRequest(request, destination, bodyOverride) {
   const headers = { ...request.headers() }; delete headers.host;
-  const body = request.postDataBuffer();
+  const body = bodyOverride??request.postDataBuffer();if(Buffer.isBuffer(body))headers['content-length']=String(body.length);
   return new Promise((resolve, reject) => {
     const transport = destination.url.protocol === 'https:' ? https : http;
     const outgoing = transport.request(destination.url, { method: request.method(), headers,
@@ -63,18 +65,30 @@ export async function createBrowserService(config = browserConfig()) {
     const session = { id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {
       try {
-        const request = route.request(), destination = await validateDestination(request.url(), config);
+        const request = route.request(), destination = await validateDestination(request.url(), config);let uploadInit=false;
+        const requestBody=session.uploadWindow?.expires_at>Date.now()||session.submitActive?restoreOmittedMultipartPdf(request.postDataBuffer(),request.headers()['content-type'],session.uploadWindow):request.postDataBuffer();
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
           const safeMockWrite = destination.mock && /^\/(draft|step|captcha)(\/|$)/.test(destination.url.pathname);
           const adapter=atsAdapterFor(session.page?.url()??request.url());
-          const reviewed=request.method()==='POST'&&reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed;
+          const reviewed=request.method()==='POST'&&(reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed||adapter==='ashby'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()}));
           const humanVerification=request.method()==='POST'&&reviewedHumanCaptchaPost(request.url(),session.humanCaptchaWindow,config);
-          const upload=reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow});
+          const upload=reviewedUploadRequest({url:request.url(),method:request.method(),body:requestBody,contentType:request.headers()['content-type'],window:session.uploadWindow});
+          uploadInit=request.method()==='POST'&&reviewedAshbyUploadInit({url:request.url(),body:request.postData(),window:session.uploadWindow});
+          const storage=reviewedAshbyStoragePost({url:request.url(),method:request.method(),body:requestBody,contentType:request.headers()['content-type'],storage:session.uploadWindow?.storage});
+          const attach=request.method()==='POST'&&reviewedAshbyFileAttach({url:request.url(),body:request.postData(),window:session.uploadWindow,definitions:session.ashbyDefinitions});
+          const fieldSave=request.method()==='POST'&&reviewedAshbyFieldSave({url:request.url(),body:request.postData(),windows:session.ashbyFieldWindows,definitions:session.ashbyDefinitions,suggestions:session.ashbySuggestions});
           const draft=reviewedDraftRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.draftWindow});
-          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !draft && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !uploadInit && !storage && !attach && !fieldSave && !draft && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
           if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
         }
-        await route.fulfill(await pinnedRequest(request, destination));
+        const reply=await pinnedRequest(request,destination,requestBody);
+        if(request.method()==='POST'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()})&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);session.ashbySuggestions=JSON.parse(bytes.toString('utf8')).data?.result?.suggestions??[];}catch{session.ashbySuggestions=[];}}
+        if(request.url().includes('op=ApiJobPosting')&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);const job=JSON.parse(bytes.toString('utf8')).data?.jobPosting;
+          session.ashbyDefinitions??=new Set();for(const form of [job?.applicationForm,...(job?.surveyForms??[])])if(typeof form?.sourceFormDefinitionId==='string')session.ashbyDefinitions.add(form.sourceFormDefinitionId);
+        }catch{/* Only observed public form definitions can authorize an attachment. */}}
+        if(uploadInit&&reply.status>=200&&reply.status<300){let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);
+          const storage=bindAshbyStorageUpload(session.uploadWindow,JSON.parse(bytes.toString('utf8')));if(!storage)throw Error('ASHBY_STORAGE_WINDOW_UNVERIFIED');session.uploadWindow.storage=storage;}
+        await route.fulfill(reply);
       } catch (error) {
         const rejected=route.request();let operationName;
         try{const json=JSON.parse(rejected.postData()??'');if(typeof json.operationName==='string'&&/^[A-Za-z0-9_]{1,100}$/.test(json.operationName))operationName=json.operationName;}catch{}
@@ -97,7 +111,7 @@ export async function createBrowserService(config = browserConfig()) {
     const result = await session.page.evaluate(() => {
       const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => e.id ? '#' + CSS.escape(e.id) : e.name ? `${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]` : `[data-jh-index="${e.dataset.jhIndex}"]`;
-      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', max_length:e.maxLength>0?e.maxLength:null, pattern:e.pattern||null,autocomplete:e.autocomplete||null, disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /password|otp|totp|authentication|csrf|secret/i.test(e.type+' '+e.name)||e.autocomplete==='one-time-code'?'':/^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
+      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), field_path:e.closest('[data-field-path]')?.dataset.fieldPath??null, form_render_id:e.closest('[data-field-entry-id]')?.dataset.fieldEntryId?.slice(0,36)??null, role:e.getAttribute('role'), description:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-description')?.textContent?.trim()??'', group_label:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim()??'', label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || (e.getAttribute('aria-labelledby')??'').split(/\s+/).map(id=>document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(' ') || e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim() || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true', max_length:e.maxLength>0?e.maxLength:null, pattern:e.pattern||null,autocomplete:e.autocomplete||null, disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /password|otp|totp|authentication|csrf|secret/i.test(e.type+' '+e.name)||e.autocomplete==='one-time-code'?'':/^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link',name:e.name??null,value:e.value??null,formAction:e.formAction??null,form_id:e.form?.id??null, final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
@@ -123,11 +137,15 @@ export async function createBrowserService(config = browserConfig()) {
     else {
       if(['fill','select','check','upload'].includes(operation))await dismissPracaUploadError(session.page);
       const before = await snapshot(session), field = before.fields.find(f => f.selector === payload.selector), button = before.buttons.find(b => b.selector === payload.selector);
+      const registerFieldWindow=()=>{if(atsAdapterFor(before.url)==='ashby'&&field?.field_path&&field.form_render_id&&(payload.verified_facts===true||payload.approval==='USER_CONFIRMED')){
+        session.ashbyFieldWindows??=new Map();session.ashbyFieldWindows.set(field.field_path,{url:before.url,form_render_id:field.form_render_id,value:operation==='check'?payload.checked!==false:payload.value,label:field.label,type:field.type,role:field.role,expires_at:Date.now()+15000});
+      }};
       if (operation === 'submit' && session.submit_attempted) return { ...before, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_id: session.submission_confirmation?.confirmation_id || null };
       if (!field && !button) throw new Error('SELECTOR_NOT_IN_CURRENT_SNAPSHOT');
       const locator = session.page.locator(payload.selector);
-      if (operation === 'fill') { if (!field.visible || field.disabled || field.readOnly || ['hidden', 'file', 'checkbox', 'radio', 'submit','password'].includes(field.type)||field.autocomplete==='one-time-code') throw new Error('UNSAFE_FILL'); await locator.fill(String(payload.value)); session.filled_fields[payload.selector] = String(payload.value); }
-      else if (operation === 'select') { if (!field.visible || !field.options) throw new Error('NOT_SELECT'); await locator.selectOption(payload.value); session.filled_fields[payload.selector] = payload.value; }
+      if (operation === 'fill') { if (!field.visible || field.disabled || field.readOnly || ['hidden', 'file', 'checkbox', 'radio', 'submit','password'].includes(field.type)||field.autocomplete==='one-time-code') throw new Error('UNSAFE_FILL'); registerFieldWindow(); await locator.fill(String(payload.value)); session.filled_fields[payload.selector] = String(payload.value); }
+      else if (operation === 'select') { if (!field.visible || !field.options) throw new Error('NOT_SELECT'); registerFieldWindow(); await locator.selectOption(payload.value); session.filled_fields[payload.selector] = payload.value; }
+      else if(operation==='choose'){if(!field.visible||field.role!=='combobox'||payload.verified_facts!==true)throw Error('VERIFIED_COMBOBOX_REQUIRED');registerFieldWindow();await chooseCombobox(session.page,locator,payload.value);session.filled_fields[payload.selector]=payload.value;}
       else if (operation === 'check') {
         if (!field.visible || !['checkbox', 'radio'].includes(field.type)) throw new Error('NOT_CHECKABLE');
         const consent = classifyConsent(field.label, field.required);
@@ -137,7 +155,7 @@ export async function createBrowserService(config = browserConfig()) {
           if (consent.consent_type === 'TRUTH_ATTESTATION' && payload.verified_facts !== true && payload.approval !== 'USER_CONFIRMED') throw new Error('TRUTH_ATTESTATION_REQUIRES_VERIFIED_FACTS');
           session.history.push({ ...consent, application_id: session.application_id, timestamp: new Date().toISOString(), user_confirmed: payload.approval === 'USER_CONFIRMED' });
         }
-        await setCheckedControl(session.page,locator,payload.checked !== false); session.filled_fields[payload.selector] = payload.checked !== false;
+        registerFieldWindow();await setCheckedControl(session.page,locator,payload.checked !== false); session.filled_fields[payload.selector] = payload.checked !== false;
       }
       else if (operation === 'upload') {
         if (field.type !== 'file' || field.disabled) throw new Error('NOT_UPLOAD_FIELD');
@@ -146,11 +164,16 @@ export async function createBrowserService(config = browserConfig()) {
         const relative = path.relative(root, target); if (relative.startsWith('..') || path.isAbsolute(relative) || path.extname(target).toLowerCase() !== '.pdf') throw new Error('ARTIFACT_NOT_APPROVED');
         const bytes = await fs.readFile(target); if (bytes.length > 5 * 1024 * 1024 || bytes.subarray(0, 5).toString() !== '%PDF-' || !payload.sha256 || hash(bytes) !== payload.sha256) throw new Error('ARTIFACT_HASH_OR_FORMAT_INVALID');
         await dismissPracaUploadError(session.page);
-        session.uploadWindow={url:before.url,sha256:payload.sha256,filename:path.basename(target),expires_at:Date.now()+30000};
+        session.uploadWindow={url:before.url,sha256:payload.sha256,filename:path.basename(target),byte_length:bytes.length,bytes,field_path:field.field_path,form_render_id:field.form_render_id,expires_at:Date.now()+30000};
         const upload={selector:payload.selector,sha256:payload.sha256,filename:path.basename(target),evidence:'LOCAL_FILE_SELECTION'};
         const receipt=async response=>{try{
           const request=response.request();
-          if(!response.ok()||!reviewedUploadRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.uploadWindow}))return;
+          const requestBody=restoreOmittedMultipartPdf(request.postDataBuffer(),request.headers()['content-type'],session.uploadWindow);
+          if(response.ok()&&reviewedAshbyStoragePost({url:request.url(),method:request.method(),body:requestBody,contentType:request.headers()['content-type'],storage:session.uploadWindow?.storage})){upload.evidence='SERVER_STORAGE_RECEIPT';upload.receipt_id='ashby-storage:'+hash(session.uploadWindow.storage.handle);return;}
+          if(response.ok()&&reviewedAshbyFileAttach({url:request.url(),body:request.postData(),window:session.uploadWindow,definitions:session.ashbyDefinitions})){const result=await response.json(),form=result.data?.setFormValueToFile;
+            const file=form?.sections?.flatMap(s=>s.fieldEntries??[]).find(entry=>entry.fieldValue?.filename===upload.filename)?.fieldValue;
+            if(!result.errors&&!form?.errorMessages?.length&&file?.id){upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id='ashby-file:'+hash(String(file.id));}return;}
+          if(!response.ok()||!reviewedUploadRequest({url:request.url(),method:request.method(),body:requestBody,contentType:request.headers()['content-type'],window:session.uploadWindow}))return;
           const result=verifiedUploadReceipt(await response.json(),upload.filename,{url:request.url()});
           if(result){
             upload.evidence='SERVER_UPLOAD_RECEIPT';upload.receipt_id=result.receipt_id;
