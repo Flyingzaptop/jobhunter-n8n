@@ -38,6 +38,10 @@ test('visible OLX extraction preserves exact description and does not invent mis
   const posting=await extractVisibleBoardJob(page,'olx');assert.equal(posting.title,'Junior Mechanical Engineer');
   assert.equal(posting.description,text.trim());assert.equal(Object.hasOwn(posting,'datePublished'),false);
   assert.equal(Object.hasOwn(posting,'hiringOrganization'),false);assert.equal(posting.extraction_evidence.method,'VISIBLE_BOARD_DOM');
+  await page.setContent(`<h1>Junior Mechanical Engineer</h1><div data-testid="ad-description">${text}</div><p>Company founded <time datetime="1999-01-01">1999</time></p>`);
+  assert.equal(Object.hasOwn(await extractVisibleBoardJob(page,'olx'),'datePublished'),false);
+  await page.setContent(`<h1>Junior Mechanical Engineer</h1><div data-testid="ad-description">${text}</div><p>Posted <time datetime="2026-10-05">5 October</time></p>`);
+  assert.equal((await extractVisibleBoardJob(page,'olx')).datePublished,'2026-10-05');
  }finally{await browser.close();}
 });
 test('failed details survive pagination and only verified reads remove the exact retry',()=>{

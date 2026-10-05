@@ -12,7 +12,11 @@ export async function extractVisibleBoardJob(page,board){
   const title=read(selectors.title),description=read(selectors.description),company=read(selectors.company);
   if(!title||description.length<120)return null;
   const main=document.querySelector('main')??document.body;
-  const time=[...main.querySelectorAll('time[datetime]')].find(e=>visible(e));
+  const time=[...main.querySelectorAll('time[datetime]')].find(e=>{
+   const label=e.getAttribute('aria-label')??e.parentElement?.innerText??'';
+   return visible(e)&&(/^(?:datePosted|datePublished)$/.test(e.getAttribute('itemprop')??'')||
+    label.length<=240&&/(?:published|posted|date posted|dodano|opublikowano|zamieszczono)/i.test(label));
+  });
   const datePublished=time?.getAttribute('datetime');
   const applyLinks=[...main.querySelectorAll('a[href]')].filter(e=>visible(e)&&/^(?:aplikuj(?: teraz| szybko)?|apply(?: now| on company website)?)$/i.test(e.innerText.trim())).map(e=>e.href);
   return {'@type':'JobPosting',title,description,url:location.href,
