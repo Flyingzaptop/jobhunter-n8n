@@ -5,14 +5,15 @@ import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 import path from 'node:path';
 const execute=promisify(execFile),repository=new Repository(),directory=path.resolve('data/runtime');
 const entries=['scripts/continuous-worker.mjs','services/core/server.mjs','services/browser-service/server.mjs','services/dashboard/server.mjs'];
-const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));let pauseToken,maintenance=false;
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));let pauseToken,maintenance=false,quiesced=false;
 try{
  await mkdir(directory,{recursive:true});
  console.log(JSON.stringify({event:'UPGRADE_WAITING_FOR_MODEL_IDLE'}));
- while(!pauseToken){
+ while(!quiesced){
   if(await localModelBusy(process.env.LLM_STRONG_MODEL??'jobhunter-gemma4')){await wait(5000);continue;}
+  if((await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused){quiesced=true;break;}
   const row=(await repository.pool.query("UPDATE runtime_control SET paused=true,updated_at=clock_timestamp() WHERE id=true AND paused=false AND (NOT EXISTS(SELECT 1 FROM continuous_worker_status WHERE lane='model' AND state='RUNNING') OR (NOT EXISTS(SELECT 1 FROM relevance_queue WHERE status='RUNNING') AND NOT EXISTS(SELECT 1 FROM continuous_work WHERE status='RUNNING' AND lane='cv') AND NOT EXISTS(SELECT 1 FROM application_prose_drafts WHERE status='GENERATING'))) RETURNING updated_at::text AS token")).rows[0];
-  if(row)pauseToken=row.token;else await wait(5000);
+  if(row){pauseToken=row.token;quiesced=true;}else await wait(5000);
  }
  console.log(JSON.stringify({event:'UPGRADE_DRAINING_WORKERS'}));
  while((await repository.pool.query("SELECT 1 FROM continuous_worker_status WHERE state='RUNNING' AND (lane<>'model' OR EXISTS(SELECT 1 FROM relevance_queue WHERE status='RUNNING') OR EXISTS(SELECT 1 FROM continuous_work WHERE status='RUNNING' AND lane='cv') OR EXISTS(SELECT 1 FROM application_prose_drafts WHERE status='GENERATING')) LIMIT 1")).rowCount)await wait(2000);

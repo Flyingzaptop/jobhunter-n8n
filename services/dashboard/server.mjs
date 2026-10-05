@@ -570,6 +570,10 @@ export function createDashboard({
       const url = new URL(req.url, "http://" + req.headers.host);
       if (req.headers.origin && req.headers.origin !== url.origin)
         throw Object.assign(new Error("Origin not allowed"), { status: 403 });
+      if(url.pathname==='/health'&&req.method==='GET'){
+        res.writeHead(200,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});
+        res.end(JSON.stringify({ok:true,service:'dashboard'}));return;
+      }
       if (url.pathname === "/api/auth/login" && req.method === "POST") {
         const input = await body(req),
           login = await auth.login(req, input.password);

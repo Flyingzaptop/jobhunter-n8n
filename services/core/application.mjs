@@ -148,6 +148,23 @@ export async function runApplication({ repository, jobId, applicationId, profile
   try {
     const locked=(await mutex.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[application.application_id])).rows[0].locked;if(!locked)return {application_id:application.application_id,status:'BUSY'};
     application=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1',[application.application_id])).rows[0];
+    if(application.status==='FAILED'&&/^locator\.setChecked: Timeout/.test(application.last_state?.failure_reason??'')){
+      const prior=(await repository.pool.query("SELECT payload_json FROM events WHERE entity_id=$1 AND event_type='STATE_NEEDS_USER' ORDER BY created_at DESC LIMIT 1",[application.application_id])).rows[0]?.payload_json;
+      const pending=prior?.pending_question;
+      if(pending?.type==='CONSENT'&&pending.field_type==='checkbox'){
+        const answer=(await repository.pool.query("SELECT * FROM application_questions WHERE application_id=$1 AND raw_question=$2 AND answered_at IS NOT NULL AND answer_source IN('USER_TELEGRAM','USER_DASHBOARD','USER_CHAT') ORDER BY answered_at DESC LIMIT 1",[application.application_id,pending.question])).rows[0];
+        if(answer&&humanConsentAnswer(answer.answer)===true){
+          let session=application.last_state.browser_session_id,probe;
+          try{probe=await browser.call(`/sessions/${session}/snapshot`);}catch{const recovered=await browser.call(`/sessions/${session}/recover`,{});session=recovered.session_id;probe=recovered.snapshot;}
+          const field=probe?.fields?.find(f=>f.selector===pending.selector);
+          if(session&&field?.visible&&field.required&&field.type===pending.field_type&&field.label===pending.field_label&&probe.fingerprint===pending.fingerprint){
+            await repository.pool.query("UPDATE applications SET status='NEEDS_USER',last_state=last_state||$2::jsonb,updated_at=now() WHERE application_id=$1 AND status='FAILED'",[application.application_id,{browser_session_id:session,pending_question:{...pending,request_id:answer.telegram_request_id},failure_reason:null}]);
+            await repository.event('application',application.application_id,'CONFIRMED_CONSENT_CONTROL_RECOVERED',{question_id:answer.question_id,original_fingerprint:pending.fingerprint});
+            application=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1',[application.application_id])).rows[0];
+          }
+        }
+      }
+    }
     if(application.status==='SUBMITTING'){await transition(repository,application.application_id,'SUBMISSION_UNKNOWN',{reason:'INTERRUPTED_SUBMISSION_REQUIRES_RECONCILIATION'});return {application_id:application.application_id,status:'SUBMISSION_UNKNOWN'};}
     if(['SUBMITTED','SUBMISSION_UNKNOWN','SUBMITTING','SKIPPED','FAILED','MANUAL_TAKEOVER','ALREADY_APPLIED'].includes(application.status))return {application_id:application.application_id,status:application.status,confirmation_id:application.confirmation_id};
     const cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[application.cv_id])).rows[0];
