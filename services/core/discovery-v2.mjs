@@ -245,9 +245,10 @@ export function queryEvidence(job) {
   return Object.entries(expressions).filter(([, regex]) => regex.test(text)).map(([family]) => family);
 }
 
-function normalizationIndex(jobs) {
+function normalizationIndex(jobs,{compact=false}={}) {
   const urls = new Map(); const ats = new Map(); const identities = new Map();
   const index = job => {
+    if(compact){const keys=['job_id','canonical_url','application_url','company','title','location','country','work_mode','employment_type','published_at','valid_through','salary','content_hash','ats_identity','identity_key','profile','availability_status'];job={...Object.fromEntries(keys.map(key=>[key,job[key]])),description_length:job.description_text?.length??job.description_length??0};}
     urls.set(job.canonical_url, job);
     if (job.ats_identity) ats.set(job.ats_identity, job);
     if (!identities.has(job.identity_key)) identities.set(job.identity_key, new Map());
@@ -258,9 +259,14 @@ function normalizationIndex(jobs) {
     ...[...(identities.get(job.identity_key)?.values() ?? [])]])].filter(Boolean) };
 }
 export async function createDiscoveryNormalizationState(repository){
- const jobs=repository.listNormalizationJobs?await repository.listNormalizationJobs():await repository.listCanonicalJobs();
- const state=normalizationIndex(jobs);let pending=Promise.resolve();
+ const jobs=repository.listNormalizationIndexJobs?await repository.listNormalizationIndexJobs():repository.listNormalizationJobs?await repository.listNormalizationJobs():await repository.listCanonicalJobs();
+ const state=normalizationIndex(jobs,{compact:Boolean(repository.normalizationDescriptions)});let pending=Promise.resolve();
  state.serialize=operation=>{const result=pending.then(operation);pending=result.catch(()=>{});return result;};
+ state.detailedCandidates=async job=>{const candidates=state.candidates(job);if(!repository.normalizationDescriptions)return candidates;
+  const missing=candidates.filter(c=>typeof c.description_text!=='string'&&(!job.description_text||!job.ats_identity&&!c.ats_identity&&job.identity_key===c.identity_key&&job.content_hash!==c.content_hash));
+  const texts=new Map((missing.length?await repository.normalizationDescriptions(missing.map(c=>c.job_id)):[]).map(row=>[row.job_id,row.description_text]));
+  return candidates.map(c=>texts.has(c.job_id)?{...c,description_text:texts.get(c.job_id)}:c);
+ };
  return state;
 }
 
@@ -420,7 +426,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
                   verified_at: new Date().toISOString() };
               }
               if (job.query_role_evidence.length) metrics.query_evidence_count++;
-              const candidates = existing.candidates(job).map(candidate => ({ candidate, match: duplicateConfidence(job, candidate) })).filter(item => item.match);
+              const candidates = (existing.detailedCandidates?await existing.detailedCandidates(job):existing.candidates(job)).map(candidate => ({ candidate, match: duplicateConfidence(job, candidate) })).filter(item => item.match);
               candidates.sort((a, b) => b.match.confidence - a.match.confidence);
               const duplicate = candidates[0];
               job.duplicate_signal = duplicate?.match ?? null;

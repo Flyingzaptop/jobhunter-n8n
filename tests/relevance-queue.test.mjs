@@ -15,6 +15,16 @@ test('actual queue SQL gives compatible remote and local engineering equal geogr
  }finally{await pool.end();}
 });
 const now=new Date('2026-10-04T12:00:00Z');
+test('incremental SQL screen preserves Unicode hashes, excludes unused metadata and rereads only changed input',{skip:!process.env.DATABASE_URL},async t=>{
+ const repo=new Repository(),admin=repo.pool,schema='incremental_'+randomUUID().replaceAll('-','');await admin.query(`CREATE SCHEMA ${schema}`);repo.pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema},public`});
+ t.after(async()=>{await repo.pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();});await repo.migrate();const id=randomUUID();
+ await repo.pool.query('INSERT INTO jobs(job_id,canonical_url,company,title,description_text,metadata)VALUES($1,$2,$3,$4,$5,$6)',[id,'https://fixture.invalid/job','Test "company"','Junior Mechanical Engineer','Wrocław\nCAD "design"; zażółć gęślą jaźń',{profile:'real',unused:'x'.repeat(10000)}]);
+ const first=await repo.listRelevanceChanges('new');assert.equal(first.length,1);assert.equal(first[0].metadata,undefined);
+ assert.equal((await buildRelevanceQueue({repository:repo})).counts.QUEUED,1);
+ const again=await buildRelevanceQueue({repository:repo});assert.equal(again.changed_inputs,0);assert.equal(again.total,1);assert.equal(again.counts.QUEUED,1);
+ await repo.pool.query("UPDATE jobs SET work_mode='REMOTE' WHERE job_id=$1",[id]);assert.equal((await repo.listRelevanceChanges('relevance-v1.3-wroclaw-and-worldwide-remote')).length,1);
+ await buildRelevanceQueue({repository:repo});assert.equal((await repo.listRelevanceChanges('relevance-v1.3-wroclaw-and-worldwide-remote')).length,0);
+});
 test('cheap screening selects technical junior roles without fake fit/eligibility and deprioritizes incidental body keywords',()=>{
  const technical=screenRelevance({title:'Junior Mechanical Design Engineer',location:'Poland',country:'PL',description_text:'CAD prototyping',availability_status:'OPEN'},{now});
  const clerk=screenRelevance({title:'Senior Accounting Clerk',description_text:'Our robotics company uses Python and automation',country:'US',availability_status:'OPEN'},{now});

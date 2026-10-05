@@ -104,8 +104,9 @@ export function duplicateConfidence(left, right) {
   if (left.ats_identity && left.ats_identity === right.ats_identity) return { signal: 'ats_identity', confidence: 1 };
   if (left.ats_identity && right.ats_identity && left.ats_identity !== right.ats_identity) return null;
   // Similar titles or empty descriptions alone never merge separate requisitions.
-  if (left.identity_key === right.identity_key && left.description_text.length >= 80 && right.description_text.length >= 80) {
+  if (left.identity_key === right.identity_key && (left.description_text?.length??left.description_length??0) >= 80 && (right.description_text?.length??right.description_length??0) >= 80) {
     if (left.content_hash === right.content_hash) return { signal: 'content_fingerprint', confidence: 0.99 };
+    if(typeof left.description_text!=='string'||typeof right.description_text!=='string')return null;
     const tokens = value => new Set(identityText(value).split(' ').filter(word => word.length > 2));
     const a = tokens(left.description_text), b = tokens(right.description_text);
     const intersection = [...a].filter(token => b.has(token)).length;

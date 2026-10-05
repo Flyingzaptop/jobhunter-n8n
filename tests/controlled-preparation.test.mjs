@@ -6,7 +6,7 @@ test('controlled rehearsal cannot use rejected, incomplete or policy-blocked CVs
  const jobId='7458d4e9-da2e-47bd-98cb-adfda43d42b2',cvId='7458d4e9-da2e-47bd-98cb-adfda43d42b3';
  const profile={profile_id:'regression-candidate',onboarding:{legal_name:'Regression Person',email:'regression@unit.invalid',phone:'+48123456789'}};
  let decision='REJECT',analysis={overall_fit:80,requirements:[{}]},cv={qa_json:{pass:true},manifest_json:{application_eligible:false,application_policy_blocker:'HUMAN_AUTHORED_ONLY'}};
- const repo={listCanonicalJobs:async()=>[{job_id:jobId}],pool:{query:async sql=>({rows:sql.includes('job_analysis')?[{decision,analysis_json:analysis}]:sql.includes('cv_versions')?[cv]:[]})}};
+ const repo={listCanonicalJobs:async()=>[{job_id:jobId}],pool:{query:async sql=>({rows:sql.includes('job_analysis')?[{decision,analysis_json:analysis}]:sql.includes('cv_versions')?[cv]:sql.includes('FROM jobs WHERE')?[{job_id:jobId}]:[]})}};
  try{
   await assert.rejects(createControlledPreparation({repository:repo,jobId,cvId,profile}),/NON_REJECTED_ACTUAL_ANALYSIS_REQUIRED/);
   decision='REVIEW';analysis={overall_fit:null,requirements:[]};await assert.rejects(createControlledPreparation({repository:repo,jobId,cvId,profile}),/INFORMATION_COMPLETE/);

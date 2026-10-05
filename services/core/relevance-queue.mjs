@@ -7,6 +7,7 @@ import { retryPlan } from './analysis-retry.mjs';
 import { runObserved, observe, operationContext } from './observability.mjs';
 
 export const RELEVANCE_VERSION = 'relevance-v1.3-wroclaw-and-worldwide-remote';
+export const remoteTransferableTitle=title=>/customer (?:support|service)|service desk|help ?desk|support specialist|data annotat|data label|virtual assistant|content moderat|obsluga klient|obslugi klient|wsparci[ae].*klient/.test(fold(title));
 const hash = value => createHash('sha256').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 const fold = value => String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/ł/gi,'l').toLowerCase();
 const europe = /^(?:pl|de|fr|gb|uk|ie|nl|be|cz|at|se|fi|dk|no|ch|es|it|pt|lt|lv|ee|ro|hu|sk|si|hr|poland|germany|france|united kingdom|ireland|netherlands|belgium|czechia|austria|sweden|finland|denmark|norway|switzerland|spain|italy|portugal|european union|europe)$/;
@@ -55,7 +56,7 @@ export async function recordDeterministicHardReject({repository,job,profile,poli
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
 export async function applyDeterministicHardRejects({repository,profile,policy,jobIds}={}){
-  const jobs=(await (repository.listNormalizationJobs?repository.listNormalizationJobs():repository.listCanonicalJobs())).filter(job=>job.profile==='real'&&(!jobIds||jobIds.includes(job.job_id)));
+  const jobs=(await (repository.listHardGateJobs?repository.listHardGateJobs(hash(profile),hash(policy),jobIds):repository.listNormalizationJobs?repository.listNormalizationJobs():repository.listCanonicalJobs())).filter(job=>job.profile==='real'&&(!jobIds||jobIds.includes(job.job_id)));
   const cached=new Map((await repository.pool.query("SELECT job_id,analysis_json->>'hard_gate_job_input_hash' input_hash,analysis_json->'reasons' reasons FROM job_analysis WHERE analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE' AND analysis_json->>'profile_hash'=$1 AND analysis_json->>'policy_hash'=$2",[hash(profile),hash(policy)])).rows.map(row=>[row.job_id,row]));
   const results=[];for(const job of jobs){const previous=cached.get(job.job_id);if(previous?.input_hash===relevanceInputHash(job)){results.push({job_id:job.job_id,inserted:false,reasons:previous.reasons,cached:true});continue;}const rejected=await recordDeterministicHardReject({repository,job,profile,policy});if(rejected)results.push({job_id:rejected.job_id,inserted:rejected.inserted,reasons:rejected.analysis.reasons});}
   return{scope:'DETERMINISTIC_HARD_GATE',model:null,inference_performed:false,total_checked:jobs.length,rejected:results.length,new_rejections:results.filter(row=>row.inserted).length,results};
@@ -70,6 +71,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
     if(titleMatch&&(!/product support/.test(titleMatch[0])||/api|integration|troubleshoot|technical/.test(description))){roles.push(family);titleSignals.push(family==='mechanical_rd'?46:family==='simulation_test'?40:34);add(`TITLE_${family.toUpperCase()}`,0,titleMatch[0],'title');}
     else if(bodyMatch){roles.push(family);add(`DESCRIPTION_${family.toUpperCase()}`,bodySignals++<2?5:0,bodyMatch[0],'description_text');}
   }
+  if(!titleSignals.length&&j.work_mode==='REMOTE'&&remoteTransferableTitle(j.title)){roles.push('remote_transferable');titleSignals.push(28);add('TITLE_REMOTE_TRANSFERABLE',0,j.title,'title');}
   if(titleSignals.length){add('TARGET_TITLE_WEIGHT',Math.max(...titleSignals),title,'title');if(titleSignals.length>1)add('CROSS_DISCIPLINARY_TITLE',Math.min(8,4*(titleSignals.length-1)),roles.join(', '),'title');}
   const junior=title.match(/\b(?:junior|graduate|entry[- ]level|intern(?:ship)?|student|working student|werkstudent\w*|praktik(?:um|ant)\w*|trainee|mlodszy|alternan\w*|stagiaire)\b/);
   const senior=title.match(/\b(?:senior|starszy|starsza|staff|principal|director|head|lead|teamleiter|manager|vp)\b/);
@@ -95,7 +97,7 @@ export function screenRelevance(job,{now=new Date()}={}) {
   const date=Date.parse(j.published_at??j.first_seen_at??'');
   if(Number.isFinite(date)&&now-date<=14*86400000)add('RECENT_PUBLICATION_OR_SEEN',4,j.published_at??j.first_seen_at,'published_at/first_seen_at');
   if(/\b(?:phd|doctorate|doctoral)\b/.test(title))add('ADVANCED_DEGREE_TITLE_REVIEW',-15,title,'title');
-  const hasTitle=Object.keys(patterns).some(family=>reasons.some(reason=>reason.signal===`TITLE_${family.toUpperCase()}`));
+  const hasTitle=titleSignals.length>0;
   const bounded=Math.max(0,Math.min(100,Math.round(score)));
   const status=j.availability_status==='CLOSED'?'CLOSED':hasTitle&&bounded>=40?'QUEUED':'LOW_PRIORITY';
   return {relevance_version:RELEVANCE_VERSION,input_hash:relevanceInputHash(j),relevance_score:bounded,status,
@@ -104,10 +106,12 @@ export function screenRelevance(job,{now=new Date()}={}) {
 }
 
 export async function buildRelevanceQueue({repository,observer=async()=>{},now=new Date()}={}) {
-  const jobs=(await (repository.listNormalizationJobs?repository.listNormalizationJobs():repository.listCanonicalJobs())).filter(j=>j.profile==='real'); const counts={}; let changed=0;
-  const cached=new Map((await repository.pool.query('SELECT job_id,relevance_version,input_hash,status FROM relevance_queue')).rows.map(row=>[row.job_id,row]));
+  const jobs=(await (repository.listRelevanceChanges?repository.listRelevanceChanges(RELEVANCE_VERSION):repository.listNormalizationJobs?repository.listNormalizationJobs():repository.listCanonicalJobs())).filter(j=>j.profile==='real'); const counts={}; let changed=0;
+  const cached=new Map((await repository.pool.query("SELECT q.job_id,q.relevance_version,q.input_hash,q.status FROM relevance_queue q JOIN jobs j USING(job_id) WHERE coalesce(j.metadata->>'profile','real')='real'")).rows.map(row=>[row.job_id,row]));
+  for(const row of cached.values())counts[row.status]=(counts[row.status]??0)+1;
   for(const job of jobs){const previous=cached.get(job.job_id);
-    if(previous?.relevance_version===RELEVANCE_VERSION&&previous.input_hash===relevanceInputHash(job)){counts[previous.status]=(counts[previous.status]??0)+1;continue;}
+    if(previous?.relevance_version===RELEVANCE_VERSION&&previous.input_hash===relevanceInputHash(job))continue;
+    if(previous)counts[previous.status]--;
     const q=screenRelevance(job,{now});
     const saved=await repository.pool.query(`INSERT INTO relevance_queue(job_id,relevance_version,input_hash,relevance_score,status,role_hints,reasons,location_class,seniority_class,needs_hydration)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(job_id) DO UPDATE SET relevance_version=EXCLUDED.relevance_version,input_hash=EXCLUDED.input_hash,
@@ -120,7 +124,7 @@ export async function buildRelevanceQueue({repository,observer=async()=>{},now=n
     const status=saved.rows[0].status;counts[status]=(counts[status]??0)+1; if(saved.rows[0].inserted)changed++;
     if(Object.values(counts).reduce((a,b)=>a+b,0)%250===0)await observer({event:'RELEVANCE_SCREEN_PROGRESS',processed:Object.values(counts).reduce((a,b)=>a+b,0),total:jobs.length});
   }
-  return {scope:'DETERMINISTIC_MARKET_SCREEN_NOT_LLM_FIT',version:RELEVANCE_VERSION,total:jobs.length,inserted:changed,counts};
+  return {scope:'DETERMINISTIC_MARKET_SCREEN_NOT_LLM_FIT',version:RELEVANCE_VERSION,total:cached.size+changed,changed_inputs:jobs.length,inserted:changed,counts};
 }
 export const RELEVANCE_LOCATION_ORDER_SQL=`CASE
  WHEN q.location_class='MECHANICAL_WROCLAW_HYBRID_HINT' THEN 0

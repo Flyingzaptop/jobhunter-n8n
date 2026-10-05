@@ -2,6 +2,13 @@ import pg from "pg";
 import { randomUUID } from "node:crypto";
 import {operationContext} from './observability.mjs';
 import { readFile, readdir } from "node:fs/promises";
+const leanJobColumns=`j.job_id,j.canonical_url,j.application_url,j.company,j.title,j.location,j.country,j.work_mode,
+ j.description_text,j.content_hash,j.availability_status,j.first_seen_at,j.last_seen_at,
+ j.metadata->>'identity_key' identity_key,j.metadata->>'ats_identity' ats_identity,coalesce(j.metadata->>'profile','real') profile,
+ j.metadata->'employment_type' employment_type,j.metadata->>'published_at' published_at,j.metadata->>'valid_through' valid_through,j.metadata->'salary' salary`;
+const relevanceFields={title:'title',company:'company',description:'description_text',location:'location',country:'country',work_mode:'work_mode',canonical_url:'canonical_url',application_url:'application_url',availability:'availability_status'};
+const relevanceParts=Object.entries(relevanceFields).map(([key,column])=>`'${JSON.stringify(key)}:'||COALESCE(to_json(j.${column})::text,'null')`).join("||','||");
+const currentRelevanceHashSql=`encode(sha256(convert_to('{'||${relevanceParts}||'}','UTF8')),'hex')`;
 export class Repository {
   constructor(connectionString = process.env.DATABASE_URL, {max = 5} = {}) {
     if (!connectionString) throw new Error("DATABASE_URL required");
@@ -54,11 +61,16 @@ export class Repository {
       WHERE COALESCE(metadata->>'test_fixture','false')<>'true' AND COALESCE(metadata->>'mode','REAL')<>'MOCK'`)).rows;
   }
   async readinessCoverage(jobIds,version){
-    const fields={title:'title',company:'company',description:'description_text',location:'location',country:'country',work_mode:'work_mode',canonical_url:'canonical_url',application_url:'application_url',availability:'availability_status'};
-    const parts=Object.entries(fields).map(([key,column])=>`'${JSON.stringify(key)}:'||COALESCE(to_json(j.${column})::text,'null')`).join("||','||");
     return (await this.pool.query(`SELECT count(*)::int n FROM relevance_queue q JOIN jobs j USING(job_id)
-      WHERE q.job_id=ANY($1::uuid[]) AND q.relevance_version=$2 AND q.input_hash=encode(sha256(convert_to('{'||${parts}||'}','UTF8')),'hex')`,[jobIds,version])).rows[0].n;
+      WHERE q.job_id=ANY($1::uuid[]) AND q.relevance_version=$2 AND q.input_hash=${currentRelevanceHashSql}`,[jobIds,version])).rows[0].n;
   }
+  async listRelevanceChanges(version){return (await this.pool.query(`SELECT ${leanJobColumns} FROM jobs j LEFT JOIN relevance_queue q USING(job_id)
+   WHERE coalesce(j.metadata->>'profile','real')='real' AND (q.job_id IS NULL OR q.relevance_version<>$1 OR q.input_hash<>${currentRelevanceHashSql})`,[version])).rows;}
+  async listHardGateJobs(profileHash,policyHash,jobIds){return (await this.pool.query(`SELECT ${leanJobColumns} FROM jobs j LEFT JOIN relevance_queue q USING(job_id)
+   WHERE coalesce(j.metadata->>'profile','real')='real' AND (q.job_id IS NULL OR q.status NOT IN('LOW_PRIORITY','CLOSED'))
+   AND ($3::uuid[] IS NULL OR j.job_id=ANY($3::uuid[])) AND NOT EXISTS(SELECT 1 FROM job_analysis h WHERE h.job_id=j.job_id
+    AND h.analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE' AND h.analysis_json->>'profile_hash'=$1
+    AND h.analysis_json->>'policy_hash'=$2 AND h.analysis_json->>'hard_gate_job_input_hash'=q.input_hash)`,[profileHash,policyHash,jobIds??null])).rows;}
   async readinessFitJobs(jobIds){return (await this.pool.query('SELECT job_id,title,company,description_text,location,country,work_mode,canonical_url,application_url,availability_status FROM jobs WHERE job_id=ANY($1::uuid[])',[jobIds])).rows;}
   async listNormalizationJobs(){
     return (await this.pool.query(`SELECT job_id,canonical_url,application_url,company,title,location,country,work_mode,
@@ -67,6 +79,8 @@ export class Repository {
       metadata->'employment_type' AS employment_type,metadata->>'published_at' AS published_at,
       metadata->>'valid_through' AS valid_through,metadata->'salary' AS salary FROM jobs`)).rows;
   }
+  async listNormalizationIndexJobs(){return (await this.pool.query(`SELECT ${leanJobColumns.replace('j.description_text,','')},char_length(j.description_text) description_length FROM jobs j`)).rows;}
+  async normalizationDescriptions(jobIds){return (await this.pool.query('SELECT job_id,description_text FROM jobs WHERE job_id=ANY($1::uuid[])',[jobIds])).rows;}
   async upsertCanonicalJob(job, { source }) {
     const client = await this.pool.connect();
     try {
