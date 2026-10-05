@@ -5,7 +5,7 @@ Fit inference returns one overall 0–100 integer, with a 15-second operation
 deadline and 16 output tokens. A timeout remains a retry, never a fabricated
 score. Location and factual CV guards run separately in code. CV generation
 starts only after a current evaluation passes the configured fit threshold.
-Model work has a one-second idle delay; form preparation and notifications do
+Model work has a 100-millisecond idle delay; form preparation and notifications do
 not wait for the entire fit queue. Unchanged screening inputs reuse stored
 results instead of rewriting every queue row on every pass.
 
@@ -13,6 +13,15 @@ Telegram `?` or `/status` requests the structured work summary. Automatic
 Telegram delivery is limited to required human actions and ready application
 reviews. Final submission requires `ОТПРАВИТЬ` as a reply to that application's
 current review card. No Codex or Windows scheduled tasks are used.
+
+Reply `ОТКЛОНИТЬ: причина` to a review card to reject that application. The
+reason is stored and its submission approval is revoked. Onsite vacancies are
+excluded even in Wroclaw; only compatible local hybrid and remote routes may
+proceed. Praca.pl's actual offer work-format badge is read alongside JSON-LD.
+
+Ordinary owner Telegram messages are saved in a durable operator inbox, separate
+from application answers. While actively developing, the operator reads and
+replies there. They do not automatically wake Codex or authorize submission.
 
 The older Ollama/n8n activation notes below describe the original workflow,
 not the currently running continuous worker. Do not enable their schedules.

@@ -184,6 +184,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
             results.push({job_id:row.job_id,status:plan.status,error:plan.error_code,retry_at:plan.next_retry_at});continue;
           }
           await repository.pool.query("UPDATE jobs SET availability_status='OPEN',last_verified_open_at=now(),closed_at=NULL WHERE job_id=$1",[row.job_id]);
+          const hydratedHard=await recordDeterministicHardReject({repository,job,profile,policy});
+          if(hydratedHard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hydratedHard.analysis.reasons,model:null,inference_performed:false});continue;}
           job.availability_status='OPEN';key=fitInputHash({job,profile,policy,model:llm.model});
           await repository.pool.query('UPDATE relevance_queue SET active_fit_hash=$2 WHERE job_id=$1',[row.job_id,key]);
           if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount){

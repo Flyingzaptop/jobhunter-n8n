@@ -2,6 +2,7 @@ import {readFile} from 'node:fs/promises';
 import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {createHash} from 'node:crypto';
+import {explicitWorkMode} from './work-format-evidence.mjs';
 
 export const PROMPT_VERSION = 'fit-analysis-v3.3-qualified-clause-boundaries';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
@@ -156,6 +157,7 @@ export function compactSchemaForJob(job, profile, catalog = sourceFragmentCatalo
 /** IDs refer to original contiguous text, avoiding generated quotations entirely. */
 function workFormatStatement(text) {
   text=String(text).trim().replace(/^[-*•]\s+/,'');
+  if(/^(?:work (?:format|mode)|tryb pracy|model pracy)\s*:/i.test(text))return true;
   if(/^remote[- ]first\b.*\b(?:no|without)\b.*\b(?:required\s+)?commute\b/i.test(text))return true;
   // Employer capabilities and descriptions of the offered arrangement do not
   // assert a qualification possessed by the candidate. Explicit candidate
@@ -198,7 +200,7 @@ function standaloneQualificationHeading(text) {
     return {importance:'MANDATORY'};
   if(/^(?:mile widziane|dodatkowe atuty|preferowane kwalifikacje)$/.test(key))
     return {importance:'STRONG_PREFERENCE'};
-  if(/^(?:na tym stanowisku bedziesz|twoje obowiazki|zakres obowiazkow|obowiazki|organizacja pracy|co oferujemy\??|oferujemy|to oferujemy|nasza oferta|benefity|warunki zatrudnienia)$/.test(key))
+  if(/^(?:na tym stanowisku bedziesz|twoje obowiazki|glowne obowiazki|zakres obowiazkow|obowiazki|organizacja pracy|co oferujemy\??|oferujemy|to oferujemy|nasza oferta|benefity|warunki zatrudnienia)$/.test(key))
     return {importance:null};
   if (/^(?:must have|essential skills|minimum requirements|you have|who you are|what you bring|about you|your qualifications|qualifications|required qualifications|(?:required|minimum|basic) skills(?: and experience)?|formation\s*(?:\/|et)\s*experience|competences(?: techniques)?|qualites personnelles|profil recherche|votre profil)$/.test(key))
     return { importance: 'MANDATORY' };
@@ -655,13 +657,14 @@ function mandatoryTravelQuote(job,catalog){return String(job.description_text??'
 
 export function deterministicHardReject({job,profile,policy={}}){
  const loc=policy.work_location_policy??{};const proofs=[];const blockers=[];
- if(policy.hard_reject_gate?.enabled!==true&&loc.no_relocation!==true)return null;
+ if(policy.hard_reject_gate?.enabled!==true&&loc.no_relocation!==true&&loc.exclude_onsite!==true)return null;
  const add=(code,sourceQuote,field,authority)=>{blockers.push(code);proofs.push({code,source_quote:sourceQuote,source_field:field,source_url:job.canonical_url??null,...authority});};
  if(policy.excluded_job_ids?.includes(job.job_id))add(policy.job_scope_exclusion_reasons?.[job.job_id]??'USER_EXCLUDED_VACANCY',job.location??job.title,'location',
   {policy_source:'search_policy.excluded_job_ids',verified_policy_fact:{job_id:job.job_id,authority:'USER_REQUESTED_CURRENT_JOB_SCOPE_EXCLUSION'}});
  const fragments=sourceFragmentCatalog(job).filter(item=>!item.list_container&&!item.context_only);
  const base=loc.required_base??loc.candidate_base??profile.candidate?.base_location??{city:'Wroclaw',country:'Poland'};
- const location=normalize(job.location),country=countryName(job.country),mode=String(job.work_mode??'').toUpperCase();
+ const location=normalize(job.location),country=countryName(job.country),formatEvidence=explicitWorkMode(job),mode=formatEvidence.mode;
+ if(loc.exclude_onsite===true&&mode==='ONSITE')add('ONSITE_WORK_EXCLUDED',formatEvidence.quote,formatEvidence.source_field,{policy_source:'work_location_policy.exclude_onsite',verified_policy_fact:true});
  const numbers=groundedWorkNumbers(job,profile);const local=location.split(/[,;]/).some(part=>part.trim()===normalize(base.city))||
   numbers.office_distance_km!==null&&numbers.office_distance_km<=(loc.local?.radius_km??30)&&country==='poland';
  const nonlocal=country&&country!=='poland'||!local&&(knownNonlocalPolishCity.test(location)||numbers.office_distance_km!==null&&numbers.office_distance_km>(loc.local?.radius_km??30));
@@ -723,13 +726,14 @@ export function workFormatAnalysis({job, profile, policy = {}, workFormat}) {
   const nonlocalResidency=noRelocation&&knownNonlocalPolishCity.test(residency)&&/\b(?:must|required|only)\b/.test(residency)&&!/\bwroclaw\b|anywhere|all (?:of )?poland/.test(residency);
   const reasons = []; let classification = 'UNKNOWN', feasible = false, blocker = false;
   const regularOnsite = (f.onsite_days_per_week ?? 0) > 0 || (f.onsite_days_per_month ?? 0) > 1;
-  const declaredMode=String(job.work_mode??'').toUpperCase();
+  const declaredMode=explicitWorkMode(job).mode;
   if(noRelocation&&declaredMode==='HYBRID')f.hybrid_required=true;
   if(noRelocation&&declaredMode==='ONSITE'){f.remote_allowed=false;f.hybrid_required=false;}
   const physicalRequired=f.hybrid_required===true||f.remote_allowed===false||regularOnsite||['HYBRID','ONSITE'].includes(declaredMode);
   const knownNonlocal=Boolean(country&&country!=='poland'||!local&&(knownNonlocalPolishCity.test(city)||typeof f.office_distance_km==='number'&&f.office_distance_km>(loc.local?.radius_km??30)));
   const requiredTravel=Boolean(mandatoryTravelQuote(job));
-  if(noRelocation&&f.relocation_required===true){classification='RELOCATION_INELIGIBLE';blocker=true;reasons.push('NO_RELOCATION_USER_POLICY');}
+  if(loc.exclude_onsite===true&&(declaredMode==='ONSITE'||f.remote_allowed===false&&f.hybrid_required===false)){classification='ONSITE_WORK_EXCLUDED';blocker=true;reasons.push('ONSITE_WORK_EXCLUDED');}
+  else if(noRelocation&&f.relocation_required===true){classification='RELOCATION_INELIGIBLE';blocker=true;reasons.push('NO_RELOCATION_USER_POLICY');}
   else if(loc.forbid_mandatory_travel===true&&(f.business_travel_required===true||requiredTravel)){
     classification='MANDATORY_TRAVEL_INELIGIBLE';blocker=true;reasons.push('MANDATORY_TRAVEL_INCOMPATIBLE_WITH_WROCLAW_BASE');
   } else if(noRelocation&&physicalRequired&&!local&&knownNonlocal){

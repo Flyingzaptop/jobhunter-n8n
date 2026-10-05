@@ -4,14 +4,16 @@ import {assertControlledApplicationReady} from './controlled-submit-gate.mjs';
 import {executeConfirmedSubmit} from './confirmed-submit.mjs';
 import {hitlError} from './hitl.mjs';
 import {readFile} from 'node:fs/promises';
+import {explicitWorkMode} from './work-format-evidence.mjs';
 const clean=(value,max=500)=>String(value??'').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
 export const escapeTelegram=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 
 export function vacancySummary(job,analysis={}){
  const e=escapeTelegram;
+ const format=explicitWorkMode(job),formatLabel={ONSITE:'СТАЦИОНАРНАЯ',HYBRID:'HYBRID',REMOTE:'REMOTE',UNKNOWN:'НЕ ПОДТВЕРЖДЁН'}[format.mode];
  const matches=(analysis.requirements??[]).filter(r=>r.match==='YES'||r.match==='PARTIAL').slice(0,2).map(r=>`• ${r.match==='YES'?'Совпадает':'Частично'}: ${e(clean(r.requirement??r.source_quote,80))}\n  ${e(clean(r.reason,100))}`);
  const gaps=(analysis.requirements??[]).filter(r=>r.importance==='MANDATORY'&&['NO','UNKNOWN'].includes(r.match)).slice(0,2).map(r=>`• ${r.match==='UNKNOWN'?'Не подтверждено':'Не выполнено'}: ${e(clean(r.requirement??r.source_quote,100))}`);
- return `<b>${e(clean(job.title,120))}</b>\n${e(clean(job.company,80))} · ${e(clean(job.location,80))}\n\n<b>Работа</b>\n${e(clean(job.description_text,250))}\n\n<b>Соответствие — ${e(analysis.overall_fit??'—')}/100</b>\n${matches.join('\n')||'Оценка ещё не завершена'}\n\n<b>Что проверить</b>\n${gaps.join('\n')||'Обязательные пробелы не отмечены'}\nРабота из Польши: ${analysis.employment_eligibility?.work_from_poland_allowed===true?'подтверждена':analysis.employment_eligibility?.work_from_poland_allowed===false?'не подходит':'не подтверждена'}\n\n<a href="${e(job.canonical_url)}">Открыть вакансию</a>`;
+ return `<b>${e(clean(job.title,120))}</b>\n${e(clean(job.company,80))} · ${e(clean(job.location,80))}\n<b>Формат: ${formatLabel}</b>${format.quote?'\n'+e(clean(format.quote,130)):''}\n\n<b>Работа</b>\n${e(clean(job.description_text,250))}\n\n<b>Соответствие — ${e(analysis.overall_fit??'—')}/100</b>\n${matches.join('\n')||'Оценка ещё не завершена'}\n\n<b>Что проверить</b>\n${gaps.join('\n')||'Обязательные пробелы не отмечены'}\nРабота из Польши: ${analysis.employment_eligibility?.work_from_poland_allowed===true?'подтверждена':analysis.employment_eligibility?.work_from_poland_allowed===false?'не подходит':'не подтверждена'}\n\n<a href="${e(job.canonical_url)}">Открыть вакансию</a>`;
 }
 export async function searchCounts(repository,profile){
  const jobs=(await repository.pool.query("SELECT count(*)::int n FROM jobs WHERE canonical_url LIKE 'https://%' AND COALESCE(metadata->>'test_fixture','false')<>'true'")).rows[0].n;
@@ -42,10 +44,20 @@ export async function sendReadyApplications({repository,profile,browser,telegram
   const details=new FormData();details.set('chat_id',telegram.chatId);details.set('caption','Полные ответы и согласия для этой заявки');details.set('document',new Blob([answers],{type:'text/plain;charset=utf-8'}),'answers.txt');
   const detailResponse=await telegram.fetch(`https://api.telegram.org/bot${telegram.token}/sendDocument`,{method:'POST',body:details,signal:AbortSignal.timeout(30000)});const detailResult=await detailResponse.json();
   if(!detailResponse.ok||!detailResult.ok||String(detailResult.result?.chat?.id)!==telegram.chatId)throw hitlError('TELEGRAM_REVIEW_ANSWERS_NOT_CONFIRMED');
-  const sent=await telegram.sendHtml(`<b>НУЖНО ПОДТВЕРЖДЕНИЕ</b>\n\n${vacancySummary(job,analysis)}\n\n<b>Что готово</b>\nФорма заполнена. CV и полные ответы прикреплены выше.\n\n<b>Твоё действие</b>\nОтветь на ЭТУ карточку: <b>ОТПРАВИТЬ</b>\nБез ответа заявка не отправится.\n\n<code>Заявка ${app.application_id.slice(0,8)}</code>`);
+  const sent=await telegram.sendHtml(`<b>НУЖНО ПОДТВЕРЖДЕНИЕ</b>\n\n${vacancySummary(job,analysis)}\n\n<b>Что готово</b>\nФорма заполнена. CV и полные ответы прикреплены выше.\n\n<b>Твоё действие</b>\nОтветь на ЭТУ карточку:\n<b>ОТПРАВИТЬ</b> — отправить\n<b>ОТКЛОНИТЬ: причина</b> — отказаться\nБез подтверждения заявка не отправится.\n\n<code>Заявка ${app.application_id.slice(0,8)}</code>`);
   await repository.event('application',app.application_id,'TELEGRAM_APPLICATION_REVIEW_SENT',{approval_id:prepared.gate.approval_id,binding_digest:prepared.gate.binding_digest,message_id:sent.message_id,chat_id:telegram.chatId});
   }catch(error){await repository.event('application',app.application_id,'TELEGRAM_REVIEW_WAIT',{reason:/^[A-Z_]+$/.test(error.code??error.message)?error.code??error.message:'REVIEW_DELIVERY_UNVERIFIED'});}
  }
+}
+export async function acceptTelegramRejection(repository,message,chatId,reason){
+ if(String(message.from?.id)!==String(chatId)||message.from?.is_bot||!Number.isSafeInteger(message.reply_to_message?.message_id))throw hitlError('TELEGRAM_SUBMIT_REPLY_REQUIRED');
+ if(typeof reason!=='string'||reason.length>1000)throw hitlError('TELEGRAM_SUBMIT_INVALID_REJECTION');
+ const row=(await repository.pool.query(`SELECT e.entity_id AS application_id,e.payload_json,g.status FROM events e
+  JOIN application_review_gates g ON g.approval_id=(e.payload_json->>'approval_id')::uuid
+  WHERE e.event_type='TELEGRAM_APPLICATION_REVIEW_SENT' AND e.payload_json->>'chat_id'=$1
+  AND e.payload_json->>'message_id'=$2 ORDER BY e.created_at DESC LIMIT 1`,[String(chatId),String(message.reply_to_message.message_id)])).rows[0];
+ if(!row||row.status==='CONSUMED')throw hitlError('TELEGRAM_SUBMIT_REVIEW_STALE');
+ return {command:'/reject_application',application_id:row.application_id,approval_id:row.payload_json.approval_id,binding_digest:row.payload_json.binding_digest,rejection_reason:reason.trim()||'Без пояснения'};
 }
 export async function acceptTelegramSubmit(repository,message,chatId){
  if(String(message.from?.id)!==String(chatId)||message.from?.is_bot||!Number.isSafeInteger(message.reply_to_message?.message_id))throw hitlError('TELEGRAM_SUBMIT_REPLY_REQUIRED');

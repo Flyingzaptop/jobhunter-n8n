@@ -7,6 +7,7 @@ import {probeHeadlessBoards} from './headless-public-boards.mjs';
 import {publishedNextPage,htmlPaginationLinks,listingCursor} from './discovery-cursors.mjs';
 import {nextDetailState} from './board-document.mjs';
 import {guestPagination} from './guest-pagination.mjs';
+import {enrichPostingWorkMode} from './work-format-evidence.mjs';
 const publicHtmlAdapters = new Set(['teamtailor_public_html', 'workday_public_html', 'public_listing_html']);
 
 export function publicListingJobUrls(source, text) {
@@ -133,7 +134,7 @@ export function parseMarketPayload(source, text, fetchedUrl = marketEndpoint(sou
   if (publicHtmlAdapters.has(source.adapter)) return parseMarketPayload({ ...source, adapter: 'html' }, text, fetchedUrl)
     .map(raw => ({ ...raw, adapter: source.adapter }));
   if (['greenhouse', 'lever', 'ashby', 'html', 'rss'].includes(source.adapter)) {
-    if (source.adapter === 'html') text = { jobs: extractJobPostings(text).map(item => ({ ...item, url: item.url ?? fetchedUrl })) };
+    if (source.adapter === 'html') text = { jobs: extractJobPostings(text).map(item => ({ ...enrichPostingWorkMode(item,{html:text,url:fetchedUrl}), url: item.url ?? fetchedUrl })) };
     const parsed = parseSourcePayload(source.adapter === 'html' ? { ...source, adapter: 'json' } : source, text, fetchedUrl);
     return parsed.filter(raw => raw.raw_payload.isListed !== false).map(raw => ({ ...raw, adapter: source.adapter }));
   }

@@ -252,6 +252,14 @@ export function createCore({
   }
   const telegramService=telegramAdapter??telegram;
   async function dispatchTelegram(accepted){
+    if(accepted.command==='/operator_message')return {status:'SAVED_FOR_OPERATOR',message_id:accepted.operator_message_id};
+    if(accepted.command==='/reject_application'){
+      const profile=await load(`${configDir}/candidate_profile.yaml`);
+      const {rejectPreparedApplication}=await import('./application-rejection.mjs');
+      const result=await rejectPreparedApplication({repository,applicationId:accepted.application_id,profileId:profile.profile_id,reason:accepted.rejection_reason,source:'USER_TELEGRAM',approvalId:accepted.approval_id,bindingDigest:accepted.binding_digest});
+      const {escapeTelegram}=await import('./telegram-applications.mjs');
+      await telegramService.sendHtml(`<b>Заявка отклонена</b>\n\n${escapeTelegram(result.reason??accepted.rejection_reason)}\n\nПодтверждение отправки аннулировано.\n<code>${accepted.application_id.slice(0,8)}</code>`);return result;
+    }
     if(accepted.command==='/confirm_submit'){
       const profile=await load(`${configDir}/candidate_profile.yaml`);
       const {dispatchTelegramSubmit}=await import('./telegram-applications.mjs');

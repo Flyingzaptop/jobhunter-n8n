@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { decodeEntities, safeFetch } from './discovery.mjs';
+import {explicitWorkMode} from './work-format-evidence.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const stableUuid = value => {
@@ -72,9 +73,10 @@ export function normalizeRaw(raw, { now = new Date() } = {}) {
   if (!company || !title) throw new Error('INSUFFICIENT_CANONICAL_IDENTITY');
   const modeValue = item.workplaceType ?? item.work_mode ?? item.jobLocationType ?? (item.isRemote === true ? 'remote' : '');
   let workMode = 'UNKNOWN';
-  if (/remote|telecommute/i.test(modeValue)) workMode = 'REMOTE';
-  else if (/hybrid/i.test(modeValue)) workMode = 'HYBRID';
-  else if (/on[-_ ]?site|in[-_ ]?office/i.test(modeValue)) workMode = 'ONSITE';
+  if (/hybrid|hybryd/i.test(modeValue)) workMode = 'HYBRID';
+  else if (/remote|telecommute|zdaln/i.test(modeValue)) workMode = 'REMOTE';
+  else if (/on[-_ ]?site|in[-_ ]?office|stacjonarn/i.test(modeValue)) workMode = 'ONSITE';
+  if(workMode==='UNKNOWN')workMode=explicitWorkMode({description_text:description}).mode;
   // Location names may explicitly say remote, but city names do not imply onsite.
   if (workMode === 'UNKNOWN' && /\bremote\b/i.test(location)) workMode = 'REMOTE';
   const validThrough = date(item.validThrough ?? item.valid_through ?? item.application_deadline);

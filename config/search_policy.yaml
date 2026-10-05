@@ -1,4 +1,4 @@
-policy_version: search-v2.2-wroclaw-no-relocation
+policy_version: search-v2.3-hybrid-wroclaw-or-remote
 thresholds: {auto_apply: 78, review: 60, stretch: 45}
 hard_reject_gate: {enabled: true, professional_years: true}
 qualification_weights:
@@ -72,8 +72,9 @@ work_location_policy:
   local:
     radius_km: 30
     hybrid_enabled: true
-    onsite_discover: true
+    onsite_discover: false
     onsite_auto_apply: false
+  exclude_onsite: true
   poland_nonlocal:
     rare_travel_enabled: false
     max_onsite_days_per_month_for_auto_apply: 0

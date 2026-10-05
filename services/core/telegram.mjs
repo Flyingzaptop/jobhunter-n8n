@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {acceptQuestionAnswerWithClient} from './hitl.mjs';
 import {acceptCaptchaTelegramReply,acceptCaptchaTransportReply} from './captcha-telegram.mjs';
-import {acceptTelegramSubmit,escapeTelegram} from './telegram-applications.mjs';
+import {acceptTelegramSubmit,acceptTelegramRejection,escapeTelegram} from './telegram-applications.mjs';
 const updateId = value => {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error('Invalid Telegram update ID');
   return value;
@@ -12,7 +12,7 @@ const rejectionCodes = new Map([
   ['Unknown or already answered question', 'UNKNOWN_OR_ANSWERED_QUESTION'], ['Invalid Telegram message', 'INVALID_MESSAGE'],
 ]);
 const needsDispatch = accepted => Boolean(accepted.application_id || accepted.command);
-const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome','captcha_handoff_id','verify_requested','transport_request_id','transport_valid','approval_id','binding_digest','idempotency_key']
+const correlation = accepted => Object.fromEntries(['application_id','question_id','command','outcome','captcha_handoff_id','verify_requested','transport_request_id','transport_valid','approval_id','binding_digest','idempotency_key','rejection_reason','operator_text','operator_message_id','operator_reply_to','operator_chat_id']
   .filter(key => accepted[key] !== undefined).map(key => [key, accepted[key]]));
 
 export async function getTelegramPollingCursor(repo) {
@@ -89,6 +89,8 @@ export class Telegram {
     if (typeof text !== 'string' || text.length > 4096) throw new Error('Invalid Telegram message');
     if (text.trim() === '?') return { command: '/status' };
     if(/^ОТПРАВИТЬ$/iu.test(text.trim()))return acceptTelegramSubmit(repo,message,this.chatId);
+    const rejection=text.trim().match(/^(?:ОТКЛОНИТЬ|\/reject)(?=$|[\s:])(?:\s*:\s*|\s+)?([\s\S]*)$/iu);
+    if(rejection)return acceptTelegramRejection(repo,message,this.chatId,rejection[1]);
     if (text === "/pause" || text === "/resume") {
       await repo.pool.query(
         "UPDATE runtime_control SET paused=$1,updated_at=now() WHERE id=true",
@@ -118,6 +120,9 @@ export class Telegram {
       );
       return { outcome: status };
     }
+    const operatorMessage=()=>String(message.from?.id)===this.chatId&&!message.from?.is_bot&&Number.isSafeInteger(message.message_id)&&message.message_id>0&&text.trim()
+      ?{command:'/operator_message',operator_text:text.trim(),operator_message_id:message.message_id,operator_chat_id:this.chatId,...(message.reply_to_message?.message_id?{operator_reply_to:message.reply_to_message.message_id}:{})}:null;
+    if(!message.reply_to_message?.message_id&&operatorMessage())return operatorMessage();
     if (!message.reply_to_message?.message_id || !text.trim())
       throw new Error("Reply to the pending question required");
     if(!Number.isSafeInteger(message.reply_to_message.message_id)||message.reply_to_message.message_id<1)throw new Error('Invalid Telegram message');
@@ -129,6 +134,7 @@ export class Telegram {
       `SELECT q.*,a.candidate_profile_id FROM application_questions q JOIN applications a USING(application_id) WHERE q.telegram_message_id=$1 AND q.telegram_chat_id=$2 AND q.answered_at IS NULL`,
       [message.reply_to_message.message_id,this.chatId],
     );
+    if(rows.length!==1&&operatorMessage())return operatorMessage();
     if (rows.length !== 1)
       throw new Error("Unknown or already answered question");
     const saved=await acceptQuestionAnswerWithClient(repo.pool,{questionId:rows[0].question_id,correlationId:rows[0].telegram_request_id,answer:text,source:'USER_TELEGRAM',profileId:rows[0].candidate_profile_id});
