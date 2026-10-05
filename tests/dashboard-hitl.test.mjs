@@ -10,7 +10,7 @@ import { activeProfileDigest,digest,formBinding,validateReviewContext,prepareApp
 import { createDashboard } from '../services/dashboard/server.mjs';
 import {chromium} from 'playwright';
 
-const profile={profile_id:'isolated-hitl-regression',onboarding:{legal_name:'Regression only'}};
+const profile={profile_id:'isolated-hitl-regression',onboarding:{legal_name:'Regression only',email:'test@example.invalid'}};
 function context() {
   const id=randomUUID(),cv=randomUUID(),session=randomUUID();
   return {profile,application:{application_id:randomUUID(),candidate_profile_id:profile.profile_id,job_id:id,cv_id:cv,status:'READY_TO_SUBMIT',last_state:{browser_session_id:session}},job:{job_id:id,content_hash:digest('isolated job'),availability_status:'OPEN',last_verified_open_at:new Date()},cv:{cv_id:cv,job_id:id,profile_version:activeProfileDigest(profile),sha256:'verified-cv-hash',manifest_json:{application_eligible:true,profile_hash:activeProfileDigest(profile),job_content_hash:digest('isolated job')},qa_json:{pass:true,claims:{pass:true},identity:{pass:true},pdf:{pass:true}}},snapshot:{browser_session_id:session,url:'https://example.invalid/form',fingerprint:'stable-fingerprint',fields:[{selector:'#email',name:'email',type:'email',visible:true,required:true,value:'test@example.invalid'}],validation_errors:[],captcha:false,forms:[],buttons:[]}};
@@ -31,6 +31,10 @@ test('review digests bind actual answers and omit transient observer operations'
   assert.equal(before,digest(formBinding({...c.snapshot,current_action:{operation:'observe-image',started_at:'new'}})));
   assert.notEqual(before,digest(formBinding({...c.snapshot,fields:[{...c.snapshot.fields[0],value:'changed@example.invalid'}]})));
   for(const mutation of [c=>c.application.status='SUBMISSION_UNKNOWN',c=>c.snapshot.captcha=true,c=>c.cv.qa_json.identity.pass=false,c=>c.cv.profile_version='stale',c=>c.job.last_verified_open_at='invalid',c=>c.snapshot.text='Use of AI may disqualify your application',c=>c.snapshot.fields[0].value='']){const changed=context();mutation(changed);assert.throws(()=>validateReviewContext(changed));}
+});
+test('review refuses locally populated but unsaved required fields and a wrong applicant email',()=>{
+ const c=context();assert.throws(()=>validateReviewContext({...c,snapshot:{...c.snapshot,fields:[{...c.snapshot.fields[0],server_saved:false}]}}),/REQUIRED_FORM_VALUES_NOT_SAVED/);
+ assert.throws(()=>validateReviewContext({...c,snapshot:{...c.snapshot,fields:[{...c.snapshot.fields[0],value:'other@example.invalid'}]}}),/APPLICATION_EMAIL_DOES_NOT_MATCH_PROFILE/);
 });
 test('question wording, visibility and disabled changes invalidate the exact form binding',()=>{
   const c=context(),before=digest(formBinding(c.snapshot));

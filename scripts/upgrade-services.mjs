@@ -17,8 +17,11 @@ try{
  }
  console.log(JSON.stringify({event:'UPGRADE_DRAINING_WORKERS'}));
  while((await repository.pool.query("SELECT 1 FROM continuous_worker_status WHERE state='RUNNING' AND (lane<>'model' OR EXISTS(SELECT 1 FROM relevance_queue WHERE status='RUNNING') OR EXISTS(SELECT 1 FROM continuous_work WHERE status='RUNNING' AND lane='cv') OR EXISTS(SELECT 1 FROM application_prose_drafts WHERE status='GENERATING')) LIMIT 1")).rowCount)await wait(2000);
- await writeFile(path.join(directory,'maintenance.json'),JSON.stringify({services:['worker','core','browser','dashboard'],started_at:new Date().toISOString()}),'utf8');maintenance=true;
- for(const entry of entries){
+ const keepBrowser=(await repository.pool.query("SELECT 1 FROM applications WHERE status IN ('READY_TO_SUBMIT','SUBMITTING','CAPTCHA_WAIT','NEEDS_USER','MANUAL_TAKEOVER') AND last_state->>'browser_session_id' IS NOT NULL LIMIT 1")).rowCount>0;
+ const restartEntries=entries.filter(entry=>!keepBrowser||entry!=='services/browser-service/server.mjs');
+ if(keepBrowser)console.log(JSON.stringify({event:'BROWSER_UPGRADE_DEFERRED_FOR_ACTIVE_REVIEW_SESSIONS'}));
+ await writeFile(path.join(directory,'maintenance.json'),JSON.stringify({services:['worker','core','dashboard',...(!keepBrowser?['browser']:[])],started_at:new Date().toISOString()}),'utf8');maintenance=true;
+ for(const entry of restartEntries){
   const escaped=entry.replaceAll("'","''");
   await execute('powershell.exe',['-NoProfile','-Command',`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine.Replace('\\','/') -match [regex]::Escape('${escaped}') } | ForEach-Object { Stop-Process -Id $_.ProcessId }`],{windowsHide:true});
  }

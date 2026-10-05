@@ -3,6 +3,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { hitlError } from '../core/hitl.mjs';
 import {employerAutomationPolicy} from '../core/employer-policy.mjs';
+import {unsavedRequiredFields} from '../browser-service/required-fields.mjs';
 
 export const REVIEW_CAMPAIGN = 'MANUAL_REVIEW_V1';
 export const REVIEW_APPLICATION_LIMIT = 10;
@@ -31,6 +32,8 @@ export function validateReviewContext({ application, job, cv, profile, snapshot,
   if (!/^https:\/\//i.test(snapshot.url ?? '')) throw hitlError('HTTPS_APPLICATION_FORM_REQUIRED');
   if(!Array.isArray(snapshot.forms)||!Array.isArray(snapshot.buttons))throw hitlError('FORM_DESTINATION_METADATA_REQUIRED');
   if (job.metadata?.employer_policy?.ai_content_disallowed === true || employerAutomationPolicy(snapshot)) throw hitlError('EMPLOYER_AI_ATTESTATION_REQUIRES_MANUAL_REVIEW');
+  if(unsavedRequiredFields(snapshot.fields).length)throw hitlError('REQUIRED_FORM_VALUES_NOT_SAVED');
+  if(snapshot.fields.some(f=>f.visible&&f.type==='email'&&String(f.value).trim().toLowerCase()!==String(profile.onboarding?.email??'').trim().toLowerCase()))throw hitlError('APPLICATION_EMAIL_DOES_NOT_MATCH_PROFILE');
   if (snapshot.fields.some(f => f.visible && f.required && !f.disabled && (f.type === 'checkbox' ? f.checked !== true : f.type==='radio' ? f.checked!==true&&!snapshot.fields.some(other=>other.type==='radio'&&other.checked===true&&!other.disabled&&other.visible!==false&&Boolean(f.name)&&other.name===f.name&&(other.form_selector??other.form_id??other.form??null)===(f.form_selector??f.form_id??f.form??null)) : !f.value))) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
   if ((snapshot.uploaded_file_hashes?.length || snapshot.fields.some(f=>f.visible&&f.type==='file'&&/resume|\bcv\b/i.test(`${f.name??''} ${f.label??''}`))) && !snapshot.uploaded_file_hashes?.some(file=>file.sha256===cv.sha256)) throw hitlError('UPLOADED_CV_DOES_NOT_MATCH_REVIEW');
 }

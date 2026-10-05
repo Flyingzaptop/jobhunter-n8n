@@ -20,6 +20,7 @@ import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,rev
 import {gunzipSync,brotliDecompressSync,inflateSync} from 'node:zlib';
 import {ashbyFormFields,ashbyFieldSaved} from './ashby-form-evidence.mjs';
 import {explicitSubmissionReceipt,submissionPageSucceeded} from './submission-proof.mjs';
+import {missingRequiredFields,unsavedRequiredFields} from './required-fields.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -215,7 +216,7 @@ export async function createBrowserService(config = browserConfig()) {
         }else if(reason) return { ...before, status: 'READY_TO_SUBMIT', dry_run: config.dryRun, submit_blocked_reason: reason };
         if (session.submit_attempted) return { ...before, status: before.confirmation_id ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN' };
         if (!button || (!button.final_submit && !finalSubmitLabel(button.text))) throw new Error('FINAL_BUTTON_REQUIRED');
-        if (before.captcha || before.fields.some(f => f.visible && f.required && f.validation_message)) throw new Error('FORM_NOT_READY');
+        if (before.captcha || before.validation_errors?.length || missingRequiredFields(before.fields).length || unsavedRequiredFields(before.fields).length) throw new Error('FORM_NOT_READY');
         session.submit_attempted = true; session.history.push({ operation: 'submit_intent', timestamp: new Date().toISOString() }); await checkpoint(session);
         session.submitActive = true;
         let networkConfirmation;

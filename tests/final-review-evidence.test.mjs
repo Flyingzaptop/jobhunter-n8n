@@ -5,6 +5,7 @@ test('mandatory radio groups require a checked option rather than nonempty optio
  const fields=[{visible:true,required:true,type:'radio',name:'source',value:'job-board',checked:false},{visible:true,required:true,type:'radio',name:'source',value:'other',checked:false}];
  assert.equal(missingRequiredFields(fields).length,2);
  fields[0].checked=true;assert.equal(missingRequiredFields(fields).length,0);
+ assert.equal(missingRequiredFields([...fields,{...fields[1],form_id:'other-form'}]).length,1);
  assert.equal(missingRequiredFields([...fields,{visible:true,required:true,type:'text',value:'   '}]).length,1);
 });
 test('actual final review reads supplied form values and verified PDF hash, never missing answers or anti-AI attestations',()=>{
