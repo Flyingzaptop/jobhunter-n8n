@@ -66,6 +66,7 @@ export async function prepareApplicationReview(repository, applicationId, profil
     const gate = (await client.query(`INSERT INTO application_review_gates(approval_id,application_id,candidate_profile_id,campaign_id,digests,binding_digest,expires_at)
       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [randomUUID(), applicationId, profile.profile_id, REVIEW_CAMPAIGN, binding.digests, binding.binding_digest, new Date(Date.now() + ttlMs)])).rows[0];
     await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'application',applicationId,'USER_REVIEW_PREPARED',{approval_id:gate.approval_id,binding_digest:gate.binding_digest,source:'USER_DASHBOARD',review_only:true}]);
+    await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'application',applicationId,'APPLICATION_REVIEW_PACKET_SAVED',{approval_id:gate.approval_id,binding_digest:gate.binding_digest,summary:binding.summary}]);
     await client.query('COMMIT'); return { gate, summary: binding.summary, real_submit_enabled: false, review_only: true };
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
