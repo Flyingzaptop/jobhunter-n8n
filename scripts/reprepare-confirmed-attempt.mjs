@@ -12,7 +12,7 @@ try{
  const client=await repository.pool.connect();try{
   await client.query('BEGIN');const current=(await client.query('SELECT status FROM applications WHERE application_id=$1 FOR UPDATE',[applicationId])).rows[0];if(current.status!=='SUBMISSION_UNKNOWN')throw Error('APPLICATION_STATE_CHANGED');
   await client.query("UPDATE confirmed_submit_commands SET superseded_at=now(),superseded_reason='USER_REQUESTED_NEW_REVIEW_AFTER_UNKNOWN' WHERE application_id=$1 AND superseded_at IS NULL AND status='SUBMISSION_UNKNOWN'",[applicationId]);
-  await client.query("UPDATE application_review_gates SET status='REVOKED' WHERE application_id=$1 AND status IN ('APPROVED','PENDING')",[applicationId]);
+  await client.query("UPDATE application_review_gates SET status='REVOKED',revoked_at=now() WHERE application_id=$1 AND status IN ('APPROVED','PREPARED','CONSUMED')",[applicationId]);
   await client.query("UPDATE applications SET status='FILLING',last_state=last_state||$2::jsonb,updated_at=now() WHERE application_id=$1",[applicationId,{browser_session_id:opened.session_id,final_review:null,current_url:opened.snapshot.url,confirmed_submit_command_id:null}]);
   await client.query("INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json)VALUES($1,'application',$2,'USER_REQUESTED_REPREPARATION_AFTER_UNKNOWN',$3)",[randomUUID(),applicationId,{previous_session_id:app.last_state.browser_session_id,new_session_id:opened.session_id,previous_result_remains_unknown:true,new_confirmation_required:true,submit_performed:false}]);
   await client.query('COMMIT');

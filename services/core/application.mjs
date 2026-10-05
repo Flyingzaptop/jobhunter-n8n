@@ -292,7 +292,10 @@ export async function runApplication({ repository, jobId, applicationId, profile
         const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
         if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
       }
-      view=await browser.call(`/sessions/${sessionId}/snapshot`);await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
+      view=await browser.call(`/sessions/${sessionId}/snapshot`);
+      const saveDeadline=Date.now()+5000;
+      while(view.fields.some(f=>f.visible&&f.required&&f.type!=='file'&&(f.type!=='radio'||f.checked)&&f.server_saved===false)&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
+      await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
       view=finalScope.view;

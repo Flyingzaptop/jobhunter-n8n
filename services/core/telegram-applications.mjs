@@ -30,13 +30,14 @@ export async function sendReadyApplications({repository,profile,browser,telegram
  const apps=(await repository.pool.query("SELECT * FROM applications WHERE candidate_profile_id=$1 AND status='READY_TO_SUBMIT' ORDER BY updated_at LIMIT 20",[profile.profile_id])).rows;
  for(const app of apps){
   try{
-  const already=(await repository.pool.query("SELECT 1 FROM events WHERE entity_id=$1 AND event_type IN ('TELEGRAM_REVIEW_DELIVERY_STARTED','TELEGRAM_APPLICATION_REVIEW_SENT') LIMIT 1",[app.application_id])).rowCount;
+  const reviewKey=`${app.cv_id}:${app.last_state?.browser_session_id}:${app.last_state?.final_review?.form_fingerprint}`;
+  const already=(await repository.pool.query("SELECT 1 FROM events WHERE entity_id=$1 AND event_type IN ('TELEGRAM_REVIEW_DELIVERY_STARTED','TELEGRAM_APPLICATION_REVIEW_SENT') AND payload_json->>'review_key'=$2 LIMIT 1",[app.application_id,reviewKey])).rowCount;
   if(already)continue;
   await assertControlledApplicationReady({repository,applicationId:app.application_id,profile});
   const prepared=await prepareApplicationReview(repository,app.application_id,profile,browser,{ttlMs:86400000});
   const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[app.job_id])).rows[0];
   const analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[app.job_id])).rows[0]?.analysis_json;
-  await repository.event('application',app.application_id,'TELEGRAM_REVIEW_DELIVERY_STARTED',{approval_id:prepared.gate.approval_id});
+  await repository.event('application',app.application_id,'TELEGRAM_REVIEW_DELIVERY_STARTED',{approval_id:prepared.gate.approval_id,review_key:reviewKey});
   const answers=prepared.summary.answers.map(a=>`${a.question}: ${a.answer}`).join('\n');
   const cv=(await repository.pool.query('SELECT pdf_path FROM cv_versions WHERE cv_id=$1',[app.cv_id])).rows[0];
   const form=new FormData();form.set('chat_id',telegram.chatId);form.set('caption',`CV для проверки · ${app.application_id.slice(0,8)} · пакет ${prepared.gate.binding_digest.slice(0,12)}`);form.set('document',new Blob([await readFile(cv.pdf_path)],{type:'application/pdf'}),'cv.pdf');
@@ -46,7 +47,7 @@ export async function sendReadyApplications({repository,profile,browser,telegram
   const detailResponse=await telegram.fetch(`https://api.telegram.org/bot${telegram.token}/sendDocument`,{method:'POST',body:details,signal:AbortSignal.timeout(30000)});const detailResult=await detailResponse.json();
   if(!detailResponse.ok||!detailResult.ok||String(detailResult.result?.chat?.id)!==telegram.chatId)throw hitlError('TELEGRAM_REVIEW_ANSWERS_NOT_CONFIRMED');
   const sent=await telegram.sendHtml(`<b>НУЖНО ПОДТВЕРЖДЕНИЕ</b>\n\n${vacancySummary(job,analysis)}\n\n<b>Что готово</b>\nФорма заполнена. CV и полные ответы прикреплены выше.\n\n<b>Твоё действие</b>\nОтветь на ЭТУ карточку:\n<b>ОТПРАВИТЬ</b> — отправить\n<b>ОТКЛОНИТЬ: причина</b> — отказаться\nБез подтверждения заявка не отправится.\n\n<code>Заявка ${app.application_id.slice(0,8)}</code>`);
-  await repository.event('application',app.application_id,'TELEGRAM_APPLICATION_REVIEW_SENT',{approval_id:prepared.gate.approval_id,binding_digest:prepared.gate.binding_digest,message_id:sent.message_id,chat_id:telegram.chatId});
+  await repository.event('application',app.application_id,'TELEGRAM_APPLICATION_REVIEW_SENT',{approval_id:prepared.gate.approval_id,binding_digest:prepared.gate.binding_digest,message_id:sent.message_id,chat_id:telegram.chatId,review_key:reviewKey});
   }catch(error){await repository.event('application',app.application_id,'TELEGRAM_REVIEW_WAIT',{reason:/^[A-Z_]+$/.test(error.code??error.message)?error.code??error.message:'REVIEW_DELIVERY_UNVERIFIED'});}
  }
 }

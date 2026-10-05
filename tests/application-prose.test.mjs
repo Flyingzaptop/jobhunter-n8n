@@ -36,7 +36,10 @@ test('actual PostgreSQL: durable exact binding, busy inference stays pending, mo
  const newField={...field,selector:'#new-random-id'};
  assert.equal((await getReady({...args,field:newField,view:{...view,fields:[newField]}})).draft_id,ready.draft_id);
  assert.equal(await getReady({...args,field:newField,view:{...view,fields:[newField,{...newField,selector:'#other'}]}}),null);
- await consume({repo,appId,draftId:ready.draft_id});await assert.rejects(consume({repo,appId,draftId:ready.draft_id}),/ALREADY_CONSUMED/);assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_answer_receipts')).rows[0].n,0);assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_questions')).rows[0].n,0);
+ await consume({repo,appId,draftId:ready.draft_id});assert.equal((await getReady(args)).draft_id,ready.draft_id);await consume({repo,appId,draftId:ready.draft_id});
+ assert.equal((await getReady({...args,field:newField,view:{...view,fingerprint:'changed-required-fields',fields:[newField]}})).draft_id,ready.draft_id);
+ assert.equal(await getReady({...args,field:{...newField,description:'New question context'},view:{...view,fingerprint:'changed-required-fields',fields:[newField]}}),null);
+ assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_answer_receipts')).rows[0].n,0);assert.equal((await repo.pool.query('SELECT count(*)::int AS n FROM application_questions')).rows[0].n,0);
  const pending=await enqueue({...args,field:{...field,selector:'#approach',label:'How would you approach this work?'}});
  const operation={repo,profile,policy,mutex:async(_,run)=>run(),llm:{provider:'local',json:async()=>{throw Object.assign(new Error('private detail'),{code:'INPUT_BUDGET_EXCEEDED'});}}};
  const failed=await drain(operation);assert.equal(failed.results[0].error_code,'INPUT_BUDGET_EXCEEDED');
