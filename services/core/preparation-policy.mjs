@@ -1,5 +1,5 @@
 import {deterministicHardReject,workFormatAnalysis} from './fit.mjs';
-import {CV_V2_VERSION} from './cv-v2.mjs';
+import {compatibleCvTemplate} from './cv-v2.mjs';
 
 export function currentPreparationPolicy({job,profile,policy={},analysis,cv,requireCurrentTemplate=true}){
  const hard=deterministicHardReject({job,profile,policy});
@@ -8,7 +8,7 @@ export function currentPreparationPolicy({job,profile,policy={},analysis,cv,requ
  const location=workFormatAnalysis({job,profile,policy,workFormat:analysis?.work_format});
  if(policy.work_location_policy?.required_base?.remain_physical&&location.location_policy_status!=='COMPATIBLE')
   return {pass:false,decision:location.location_policy_status==='INCOMPATIBLE'?'REJECT':'REVIEW',reason:'WORK_FROM_REQUIRED_BASE_NOT_VERIFIED',location_policy_status:location.location_policy_status};
- if(requireCurrentTemplate&&cv&&(cv.template_version!==CV_V2_VERSION||cv.qa_json?.tailoring?.pass!==true))
+ if(requireCurrentTemplate&&cv&&(!compatibleCvTemplate(cv.template_version)||cv.qa_json?.tailoring?.pass!==true))
   return {pass:false,decision:'REVIEW',reason:'CURRENT_TARGET_TAILORED_CV_REQUIRED'};
  return {pass:true,location_policy_status:location.location_policy_status};
 }

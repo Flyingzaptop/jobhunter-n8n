@@ -15,7 +15,8 @@ const doc={headline:claim('Mechanical Engineering student | Embedded automation'
 test('engineering target selects engineering evidence before IT even when fit focus overemphasizes hospital work',()=>{
  const plan=cvTailoringPlan(profile,{cv_focus_fact_ids:['it','data']},engineering);
  assert.equal(plan.family,'ENGINEERING_AUTOMATION');assert.equal(plan.preferred_section_ids[0],'embedded');
- assert.ok(!plan.allowed_section_ids.includes('it'));assert.equal(cvTailoringQa(doc,profile,{},engineering).pass,true);
+ assert.ok(!plan.allowed_section_ids.includes('it'));assert.ok(cvTailoringQa(doc,profile,{},engineering).errors.includes('CONFIRMED_PROJECT_BREADTH_MISSING'));
+ assert.equal(cvTailoringQa({...doc,sections:[...doc.sections,{source_fact_id:'cad',bullets:[claim('Academic cycloidal gearbox design in CAD.','cad')]}]},profile,{},engineering).pass,true);
  assert.ok(!plan.primary_fact_ids.includes('data'),'feature engineering must not match finite-element FEA');
  const support=cvTailoringPlan(profile,{}, {title:'IT Support Specialist'});
  assert.equal(support.preferred_section_ids[0],'it');assert.notDeepEqual(plan.preferred_section_ids,support.preferred_section_ids);
@@ -55,7 +56,7 @@ test('two vacancies in the SAME mechanical family produce different exact requir
  assert.deepEqual(cadPlan.vacancy_keywords.entries.filter(e=>e.status==='SUPPORTED').map(e=>e.keyword).sort(),['CAD','mechanical design'].sort());
  const incomplete={...doc,sections:[{source_fact_id:'embedded',bullets:[claim('Worked with PLC, Arduino and ESP32.','embedded')]}]};
  const missing=cvTailoringQa(incomplete,profile,plcAnalysis,plcJob);assert.ok(missing.errors.includes('SUPPORTED_ATS_KEYWORDS_MISSING'),'PID must not silently vanish');
- const complete={...incomplete,headline:{...doc.headline,source_fact_ids:['edu','embedded']},skills:[...doc.skills,claim('PID','embedded')]};
+ const complete={...incomplete,headline:{...doc.headline,source_fact_ids:['edu','embedded']},skills:[...doc.skills,claim('PID','embedded')],sections:[...incomplete.sections,{source_fact_id:'cad',bullets:[claim('Academic cycloidal gearbox design in CAD.','cad')]}]};
  assert.equal(cvTailoringQa(complete,profile,plcAnalysis,plcJob).pass,true);
  const coverage=cvTailoringQa(complete,profile,plcAnalysis,plcJob).keyword_coverage;
  assert.ok(coverage.every(entry=>entry.status==='SUPPORTED_COVERED'&&entry.covered_claim_ids.length>0));

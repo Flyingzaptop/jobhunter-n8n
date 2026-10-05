@@ -10,7 +10,9 @@ import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {observe,operationContext} from './observability.mjs';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 
-export const CV_V2_VERSION = 'cv-factory-v2.3-exact-vacancy';
+export const CV_V2_VERSION = 'cv-factory-v2.4-project-breadth';
+// Previously reviewed, evidence-verified PDFs remain valid until a new PDF replaces them.
+export const compatibleCvTemplate=version=>[CV_V2_VERSION,'cv-factory-v2.3-exact-vacancy'].includes(version);
 const ajv = new Ajv({strict:true, allErrors:true});
 const str = {type:'string', minLength:1};
 const obj = properties => ({type:'object', additionalProperties:false, properties, required:Object.keys(properties)});
@@ -148,12 +150,14 @@ export function cvTailoringPlan(profile,analysis={},job={}){
  const bestExact=Math.max(0,...ranked.map(item=>item.exact));
  const primary=ranked.filter(item=>bestExact?item.exact>0:item.core>=70).map(item=>item.fact.id);
  const sections=ranked.filter(item=>item.fact.provenance&&!['EDUCATION','COURSE'].includes(item.fact.provenance));
- const selected=family==='GENERAL'&&!bestExact||!primary.length?sections:sections.filter(item=>item.exact>0||item.core>=(family==='IT_SUPPORT'?70:1)).slice(0,4);
+ const focused=family==='GENERAL'&&!bestExact||!primary.length?sections.slice(0,4):sections.filter(item=>item.exact>0||item.core>=(family==='IT_SUPPORT'?70:1)).slice(0,4);
+ const breadth=sections.filter(item=>/turbo.?jet|turbojet|cycloidal|cykloid|cycloid/i.test([item.fact.title,...(item.fact.statements??[])].join(' ')));
+ const selected=[...focused,...breadth,...sections.filter(item=>item.fact.provenance!=='PROFESSIONAL'&&!focused.includes(item)).slice(0,1)].filter((item,i,all)=>all.findIndex(other=>other.fact.id===item.fact.id)===i).slice(0,6);
  const target=normalize(`${job.title??''} ${job.description_text??''}`);
  const relevantTraining=facts.filter(fact=>fact.provenance==='COURSE'&&(family==='GENERAL'||strength(fact)>=70
   ||(normalize(fact.title).match(/python|\bcad\b|\bplc\b|linux|machine learning|data science/g)??[]).some(term=>target.includes(term)))).map(fact=>fact.id);
  return {family,primary_fact_ids:primary,ranked_fact_ids:ranked.map(item=>item.fact.id),allowed_section_ids:selected.map(item=>item.fact.id),
-  preferred_section_ids:selected.map(item=>item.fact.id),engineering_education_first:['MECHANICAL','ENGINEERING_AUTOMATION'].includes(family),
+  preferred_section_ids:selected.map(item=>item.fact.id),required_project_ids:breadth.map(item=>item.fact.id),secondary_fact_ids:selected.filter(item=>!focused.includes(item)).map(item=>item.fact.id),engineering_education_first:['MECHANICAL','ENGINEERING_AUTOMATION'].includes(family),
   relevant_training_ids:relevantTraining,
   vacancy_keywords:vacancyKeywords,
   scores:Object.fromEntries(ranked.map(item=>[item.fact.id,item.exact*10+item.core]))};
@@ -172,6 +176,7 @@ export function cvTailoringQa(document,profile,analysis={},job={}){
  const total=document.summary.reduce((n,c)=>n+c.text.split(/\s+/).length,0),relevant=document.summary.filter(aligned).reduce((n,c)=>n+c.text.split(/\s+/).length,0);
  if(relevant<total*.5)errors.push('SUMMARY_UNRELATED_DOMINANCE');
  const index=factIndex(profile);
+ for(const id of plan.required_project_ids)if(!document.sections.some(section=>section.source_fact_id===id))errors.push('CONFIRMED_PROJECT_BREADTH_MISSING');
  for(const summary of document.summary){const scopes=new Set(summary.source_fact_ids.map(id=>index.get(id)?.provenance));
   const text=normalize(summary.text);
   if(scopes.has('ACADEMIC')&&!/academic|akademick/.test(text)||scopes.has('PERSONAL_PROJECT')&&!/personal|projekt.*wlasn/.test(text)
@@ -229,10 +234,10 @@ export function cvWriterSchema(profile,{allowedSectionIds,allowedSkillNames}={})
   const sectionSchema=sectionIds.length ? {oneOf:sectionIds.map(id=>{
     const bullet=structuredClone(claim);
     bullet.properties.source_fact_ids={type:'array',minItems:1,maxItems:1,items:{const:id}};
-    return obj({source_fact_id:{const:id},bullets:{...array(bullet,3),minItems:1}});
+    return obj({source_fact_id:{const:id},bullets:{...array(bullet,4),minItems:1}});
   })} : obj({source_fact_id:str,bullets:{...array(claim,3),minItems:1}});
   return obj({headline:claim, summary:{...array(claim,2),minItems:1}, skills:{...array(skillSchema,14), ...(skillNames.length ? {minItems:1} : {maxItems:0})},
-    sections:{...array(sectionSchema,4), ...(sectionIds.length ? {minItems:1} : {maxItems:0})},
+    sections:{...array(sectionSchema,6), ...(sectionIds.length ? {minItems:1} : {maxItems:0})},
     application_text:array(obj({kind:{enum:['cover_letter','motivation','introduction']}, claims:{...array(claim,3), minItems:1}}),1)});
 }
 
