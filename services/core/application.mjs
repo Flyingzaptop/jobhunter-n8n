@@ -36,9 +36,11 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const values=(view.fields??[]).filter(f=>f.visible&&!['password','hidden','file'].includes(f.type)).map(f=>String(f.value??''));
   const haystack=`${view.text??''}\n${values.join('\n')}`;
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
+    email:(view.fields??[]).filter(f=>f.visible&&(f.type==='email'||/^(?:email|e-mail)(?: address)?$/i.test(f.label??''))).every(f=>String(f.value).trim().toLowerCase()===String(identity.email??'').trim().toLowerCase()),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
     upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').includes(f.filename))),
     questions:outstanding===0,required_fields:missingRequiredFields(view.fields).length===0,
+    saved_fields:!(view.fields??[]).some(f=>f.visible&&f.required&&f.type!=='file'&&(f.type!=='radio'||f.checked)&&f.server_saved===false),
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
   return {pass:Object.values(checks).every(Boolean),checks,observed_at:new Date().toISOString(),form_fingerprint:view.fingerprint,cv_sha256:cv.sha256};
 }
@@ -246,6 +248,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
       fieldsToFill.sort((a,b)=>Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
+        if(!field.required&&field.type!=='file'&&!resolveField(field,{profile,job,answerMemory}))continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
         if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});

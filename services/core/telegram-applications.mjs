@@ -4,6 +4,7 @@ import {assertControlledApplicationReady} from './controlled-submit-gate.mjs';
 import {executeConfirmedSubmit} from './confirmed-submit.mjs';
 import {hitlError} from './hitl.mjs';
 import {readFile} from 'node:fs/promises';
+import path from 'node:path';
 import {explicitWorkMode} from './work-format-evidence.mjs';
 const clean=(value,max=500)=>String(value??'').replace(/[\u0000-\u001f]/g,' ').replace(/\s+/g,' ').trim().slice(0,max);
 export const escapeTelegram=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
@@ -74,6 +75,11 @@ export async function dispatchTelegramSubmit({repository,profile,browser,telegra
  await approveApplicationReview(repository,accepted.application_id,accepted.approval_id,accepted.binding_digest,profile,browser,{source:'USER_TELEGRAM'});
  const result=await executeConfirmedSubmit({repository,profile,browser,applicationId:accepted.application_id,approvalId:accepted.approval_id,bindingDigest:accepted.binding_digest,idempotencyKey:accepted.idempotency_key,confirmationSource:'USER_TELEGRAM'});
  await telegram.send(`Заявка ${accepted.application_id.slice(0,8)}: ${result.status}\n${result.confirmation_id?'Подтверждение: '+result.confirmation_id:'Без подтверждённого результата повторный Submit автоматически не выполняется.'}`);
+ if(result.screenshot_path){try{
+  const root=path.resolve(process.env.BROWSER_STATE_DIR??'data/browser'),file=path.resolve(result.screenshot_path);if(path.dirname(file)!==root||!/-submit-\d+\.png$/.test(path.basename(file)))throw Error('INVALID_RESULT_SCREENSHOT');
+  const form=new FormData();form.set('chat_id',telegram.chatId);form.set('caption',`Результат Submit · ${accepted.application_id.slice(0,8)} · ${result.status}\nПочта: ${profile.onboarding.email}`);form.set('photo',new Blob([await readFile(file)],{type:'image/png'}),'submission.png');
+  const response=await telegram.fetch(`https://api.telegram.org/bot${telegram.token}/sendPhoto`,{method:'POST',body:form,signal:AbortSignal.timeout(30000)});if(!response.ok||!(await response.json()).ok)throw Error('SCREENSHOT_DELIVERY_FAILED');
+ }catch{await repository.event('application',accepted.application_id,'SUBMISSION_SCREENSHOT_DELIVERY_FAILED',{});}}
  return result;
  }catch(error){await telegram.send(`Заявка ${accepted.application_id.slice(0,8)} не получила подтверждённого результата отправки: ${/^[A-Z_]+$/.test(error.code??'')?error.code:'проверка или запрос завершились ошибкой'}. Автоматически повторять Submit не буду.`);throw error;}
 }

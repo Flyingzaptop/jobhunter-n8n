@@ -18,6 +18,8 @@ import {setCheckedControl} from './check-control.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,reviewedAshbyFieldSave,bindAshbyStorageUpload,reviewedAshbyStoragePost,restoreOmittedMultipartPdf,chooseCombobox} from './ashby-preparation.mjs';
 import {gunzipSync,brotliDecompressSync,inflateSync} from 'node:zlib';
+import {ashbyFormFields,ashbyFieldSaved} from './ashby-form-evidence.mjs';
+import {explicitSubmissionReceipt,submissionPageSucceeded} from './submission-proof.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 export function browserConfig(env = process.env) {
@@ -85,7 +87,13 @@ export async function createBrowserService(config = browserConfig()) {
         if(request.method()==='POST'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()})&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);session.ashbySuggestions=JSON.parse(bytes.toString('utf8')).data?.result?.suggestions??[];}catch{session.ashbySuggestions=[];}}
         if(request.url().includes('op=ApiJobPosting')&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);const job=JSON.parse(bytes.toString('utf8')).data?.jobPosting;
           session.ashbyDefinitions??=new Set();for(const form of [job?.applicationForm,...(job?.surveyForms??[])])if(typeof form?.sourceFormDefinitionId==='string')session.ashbyDefinitions.add(form.sourceFormDefinitionId);
+          session.ashbySchema=ashbyFormFields(job?.applicationForm);
         }catch{/* Only observed public form definitions can authorize an attachment. */}}
+        if(request.url().includes('op=ApiSetFormValue')&&reply.status===200){try{
+          let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);
+          const response=JSON.parse(bytes.toString('utf8')),form=response.data?.setFormValue;
+          if(!response.errors&&form){session.ashbySaved=ashbyFormFields(form);session.ashbyFormErrors=(form.formErrors??[]).map(e=>e.message).filter(Boolean);}
+        }catch{/* A missing acknowledgement never establishes saved fields. */}}
         if(uploadInit&&reply.status>=200&&reply.status<300){let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);
           const storage=bindAshbyStorageUpload(session.uploadWindow,JSON.parse(bytes.toString('utf8')));if(!storage)throw Error('ASHBY_STORAGE_WINDOW_UNVERIFIED');session.uploadWindow.storage=storage;}
         await route.fulfill(reply);
@@ -115,6 +123,10 @@ export async function createBrowserService(config = browserConfig()) {
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link',name:e.name??null,value:e.value??null,formAction:e.formAction??null,form_id:e.form?.id??null, final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
+    if(atsAdapterFor(result.url)==='ashby'){
+      for(const field of result.fields){const schema=session.ashbySchema?.get(field.field_path);if(schema){field.required=schema.required;field.required_source='ATS_SCHEMA';if(field.type!=='file')field.server_saved=ashbyFieldSaved(field,session.ashbySaved?.get(field.field_path));}}
+      result.validation_errors=[...new Set([...result.validation_errors,...(session.ashbyFormErrors??[])])];
+    }
     const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
     return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename,evidence,receipt_id})=>({sha256,filename,evidence,...(receipt_id?{receipt_id}:{} )})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
@@ -143,7 +155,7 @@ export async function createBrowserService(config = browserConfig()) {
       if (operation === 'submit' && session.submit_attempted) return { ...before, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_id: session.submission_confirmation?.confirmation_id || null };
       if (!field && !button) throw new Error('SELECTOR_NOT_IN_CURRENT_SNAPSHOT');
       const locator = session.page.locator(payload.selector);
-      if (operation === 'fill') { if (!field.visible || field.disabled || field.readOnly || ['hidden', 'file', 'checkbox', 'radio', 'submit','password'].includes(field.type)||field.autocomplete==='one-time-code') throw new Error('UNSAFE_FILL'); registerFieldWindow(); await locator.fill(String(payload.value)); session.filled_fields[payload.selector] = String(payload.value); }
+      if (operation === 'fill') { if (!field.visible || field.disabled || field.readOnly || ['hidden', 'file', 'checkbox', 'radio', 'submit','password'].includes(field.type)||field.autocomplete==='one-time-code') throw new Error('UNSAFE_FILL'); registerFieldWindow(); await locator.fill(String(payload.value));await locator.blur(); session.filled_fields[payload.selector] = String(payload.value); }
       else if (operation === 'select') { if (!field.visible || !field.options) throw new Error('NOT_SELECT'); registerFieldWindow(); await locator.selectOption(payload.value); session.filled_fields[payload.selector] = payload.value; }
       else if(operation==='choose'){if(!field.visible||field.role!=='combobox'||payload.verified_facts!==true)throw Error('VERIFIED_COMBOBOX_REQUIRED');registerFieldWindow();await chooseCombobox(session.page,locator,payload.value,()=>session.ashbySuggestions??[]);session.filled_fields[payload.selector]=payload.value;}
       else if (operation === 'check') {
@@ -207,14 +219,15 @@ export async function createBrowserService(config = browserConfig()) {
         session.submit_attempted = true; session.history.push({ operation: 'submit_intent', timestamp: new Date().toISOString() }); await checkpoint(session);
         session.submitActive = true;
         let networkConfirmation;
-        const responseListener = async response => { try { if (new URL(response.url()).origin === new URL(before.url).origin && response.request().method() === 'POST' && response.ok()) { const result = await response.json(); if (typeof result.confirmation_id === 'string' && result.confirmation_id.length < 200) networkConfirmation = result; } } catch { /* Only structured explicit confirmation counts. */ } };
+        const responseListener = async response => { try { if (new URL(response.url()).origin === new URL(before.url).origin && response.request().method() === 'POST' && response.ok()) { const result = await response.json(),receipt=explicitSubmissionReceipt(response.url(),result);if(receipt)networkConfirmation={confirmation_id:receipt}; } } catch { /* Only structured explicit confirmation counts. */ } };
         session.page.on('response', responseListener);
-        try { await locator.click(); await session.page.waitForSelector('[data-confirmation-id]', { timeout: 10000 }); }
+        try { await locator.click(); await session.page.waitForFunction(()=>Boolean(document.querySelector('[data-confirmation-id]'))||/thank you for (?:your |applying|submitting)|application (?:has been |was )?(?:successfully )?(?:submitted|received)/i.test(document.body?.innerText??''),{},{timeout:15000}); }
         catch { /* Ambiguous outcomes are deliberately never retried. */ }
         finally { session.submitActive = false; session.page.off('response', responseListener); }
         const afterView = await snapshot(session);
-        if (networkConfirmation && afterView.confirmation_id === networkConfirmation.confirmation_id) session.submission_confirmation = { confirmation_id: networkConfirmation.confirmation_id, timestamp: new Date().toISOString(), evidence: 'NETWORK_AND_PAGE' };
-        const after = await checkpoint(session); return { ...after, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null };
+        if (networkConfirmation && (afterView.confirmation_id === networkConfirmation.confirmation_id||submissionPageSucceeded(afterView))) session.submission_confirmation = { confirmation_id: networkConfirmation.confirmation_id, timestamp: new Date().toISOString(), evidence: 'NETWORK_AND_PAGE' };
+        const screenshotPath=path.join(config.stateRoot,`${session.id}-submit-${Date.now()}.png`);await session.page.screenshot({path:screenshotPath,fullPage:true});session.history.push({operation:'submit_result',timestamp:new Date().toISOString(),screenshot_path:screenshotPath,validation_errors:afterView.validation_errors,email:before.fields.filter(f=>f.visible&&(/email|e-mail/i.test(f.label)||f.type==='email')).map(f=>f.value)});
+        const after = await checkpoint(session); return { ...after, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null,screenshot_path:screenshotPath,validation_errors:afterView.validation_errors };
       } else throw new Error('UNKNOWN_OPERATION');
     }
     if(['fill','select','check','upload'].includes(operation))session.recovery_attempts=0;

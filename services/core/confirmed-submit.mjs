@@ -16,7 +16,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   if(!locked)throw hitlError('APPLICATION_BUSY');
   const app=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
   if(!app)throw hitlError('APPLICATION_NOT_FOR_ACTIVE_PROFILE',404);
-  const previous=(await repository.pool.query('SELECT * FROM confirmed_submit_commands WHERE application_id=$1',[applicationId])).rows[0];
+  const previous=(await repository.pool.query('SELECT * FROM confirmed_submit_commands WHERE application_id=$1 AND superseded_at IS NULL',[applicationId])).rows[0];
   if(previous){if(previous.idempotency_key!==idempotencyKey||previous.approval_id!==approvalId||previous.binding_digest!==bindingDigest)throw hitlError('APPLICATION_ALREADY_HAS_SUBMIT_COMMAND');return {command_id:previous.command_id,status:previous.status,confirmation_id:previous.result_json?.confirmation_id??null,duplicate:true};}
   const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;
   if(paused)throw hitlError('PAUSED');
