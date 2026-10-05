@@ -170,6 +170,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
   notify:async({profile})=>{
    const {sendReadyApplications}=await import('./telegram-applications.mjs');
    const results=await Promise.allSettled([drainCaptchaHandoffs({repository,browser,telegram}),
+    telegram.sendDeferredQuestions(repository),
     sendReadyApplications({repository,profile,browser,telegram})]);
    if(results.some(result=>result.status==='rejected'))throw new Error('NOTIFICATION_LANE_PARTIAL_FAILURE');
    return results.map(result=>result.value);},

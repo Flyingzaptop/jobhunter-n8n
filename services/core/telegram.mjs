@@ -68,9 +68,12 @@ export class Telegram {
     if(previous?.telegram_message_id)return requestId;
     if(!previous)await repo.pool.query(`WITH persisted AS (INSERT INTO application_questions(question_id,application_id,normalized_question,raw_question,telegram_request_id,telegram_chat_id) VALUES($1,$2,$3,$3,$4,$5) RETURNING telegram_request_id) UPDATE applications SET last_state=last_state || jsonb_build_object('pending_question',COALESCE(last_state->'pending_question','{}'::jsonb)||jsonb_build_object('request_id',(SELECT telegram_request_id::text FROM persisted))) WHERE application_id=$2`,[questionId,applicationId,text,requestId,this.chatId]);
     let message;
+    const recent=(await repo.pool.query("SELECT 1 FROM events WHERE entity_id=$1::text AND event_type='HITL_QUESTION_NOTIFICATION_SENT' AND created_at>now()-interval '5 minutes' UNION ALL SELECT 1 FROM application_questions WHERE application_id=$1::uuid AND telegram_message_id IS NOT NULL AND created_at>now()-interval '5 minutes' LIMIT 1",[applicationId])).rowCount;
+    if(recent)return requestId;
     try{
-      const context=(await repo.pool.query('SELECT j.title,j.company,j.location FROM applications a JOIN jobs j USING(job_id) WHERE a.application_id=$1',[applicationId])).rows[0];
-      message = await this.sendHtml(`<b>НУЖНО ТВОЁ РЕШЕНИЕ</b>\n\n<b>${escapeTelegram(context?.title??'Заявка')}</b>\n${escapeTelegram(context?.company??'')} · ${escapeTelegram(context?.location??'')}\n\n<b>Что требуется</b>\n${escapeTelegram(text)}\n\n<b>Твоё действие</b>\nОтветь на это сообщение. Для обязательного согласия: <b>ДА</b> или <b>НЕТ</b>.\nФинальная отправка подтверждается отдельно.\n\n<code>Заявка ${applicationId.slice(0,8)}</code>`);
+      const context=(await repo.pool.query('SELECT j.title,j.company,j.location,a.last_state FROM applications a JOIN jobs j USING(job_id) WHERE a.application_id=$1',[applicationId])).rows[0];
+      const instruction=context?.last_state?.pending_question?.type==='CONSENT'?'Для этого согласия ответь ДА или НЕТ.':'Введи конкретное значение или название варианта. Ответ «ДА» не заменяет дату, город, учебное заведение или степень.';
+      message = await this.sendHtml(`<b>НУЖНО ТВОЁ РЕШЕНИЕ</b>\n\n<b>${escapeTelegram(context?.title??'Заявка')}</b>\n${escapeTelegram(context?.company??'')} · ${escapeTelegram(context?.location??'')}\n\n<b>Что требуется</b>\n${escapeTelegram(text)}\n\n<b>Твоё действие</b>\nОтветь на это сообщение. ${escapeTelegram(instruction)}\nФинальная отправка подтверждается отдельно.\n\n<code>Заявка ${applicationId.slice(0,8)}</code>`);
     }catch(error){
       await repo.event('application',applicationId,'HITL_NOTIFICATION_FAILED',{question_id:questionId,request_id:requestId,reason:this.token&&this.chatId?'DELIVERY_FAILED':'TELEGRAM_NOT_CONFIGURED'});
       return requestId;
@@ -79,7 +82,13 @@ export class Telegram {
       "UPDATE application_questions SET telegram_message_id=$2 WHERE question_id=$1",
       [questionId, message.message_id],
     );
+    await repo.event('application',applicationId,'HITL_QUESTION_NOTIFICATION_SENT',{question_id:questionId,request_id:requestId,message_id:message.message_id});
     return requestId;
+  }
+  async sendDeferredQuestions(repo){
+    const rows=(await repo.pool.query("SELECT q.application_id,q.raw_question FROM application_questions q JOIN applications a USING(application_id) WHERE a.status='NEEDS_USER' AND q.answered_at IS NULL AND q.closed_at IS NULL AND q.telegram_message_id IS NULL AND q.telegram_request_id::text=a.last_state->'pending_question'->>'request_id' ORDER BY q.created_at LIMIT 10")).rows;
+    for(const row of rows)await this.request(repo,row.application_id,row.raw_question);
+    return {checked:rows.length};
   }
   async accept(repo, update) {
     const message = update.message;

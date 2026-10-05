@@ -62,6 +62,7 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:identity.current_job_title||(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
   if(/linkedin/i.test(label)&&known(identity.linkedin_url)&&['text','url'].includes(field.type))return {value:identity.linkedin_url,source:'PROFILE'};
+  if(/^(?:school name|university name|college name|school|university|uczelnia)$/.test(label)&&['text','select-one'].includes(field.type)){const schools=[...new Set((profile.education??[]).map(f=>f.institution).filter(known))];if(schools.length===1)return {value:schools[0],source:'PROFILE'};}
   value=direct[field.name];
   if(field.name==='name'&&field.type==='text')value=legal;
   if(field.name==='location'&&field.type==='text'&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))value=`${candidate.base_location.city}, ${candidate.base_location.country}`;
@@ -133,6 +134,7 @@ export function humanConsentAnswer(value){
 export function radioAnswerTarget(field,fields,answer){
  const peers=fields.filter(f=>f.type==='radio'&&f.name===field.name&&f.form===field.form&&f.visible&&!f.disabled),text=norm(answer);
  const exact=peers.filter(f=>norm(f.label)===text||norm(f.value)===text);if(exact.length===1)return exact[0];
+ if(/\bbachelor(?:s)?\b/.test(text)){const options=peers.filter(f=>/^bachelor/i.test(f.label));if(options.length===1)return options[0];}
  const boolean=humanConsentAnswer(answer);if(boolean===null)return null;
  const matching=peers.filter(f=>(boolean?/^(?:yes|tak)\b/i:/^(?:no|nie)\b/i).test(f.label));return matching.length===1?matching[0]:null;
 }

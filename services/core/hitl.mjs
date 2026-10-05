@@ -8,6 +8,12 @@ export function boundedAnswer(value) {
   if (typeof value !== 'string' || !value.trim() || value.length > QUESTION_ANSWER_LIMIT || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) || /^(?:unknown|not known|not sure)$/i.test(value.trim())) throw hitlError('INVALID_USER_ANSWER', 400);
   return value.trim();
 }
+export function validateQuestionAnswer(question,pending,answer){
+ const label=question.raw_question??pending?.field_label??'',boolean=/^(?:да|нет|yes|no|tak|nie|true|false)[.!]?$/iu.test(answer.trim());
+ if(boolean&&['text','textarea','url','email','tel','number','date'].includes(pending?.field_type)&&/name|school|university|location|city|country|date|graduation|salary|profile|website|phone|email|years/i.test(label))throw hitlError('INVALID_USER_ANSWER_EXPECTED_CONCRETE_VALUE',400);
+ if(boolean&&pending?.field_type==='radio'&&!/consent|agree|\byes\b|\bno\b|\btak\b|\bnie\b/i.test(label))throw hitlError('INVALID_USER_ANSWER_EXPECTED_OPTION',400);
+ if(/graduation|anticipated graduation/i.test(label)&&!/(?:19|20)\d{2}/.test(answer))throw hitlError('INVALID_USER_ANSWER_EXPECTED_DATE',400);
+}
 export function questionEligibility(question, application, profileId) {
   if (question.closed_at) return 'QUESTION_CLOSED';
   if (!application || application.candidate_profile_id !== profileId) return 'QUESTION_NOT_FOR_ACTIVE_PROFILE';
@@ -33,6 +39,7 @@ export async function acceptQuestionAnswerWithClient(client, { questionId, corre
   const application = (await client.query('SELECT * FROM applications WHERE application_id=$1 FOR UPDATE', [question.application_id])).rows[0];
   const denied = questionEligibility(question, application, profileId);
   if (denied) throw hitlError(denied);
+  validateQuestionAnswer(question,application.last_state?.pending_question,value);
   const saved = (await client.query(`UPDATE application_questions SET answer=$2::jsonb,answer_source=$3,confidence=1,reusable=false,answered_at=now()
     WHERE question_id=$1 AND answered_at IS NULL AND answer IS NULL RETURNING question_id,application_id,telegram_request_id`, [questionId, JSON.stringify(value), source])).rows[0];
   if (!saved) throw hitlError('QUESTION_ALREADY_ANSWERED');
