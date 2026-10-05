@@ -12,6 +12,7 @@ import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
 import {verifySubmitCapability} from './submit-capability.mjs';
 import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from './preparation-network.mjs';
+import {selectedCookieButton} from '../core/form-settling.mjs';
 import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -155,10 +156,11 @@ export async function createBrowserService(config = browserConfig()) {
       }
       else if (operation === 'click') {
         const safeEntry=button&&safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields});
+        const cookieChoice=selectedCookieButton(before)?.selector===payload.selector;
         const draftWindow=button?draftNavigationWindow(before,button):null;
         if (field || !button || button.final_submit || !safeEntry&&/submit|send application|apply now|pay|confirm application/i.test(button.text)) throw new Error('USE_GATED_SUBMIT');
         if (button.type === 'submit'&&!draftWindow) throw new Error('USE_GATED_SUBMIT');
-        if (!/^(next|continue|back|previous)(\s+step)?$|^(dalej|kontynuuj|wstecz|nastepny krok)$/i.test(button.text.normalize('NFD').replace(/[\u0300-\u036f]/g,''))&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
+        if (!cookieChoice&&!/^(next|continue|back|previous)(\s+step)?$|^(dalej|kontynuuj|wstecz|nastepny krok)$/i.test(button.text.normalize('NFD').replace(/[\u0300-\u036f]/g,''))&&!safeNavigationButton({adapter:atsAdapterFor(before.url),url:before.url,button,fields:before.fields})) throw new Error('UNCLASSIFIED_CLICK_NEEDS_USER');
         if(safeEntry)session.readNavigationUntil=Date.now()+15000;
         if(draftWindow)session.draftWindow=draftWindow;
         await locator.click();

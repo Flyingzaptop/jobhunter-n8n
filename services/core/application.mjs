@@ -103,9 +103,17 @@ async function ask({repository,telegram,application,browser,sessionId,field,snap
   return {application_id:application.application_id,status,pending_question:pending};
 }
 
+export function postingOpenEvidence(view,job){
+ if(/job (?:is )?(?:closed|expired)|no longer accepting applications|position (?:is )?filled|oferta (?:pracy )?(?:jest )?(?:nieaktualna|wygasla|wygasła)|ogloszenie wygaslo|ogłoszenie wygasło/i.test(view.text??''))return 'CLOSED';
+ const title=norm(job.title),body=norm(view.text),label=norm(view.title);
+ let samePage=false;try{const actual=new URL(view.url),expected=new URL(job.canonical_url);samePage=actual.origin===expected.origin&&actual.pathname===expected.pathname;}catch{}
+ const identified=!!title&&(body.includes(title)||label.includes(title));
+ const apply=(view.buttons??[]).some(button=>button.visible!==false&&!button.disabled&&/^(?:apply(?: now| for (?:this|the) (?:job|position))?|easy apply|aplikuj(?: teraz| szybko)?|latwe aplikowanie)$/i.test(norm(button.text)));
+ return samePage&&identified&&apply?'OPEN':'UNKNOWN';
+}
 export async function reverify({browser,job,applicationId}) {
   const opened=await browser.call('/sessions',{application_id:applicationId,url:job.canonical_url});
-  try {const view=opened.snapshot;if(/job (?:is )?(?:closed|expired)|no longer accepting applications|position (?:is )?filled/i.test(view.text))return false;return view.title && (view.buttons.some(b=>b.href===job.application_url&&/apply/i.test(b.text)) || /apply|application/i.test(view.title));}
+  try {const evidence=postingOpenEvidence(opened.snapshot,job);return evidence==='OPEN'?true:evidence==='CLOSED'?false:null;}
   finally{await browser.call(`/sessions/${opened.session_id}`,undefined,'DELETE');}
 }
 
@@ -139,7 +147,11 @@ export async function runApplication({ repository, jobId, applicationId, profile
       if(!evidence.pass){await repository.event('application',application.application_id,'PREPARATION_EVIDENCE_REJECTED',{reasons:evidence.reasons});return {application_id:application.application_id,status:application.status,started:false,reason:'CURRENT_EMPLOYER_READY_CV_REQUIRED'};}
     }
     let sessionId=application.last_state?.browser_session_id, view;
-    if(application.status==='QUEUED'||application.status==='OPENING') {if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
+    if(application.status==='QUEUED'||application.status==='OPENING') {
+      if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}
+      const open=await verifyOpen({browser,job,applicationId:application.application_id});
+      if(open!==true){const status=open===false?'SKIPPED':'MANUAL_TAKEOVER';await transition(repository,application.application_id,status,open===false?{skip_reason:'JOB_CONFIRMED_CLOSED'}:{reason:'JOB_OPEN_VERIFICATION_UNCERTAIN'});return {status,application_id:application.application_id};}
+      const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
     else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=recovery.snapshot;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
@@ -220,7 +232,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
         await mutex.query("SELECT pg_advisory_lock(hashtextextended('jobhunter-submission-quota',0))");quotaLock=true;
         const control=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0];const tally=(await repository.pool.query("SELECT count(*)::int AS n FROM applications WHERE status IN ('SUBMITTING','SUBMITTED','SUBMISSION_UNKNOWN') AND COALESCE(submitted_at,updated_at)>=date_trunc('day',now() AT TIME ZONE 'Europe/Warsaw') AT TIME ZONE 'Europe/Warsaw'")).rows[0].n;
         if(control?.paused||!config.enabled||tally>=Number(config.maxApplicationsPerDay??process.env.MAX_APPLICATIONS_PER_DAY??20)){const reason=control?.paused||!config.enabled?'PAUSED':'DAILY_LIMIT';await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2 WHERE application_id=$1',[application.application_id,reason]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
-        if(!await verifyOpen({browser,job,applicationId:application.application_id})){await transition(repository,application.application_id,'SKIPPED',{skip_reason:'JOB_CLOSED_OR_UNVERIFIED'});return {status:'SKIPPED',application_id:application.application_id};}
+        const open=await verifyOpen({browser,job,applicationId:application.application_id});
+        if(open!==true){const status=open===false?'SKIPPED':'MANUAL_TAKEOVER';await transition(repository,application.application_id,status,open===false?{skip_reason:'JOB_CONFIRMED_CLOSED'}:{reason:'JOB_OPEN_VERIFICATION_UNCERTAIN'});return {status,application_id:application.application_id};}
         await transition(repository,application.application_id,'SUBMITTING',{browser_session_id:sessionId});application.status='SUBMITTING';let result;
         try{result=await browser.call(`/sessions/${sessionId}/submit`,{selector:final.selector});}catch{result={status:'SUBMISSION_UNKNOWN'};}
         if(result.status!=='SUBMITTED'||!result.confirmation_id||result.confirmation_evidence!=='NETWORK_AND_PAGE')result={...result,status:'SUBMISSION_UNKNOWN'};
