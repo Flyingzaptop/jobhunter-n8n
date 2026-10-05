@@ -87,6 +87,7 @@ export class Telegram {
       throw new Error("Unauthorized Telegram chat");
     const text = message.text ?? "";
     if (typeof text !== 'string' || text.length > 4096) throw new Error('Invalid Telegram message');
+    if (text.trim() === '?') return { command: '/status' };
     if(/^ОТПРАВИТЬ$/iu.test(text.trim()))return acceptTelegramSubmit(repo,message,this.chatId);
     if (text === "/pause" || text === "/resume") {
       await repo.pool.query(
