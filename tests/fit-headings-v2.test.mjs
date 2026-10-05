@@ -9,6 +9,19 @@ import { sourceFragmentCatalog, compactSchemaForJob, mandatoryRequirementAnchors
 const profile = YAML.parse(await readFile(new URL('./fixtures/candidate_profile_test.yaml', import.meta.url), 'utf8'));
 const base = { title: 'Engineering role', location: 'Europe', work_mode: 'UNKNOWN' };
 const atomic = (catalog, importance) => catalog.filter(f => f.importance_hint === importance && !f.list_container);
+
+test('actual Wabtec intern clauses preserve abilities, exclude duties and keep strong advantage optional',()=>{
+ const duty='Collecting and organizing data required for analyses (CNC machine parameters, tool wear, scrap, operation times).';
+ const ability='Ability to read technical drawings and understand dimensional and geometric tolerances.';
+ const optional='Experience with CAD/CAM software – a strong advantage.';
+ const data='Ability to analyze technical data (CNC parameters, cycle times, tool wear, scrap data).';
+ const catalog=sourceFragmentCatalog({...base,title:'Manufacturing Engineer Intern (Mechanical)',description_text:`Job Description\nRESPONSIBILITIES:\n${duty}\nREQUIREMENTS:\n${ability}\n${optional}\n${data}`});
+ assert.equal(catalog.find(f=>f.text==='Job Description').context_only,true);
+ assert.equal(catalog.find(f=>f.text===duty).context_only,true);
+ assert.deepEqual(atomic(catalog,'MANDATORY').map(f=>f.text),[ability,data]);
+ assert.deepEqual(atomic(catalog,'STRONG_PREFERENCE').map(f=>f.text),[optional]);
+ for(const fragment of ['Collecting','data','scrap data)','technical drawings'])assert.equal(catalog.some(f=>f.text===fragment),false);
+});
 test('observed OLX Polish expectation headings yield five intact mandatory clauses and bounded benefits/work organisation',async()=>{
  const fixture=JSON.parse(await readFile(new URL('./fixtures/olx-polish-qualification-boundaries.json',import.meta.url),'utf8'));
  const job={...base,description_text:fixture.description_text};const catalog=sourceFragmentCatalog(job);

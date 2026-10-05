@@ -3,7 +3,7 @@ import Ajv from 'ajv';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {createHash} from 'node:crypto';
 
-export const PROMPT_VERSION = 'fit-analysis-v3.2-polish-boundaries';
+export const PROMPT_VERSION = 'fit-analysis-v3.3-qualified-clause-boundaries';
 const provenance = ['PROFESSIONAL','INDEPENDENT_R_AND_D','ACADEMIC','PERSONAL_PROJECT','COURSE','EDUCATION'];
 const categories = ['TECHNICAL','PROFESSIONAL_EXPERIENCE','EDUCATION','LANGUAGE','LEGAL','LOCATION','OTHER'];
 const importanceWeights = {MANDATORY: 0.7, STRONG_PREFERENCE: 0.2, NICE_TO_HAVE: 0.1, DESCRIPTION_ONLY: 0};
@@ -217,7 +217,7 @@ function standaloneQualificationHeading(text) {
     return { importance: 'MANDATORY', headingOnly: false };
   if (/^(?:ausbildung|erfahrungen und know-?how|personlichkeit und arbeitsweise|begeisterung|sprachen|arbeitsalltag)$/.test(key))
     return { importance: 'MANDATORY' };
-  if (/^(?:you will|what you['’]ll do|what you will do|what we offer|how to apply|what to expect|important information|who we are|about [\p{L}\p{N}& -]+|role description|key responsibilities|responsibilities|recruitment process|additional information|pay disclosure|poland employee benefits|estimated hourly pay range|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
+  if (/^(?:job description|you will|what you['’]ll do|what you will do|what we offer|how to apply|what to expect|important information|who we are|about [\p{L}\p{N}& -]+|role description|key responsibilities|responsibilities|recruitment process|additional information|pay disclosure|poland employee benefits|estimated hourly pay range|missions principales|vos missions|description (?:de l'entreprise|de la societe|du poste)|informations supplementaires|avantages|et maintenant\s*\?|processus de recrutement|what is [\p{L}\p{N} -]+\?)$/u.test(key))
     return { importance: null };
   // A trailing note starts application/work-arrangement context, but an explicit
   // qualification in the note (e.g. clearance required) is still evaluated.
@@ -262,14 +262,14 @@ function qualificationSentences(source,{job}={}) {
     }
     const headingOnly = standalone ? standalone.headingOnly !== false : headings.some(heading => text.replace(/[:—-]\s*$/, '').trim().toLowerCase() === heading[0].replace(/:\s*$/, '').trim().toLowerCase());
     const untrustedCommand = /ignore (?:previous|system|all) instructions|(?:reveal|expose|print|send|upload).*(?:secrets?|tokens?|environment variables)|upload another|localhost/i.test(text);
-    const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bnot (?:required|mandatory|essential)\b|\bproducing required documentation\b/i.test(text);
+    const nonQualification = /\b(?:regional|regulatory) requirements\b|\brequirements? vector\b|\b(?:when|whether|what|which|if)\b.*\bdata\b.*\brequired\b|\bdata required for (?:analys[ei]s|reports?|processing)\b|\bnot (?:required|mandatory|essential)\b|\bproducing required documentation\b/i.test(text);
     const list = text.match(/\b(mandatory|required|nice to have|preferred)\s*:\s*(.*)/i);
     let importance = null;
     if (!headingOnly && !untrustedCommand && !nonQualification && !workFormatStatement(text) && !employerContextStatement(text)) {
       importance = list ? /mandatory|required/i.test(list[1]) ? 'MANDATORY' : /nice/i.test(list[1]) ? 'NICE_TO_HAVE' : 'STRONG_PREFERENCE'
         : /\b(required|mandatory|must have|must possess|essential|is a must|erforderlich|voraussetzung|zwingend|notwendig)\b|wymagan|obowiazkow/i.test(text) ? 'MANDATORY'
         : /\b(nice to have|helpful)\b/i.test(text) ? 'NICE_TO_HAVE'
-        : /\b(?:preferred|wunschenswert|wünschenswert)|von vorteil\b/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
+        : /\b(?:preferred|wunschenswert|wünschenswert|(?:a |an )?(?:strong |clear |distinct )?(?:advantage|asset))\b|von vorteil/i.test(text) && !/your preferred mode/i.test(text) ? 'STRONG_PREFERENCE' : scope;
     }
     if(conditionalRegion&&/\b(?:applicants?|candidates?|employees?|you)\b.*\b(?:must be|eligible|authorizations?|citizenship|nationality)\b/i.test(text))importance='MANDATORY';
     if(conditionalRegion&&officeCountry&&conditionalRegion!==officeCountry)importance=null;
@@ -279,6 +279,9 @@ function qualificationSentences(source,{job}={}) {
 }
 
 function requirementItems(text, list) {
+  // Commas inside examples and conjunctions inside a qualified ability are
+  // part of one claim, not independently required qualifications.
+  if(/[()]/.test(text)||/^(?:[•*-]\s*)?(?:ability|accuracy|good communication|analytical|field of study|education|basic (?:knowledge|understanding)|fundamental understanding)\b/i.test(text))return [];
   // Alternative fields and examples qualify the one requirement; they are not
   // independent qualifications which the candidate must satisfy simultaneously.
   if (/\b(?:or|either|such as|for example|including|eg|ou|soit|notamment|par exemple|oder|beispielsweise)\b|\be\.g\.|\bz\.\s*b\./i.test(text)) return [];
