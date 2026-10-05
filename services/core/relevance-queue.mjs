@@ -165,7 +165,7 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           AND NOT EXISTS(SELECT 1 FROM applications app JOIN cv_versions cv USING(cv_id) WHERE app.job_id=q.job_id AND app.candidate_profile_id=$4
             AND app.status IN('FILLING','NEEDS_USER','CAPTCHA_WAIT','READY_TO_SUBMIT','SUBMITTING','SUBMITTED') AND cv.manifest_json->>'job_content_hash'=j.content_hash
             AND EXISTS(SELECT 1 FROM job_analysis current_fit WHERE current_fit.job_id=j.job_id AND current_fit.analysis_json->>'profile_hash'=$2 AND current_fit.analysis_json->>'policy_hash'=$3 AND current_fit.analysis_json->>'job_content_hash'=j.content_hash))
-          AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),${RELEVANCE_LOCATION_ORDER_SQL},
+          AND ($1::uuid[] IS NULL OR q.job_id=ANY($1::uuid[])) ORDER BY array_position($1::uuid[],q.job_id),CASE q.status WHEN 'QUEUED' THEN 0 WHEN 'RETRY' THEN 1 WHEN 'OPEN_UNVERIFIED' THEN 2 WHEN 'DEAD_LETTER' THEN 3 ELSE 4 END,${RELEVANCE_LOCATION_ORDER_SQL},
             q.relevance_score DESC,q.job_id LIMIT 2000`,[jobIds??null,hash(profile),hash(policy),profile.profile_id??''])).rows;
         let selected=null;
         for(const row of ready){if(seen.has(row.job_id))continue;const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[row.job_id])).rows[0];
@@ -182,7 +182,8 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
         try {
           const hard=await recordDeterministicHardReject({repository,job,profile,policy});
           if(hard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hard.analysis.reasons,model:null,inference_performed:false});continue;}
-          const verification=await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
+          const verifiedAt=Date.parse(job.last_verified_open_at??''),recentOpen=!regressionMode&&job.availability_status==='OPEN'&&Number.isFinite(verifiedAt)&&Date.now()-verifiedAt>=0&&Date.now()-verifiedAt<3600000&&(job.description_text??'').length>=120;
+          const verification=recentOpen?{status:'OPEN',job,evidence:'RECENT_SOURCE_OPEN_CHECK'}:await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
           if(verification.status!=='OPEN'){
             const plan=verificationRetryPlan(verification,claim.attempt_count);
             await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.status,plan.error_code,plan.next_retry_at]);

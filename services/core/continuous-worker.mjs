@@ -56,8 +56,18 @@ export class ContinuousStore {
   VALUES($1,$2,$3,$4,1) ON CONFLICT(lane) DO UPDATE SET owner_id=EXCLUDED.owner_id,state=EXCLUDED.state,outcome_code=EXCLUDED.outcome_code,
   ticks=continuous_worker_status.ticks+1,updated_at=now()`,[lane,this.ownerId,state,code&&safeCode(code)]);}
  async paused(){return (await this.repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused===true;}
+ async pendingFitCount(profile,policy){return Number((await this.repository.pool.query(`SELECT count(*)::int count FROM relevance_queue q JOIN jobs j USING(job_id)
+  WHERE q.status IN ('QUEUED','RETRY','OPEN_UNVERIFIED','RUNNING','ANALYZED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
+  AND NOT EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'policy_hash'=$2 AND a.analysis_json->>'job_content_hash'=j.content_hash)
+  `,[digest(profile),digest(policy)])).rows[0].count);}
+ async hasPendingFit(profile,policy){return (await this.pendingFitCount(profile,policy))>0;}
+ async runnableCvCandidates(profile,policy){const candidates=await this.cvCandidates(profile,policy);if(!candidates.length)return [];
+  const keys=candidates.map(job=>cvWorkKey(job,job.analysis_json,profile));const unavailable=new Set((await this.repository.pool.query("SELECT work_key FROM continuous_work WHERE work_key=ANY($1::text[]) AND NOT(status='RETRY' AND next_retry_at<=now() OR status='RUNNING' AND lease_until<now())",[keys])).rows.map(r=>r.work_key));
+  return candidates.filter((job,i)=>!unavailable.has(keys[i]));}
+ async higherPriorityPending(profile,policy){if(await this.hasPendingFit(profile,policy))return 'FIT';if((await this.runnableCvCandidates(profile,policy)).length)return 'CV';
+  return (await this.repository.pool.query("SELECT 1 FROM continuous_work w JOIN continuous_worker_status s ON s.owner_id=w.owner_id AND s.lane='model' WHERE w.lane='cv' AND w.status='RUNNING' LIMIT 1")).rowCount?'CV':null;}
 
- async cvCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,
+ async cvCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.job_id,j.title,j.company,j.content_hash,j.availability_status,j.location,j.country,j.work_mode,j.first_seen_at,j.description_text,a.analysis_json,
   (SELECT coalesce(jsonb_agg(c.manifest_json),'[]'::jsonb) FROM cv_versions c WHERE c.job_id=j.job_id AND c.profile_version=$1) existing_cv_manifests FROM jobs j JOIN LATERAL
   (SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
   WHERE j.availability_status='OPEN'
@@ -68,7 +78,7 @@ export class ContinuousStore {
   AND a.analysis_json->>'job_content_hash'=j.content_hash
   AND a.analysis_json->>'prompt_version'=$3
   AND NOT EXISTS(SELECT 1 FROM applications app WHERE app.job_id=j.job_id AND app.candidate_profile_id=$4 AND app.status IN ('SUBMITTED','SKIPPED','ALREADY_APPLIED','SUBMISSION_UNKNOWN','READY_TO_SUBMIT','NEEDS_USER','CAPTCHA_WAIT','MANUAL_TAKEOVER'))
-  ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at LIMIT 1000`,[digest(profile),digest(policy),PROMPT_VERSION,profile.profile_id])).rows;
+  ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at`,[digest(profile),digest(policy),PROMPT_VERSION,profile.profile_id])).rows;
   return rows.filter(row=>eligibleCvAnalysis(row,row.analysis_json,profile,policy)&&!row.existing_cv_manifests.some(manifest=>
    currentTailoredCv(manifest,row,row.analysis_json)));}
  async preparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
@@ -93,8 +103,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- let nextModel='fit',proseTurn=false,scheduleLoaded=false,proseBurst=0;const states={};
- const saveSchedule=async()=>{if(store.saveModelSchedule)await store.saveModelSchedule({nextModel,proseTurn});};
+ const states={};
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
@@ -113,15 +122,14 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
     if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
-    if(!scheduleLoaded){if(store.loadModelSchedule)({nextModel,proseTurn}=await store.loadModelSchedule());scheduleLoaded=true;}
-    if(prose){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){proseBurst++;states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
-    proseBurst=0;
-    const candidates=await store.cvCandidates(profile,policy);
-    const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
-     if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context)))return true;}return false;};
-    if(nextModel==='cv'){nextModel='fit';proseTurn=true;await saveSchedule();if(!(await generate()))await fit(context);}
-    else {nextModel='cv';await saveSchedule();await fit(context);}
+    const fitted=await fit(context);
+    if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
+    if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
+    const candidates=await (store.runnableCvCandidates?store.runnableCvCandidates(profile,policy):store.cvCandidates(profile,policy));
+    for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
+    if(prose)await prose(context);
    } else if(lane.startsWith('preparation-')){
+    const priority=store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
     for(const row of await store.preparationCandidates(profile,policy)){
      if(waiting.has(row.application_status)||row.last_state?.ready_stop||row.last_state?.captcha)continue;
      const key='prepare:'+digest([profile.profile_id,row.job_id,digest(profile),digest(policy),CV_V2_VERSION,row.cv_id]);

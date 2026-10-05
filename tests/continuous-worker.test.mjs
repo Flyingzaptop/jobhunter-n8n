@@ -34,14 +34,23 @@ function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[]
   prepare:async(jobId)=>({application_id:jobId}),apply:async(jobId)=>{applied.push(jobId);return {status:jobId===job.job_id?'CAPTCHA_WAIT':'READY_STOP'};},...overrides});
  return {worker,store,claims,outcomes,applied};}
 
-test('worker restart resumes the CV turn instead of repeatedly returning to fit',async()=>{
- let schedule={nextModel:'fit',proseTurn:false},fits=0,cvs=0;
- const attach=store=>{store.loadModelSchedule=async()=>structuredClone(schedule);store.saveModelSchedule=async state=>{schedule=structuredClone(state);};};
- const first=harness({fit:async()=>{fits++;},cv:async()=>{cvs++;return{status:'REGISTERED'};}});attach(first.store);
- await first.worker.tick('model');assert.equal(fits,1);assert.equal(schedule.nextModel,'cv');
- const restarted=harness({fit:async()=>{fits++;},cv:async()=>{cvs++;return{status:'REGISTERED'};}});attach(restarted.store);
- await restarted.worker.tick('model');assert.equal(fits,1);assert.equal(cvs,1);assert.equal(schedule.nextModel,'fit');
+test('strict FIT then CV then forms, and new FIT preempts the next lower task',async()=>{
+ let pendingFit=3,pendingCv=2;const calls=[];
+ const {worker,store,applied}=harness({fit:async()=>{if(pendingFit){pendingFit--;calls.push('FIT');return {attempted:1};}return {attempted:0};},cv:async()=>{pendingCv--;calls.push('CV');return {status:'REGISTERED'};},prose:async()=>({processed:0})});
+ store.cvCandidates=async()=>pendingCv?[{...job,job_id:'cv-'+pendingCv}]:[];
+ store.higherPriorityPending=async()=>pendingFit?'FIT':pendingCv?'CV':null;
+ await worker.tick('preparation-1');assert.equal(applied.length,0);
+ for(let i=0;i<3;i++)await worker.tick('model');assert.deepEqual(calls,['FIT','FIT','FIT']);
+ await worker.tick('preparation-1');assert.equal(applied.length,0);
+ await worker.tick('model');await worker.tick('model');assert.deepEqual(calls,['FIT','FIT','FIT','CV','CV']);
+ await worker.tick('preparation-1');assert.equal(applied.length,1);
+ pendingFit=1;await worker.tick('preparation-2');assert.equal(applied.length,1);await worker.tick('model');assert.equal(calls.at(-1),'FIT');
 });
+test('an empty FIT batch cannot start CV when another deep-fit task remains',async()=>{
+ let generated=0;const {worker,store}=harness({fit:async()=>({attempted:0}),cv:async()=>{generated++;return {status:'REGISTERED'};}});store.hasPendingFit=async()=>true;
+ await worker.tick('model');assert.equal(generated,0);
+});
+
 test('cheap screening processes arrivals while a slow source scan is still pending',async()=>{
  let finishScan,screened=0;
  const {worker}=harness({discovery:()=>new Promise(resolve=>{finishScan=resolve;}),buildQueue:async()=>{screened++;}});
@@ -131,7 +140,7 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
  const repo=new Repository(),client=await repo.pool.connect(),schema='cv_queue_'+randomUUID().replaceAll('-','');
  try{
   await client.query(`CREATE SCHEMA ${schema}`);await client.query(`SET search_path TO ${schema},public`);
-  await client.query('CREATE TABLE jobs(job_id uuid PRIMARY KEY,content_hash text,availability_status text,first_seen_at timestamptz,location text,country text,work_mode text)');
+  await client.query('CREATE TABLE jobs(job_id uuid PRIMARY KEY,content_hash text,availability_status text,first_seen_at timestamptz,location text,country text,work_mode text,title text,company text,description_text text)');
   await client.query('CREATE TABLE job_analysis(analysis_id uuid,job_id uuid,analysis_json jsonb,created_at timestamptz)');
   await client.query('CREATE TABLE cv_versions(job_id uuid,profile_version text,manifest_json jsonb)');
   await client.query('CREATE TABLE applications(job_id uuid,candidate_profile_id text,status text)');

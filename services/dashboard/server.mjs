@@ -15,6 +15,7 @@ import { createAuth } from "./auth.mjs";
 import * as q from "./queries.mjs";
 import { sanitize } from "../core/observability.mjs";
 import { report } from "../core/reporting.mjs";
+import {llmTaskReport} from '../core/llm-tasks.mjs';
 import { randomUUID } from "node:crypto";
 import { n8nCli,prepareControlWorkflows } from "../../scripts/n8n-bootstrap.mjs";
 import { answerApplicationQuestion, dispatchQuestionAnswer, questionEligibility, hitlError } from '../core/hitl.mjs';
@@ -119,7 +120,7 @@ export function createDashboard({
         health(),
         q.pipeline(repository),
         repository.pool.query(
-          `SELECT (SELECT max(discovered_at) FROM jobs_raw) AS discovery,(SELECT max(created_at) FROM job_analysis) AS analysis,(SELECT max(created_at) FROM cv_versions) AS cv,(SELECT max(updated_at) FROM applications) AS application,(SELECT count(*)::int FROM jobs) AS jobs,(SELECT count(*)::int FROM jobs_raw) AS discovered,(SELECT count(DISTINCT job_id)::int FROM job_analysis) AS analyzed,(SELECT count(DISTINCT job_id)::int FROM job_analysis WHERE analysis_json->>'analysis_method'='GEMMA_SINGLE_SCORE') AS gemma_fit,(SELECT count(*)::int FROM relevance_queue WHERE status='QUEUED') AS fit_pending,(SELECT count(*)::int FROM cv_versions) AS cvs,(SELECT count(*)::int FROM cv_drafts) AS cv_drafts,(SELECT count(*)::int FROM applications) AS applications,(SELECT count(*)::int FROM applications WHERE status IN ('NEEDS_USER','CAPTCHA_WAIT')) AS awaiting_user,(SELECT count(*)::int FROM applications WHERE status='FAILED') AS failed,(SELECT count(*)::int FROM applications WHERE status='SUBMITTED') AS submitted`,
+          `SELECT (SELECT max(discovered_at) FROM jobs_raw) AS discovery,(SELECT max(created_at) FROM job_analysis) AS analysis,(SELECT max(created_at) FROM cv_versions) AS cv,(SELECT max(updated_at) FROM applications) AS application,(SELECT count(*)::int FROM jobs) AS jobs,(SELECT count(*)::int FROM relevance_queue) AS keyword_screened,(SELECT count(*)::int FROM relevance_queue WHERE status='LOW_PRIORITY') AS keyword_discarded,(SELECT count(*)::int FROM jobs_raw) AS discovered,(SELECT count(DISTINCT job_id)::int FROM job_analysis) AS analyzed,(SELECT count(DISTINCT job_id)::int FROM job_analysis WHERE analysis_json->>'analysis_method'='GEMMA_SINGLE_SCORE') AS gemma_fit,(SELECT count(*)::int FROM relevance_queue WHERE status='QUEUED') AS fit_pending,(SELECT count(*)::int FROM cv_versions) AS cvs,(SELECT count(*)::int FROM cv_drafts) AS cv_drafts,(SELECT count(*)::int FROM applications) AS applications,(SELECT count(*)::int FROM applications WHERE status IN ('NEEDS_USER','CAPTCHA_WAIT')) AS awaiting_user,(SELECT count(*)::int FROM applications WHERE status='FAILED') AS failed,(SELECT count(*)::int FROM applications WHERE status='SUBMITTED') AS submitted`,
         ),
       ]);
     return {
@@ -479,6 +480,7 @@ export function createDashboard({
       return send({ ...record, document,manifest,qa:record.qa_json??manifest.qa??null,template_version:record.template_version??manifest.template_version,profile_version:record.profile_version??manifest.profile_version,model:record.model??manifest.model });
     }
     if (p === "/api/sources") return send(await listSources());
+    if(p==='/api/llm-tasks'){const [profile,policy]=await Promise.all([profileProvider(),q.load('search_policy')]);return send(await llmTaskReport({repository,profile,policy}));}
     if (p === "/api/analytics") return send(await report(repository));
     if(p==='/api/browser-sessions'){
       const active=new Set((await browser.call('/sessions')).sessions.map(s=>s.browser_session_id));

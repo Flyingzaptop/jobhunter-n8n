@@ -2,8 +2,7 @@ import {chromium} from 'playwright';
 import {extractJobPostings} from './discovery.mjs';
 import {publishedNextPage} from './discovery-cursors.mjs';
 import {extractVisibleBoardJob} from './board-document.mjs';
-import {boardProfileStatus,openBoardProfile,exportBoardState} from './board-profiles.mjs';
-import {ordinaryChromeContext} from './ordinary-chrome.mjs';
+import {boardProfileStatus,exportedBoardState,exportBoardState} from './board-profiles.mjs';
 import {dismissPracujReadOverlays,pracujNextButton} from './pracuj-overlays.mjs';
 
 export const BOARD_TARGETS = Object.freeze({
@@ -52,13 +51,12 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
       ||name==='pracuj'&&/^\/praca\/[^/]+(?:\/[^/]+;wp)?$/.test(parsedListing.pathname);
     if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
     const profile=await boardProfileStatus(name);
-    if(profile.manual_login_active&&name!=='pracuj'){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
-    const ordinary=name==='pracuj';
-    const context=ordinary?await ordinaryChromeContext({directory:'data/board-diagnostics/pracuj-native',port:9127}):profile.prepared?await openBoardProfile(name,{headless:profile.headless}):await browser.newContext();
+    if(profile.manual_login_active){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
+    const context=await browser.newContext({storageState:profile.prepared?await exportedBoardState(name):undefined});
     // Discovery only: never transmit application forms or interact with authentication.
     const blockedRequests=[];
     await context.route('**/*',route=>{const request=route.request();if(publicBrowserRequestAllowed(request.url(),request.method()))return route.continue();const target=new URL(request.url());blockedRequests.push({host:target.hostname,path:target.pathname,method:request.method()});return route.abort();});
-    const page=await context.newPage();const result={source:name,url:currentUrl,status:'UNKNOWN',job_links:[],details:[],blocked_requests:blockedRequests,headless:ordinary?false:profile.prepared?profile.headless:true,access_mode:ordinary?'ORDINARY_CHROME_CDP':profile.prepared?'USER_MANAGED_PROFILE':'ISOLATED_PUBLIC_BROWSER'};
+    const page=await context.newPage();const result={source:name,url:currentUrl,status:'UNKNOWN',job_links:[],details:[],blocked_requests:blockedRequests,headless:true,access_mode:profile.prepared?'USER_MANAGED_HEADLESS_PROFILE':'ISOLATED_PUBLIC_BROWSER'};
     try{
       const response=await page.goto(currentUrl,{waitUntil:'domcontentloaded',timeout:navigationTimeoutMs});
       await page.waitForLoadState('load',{timeout:5000}).catch(()=>{});
@@ -105,7 +103,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
         }
       }
     }catch(error){result.status='BROWSER_TRANSPORT_ERROR';result.error=String(error.message).split('\n')[0].slice(0,250);}
-    finally{if(profile.prepared&&!ordinary)await exportBoardState(context,name).catch(()=>{});await context.close();}
+    finally{if(profile.prepared)await exportBoardState(context,name).catch(()=>{});await context.close();}
     report.sources.push(result);
   }}finally{await browser.close();}
   report.completed_at=new Date().toISOString();return report;
