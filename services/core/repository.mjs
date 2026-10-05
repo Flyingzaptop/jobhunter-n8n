@@ -62,7 +62,7 @@ export class Repository {
   async readinessFitJobs(jobIds){return (await this.pool.query('SELECT job_id,title,company,description_text,location,country,work_mode,canonical_url,application_url,availability_status FROM jobs WHERE job_id=ANY($1::uuid[])',[jobIds])).rows;}
   async listNormalizationJobs(){
     return (await this.pool.query(`SELECT job_id,canonical_url,application_url,company,title,location,country,work_mode,
-      description_text,content_hash,availability_status,metadata->>'identity_key' AS identity_key,
+      description_text,content_hash,availability_status,first_seen_at,last_seen_at,metadata->>'identity_key' AS identity_key,
       metadata->>'ats_identity' AS ats_identity,coalesce(metadata->>'profile','real') AS profile,
       metadata->'employment_type' AS employment_type,metadata->>'published_at' AS published_at,
       metadata->>'valid_through' AS valid_through,metadata->'salary' AS salary FROM jobs`)).rows;

@@ -12,7 +12,8 @@ const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9
 export async function createControlledPreparation({repository,jobId,cvId,profile,policy,artifactRoot='data/cv-v2'}){
  if(process.env.DRY_RUN!=='true'||process.env.ALLOW_REAL_SUBMIT==='true')throw new Error('CONTROLLED_PREPARATION_REQUIRES_DRY_RUN');
  if(!uuid(jobId)||!uuid(cvId)||!profile.profile_id||!cvIdentityQa(profile).pass)throw new Error('VERIFIED_IDENTITY_AND_IDS_REQUIRED');
- const job=(await repository.listCanonicalJobs()).find(j=>j.job_id===jobId);
+ const jobRow=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[jobId])).rows[0];
+ const job=jobRow?{...jobRow.metadata,...jobRow}:null;
  if(!job)throw new Error('JOB_NOT_FOUND');
  const analysis=(await repository.pool.query('SELECT analysis_json,decision FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[jobId])).rows[0];
  if(!analysis||!['REVIEW','STRETCH','AUTO_APPLY'].includes(analysis.decision))throw new Error('NON_REJECTED_ACTUAL_ANALYSIS_REQUIRED');
@@ -30,7 +31,7 @@ export async function createControlledPreparation({repository,jobId,cvId,profile
  const bytes=await readFile(file);if(digest(bytes)!==cv.sha256||bytes.subarray(0,5).toString()!=='%PDF-')throw new Error('CV_BYTES_CHANGED');
  const verified=await reverifyMarketJob({job,repository});
  if(verified.status!=='OPEN')throw new Error('CURRENT_OFFICIAL_POSTING_NOT_OPEN');
- const refreshedJob=verified.job??(await repository.listCanonicalJobs()).find(j=>j.job_id===jobId);
+ const refreshedJob=verified.job??(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[jobId])).rows[0];
  const refreshedPolicy=currentPreparationPolicy({job:refreshedJob,profile,policy:currentPolicy,analysis:analysis.analysis_json,cv});
  if(!refreshedPolicy.pass)throw new Error(refreshedPolicy.reason);
  const current=await verifyCurrentCvEvidence({cv,job:refreshedJob,profile,analysis:analysis.analysis_json,artifactRoot});
