@@ -32,6 +32,9 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   const button=snapshot.buttons.find(b=>b.visible!==false&&!b.disabled&&(b.final_submit||finalSubmitLabel(b.text)));
   if(!button||snapshot.captcha||snapshot.validation_errors?.length)throw hitlError('FORM_NOT_READY');
   const capability=issueSubmitCapability({secret,approvalId,applicationId,snapshot,source:confirmationSource});
+  const archiveJob=(await repository.pool.query('SELECT job_id,canonical_url,company,title,location,country,work_mode,description_text,content_hash FROM jobs WHERE job_id=$1',[app.job_id])).rows[0];
+  const archivePacket=(await repository.pool.query("SELECT payload_json->'summary' summary FROM events WHERE entity_id=$1 AND event_type='APPLICATION_REVIEW_PACKET_SAVED' AND payload_json->>'approval_id'=$2 AND payload_json->>'binding_digest'=$3 ORDER BY created_at DESC LIMIT 1",[applicationId,approvalId,bindingDigest])).rows[0]?.summary;
+  await repository.event('application',applicationId,'APPLICATION_SUBMISSION_PACKET_FROZEN',{command_id:command.command_id,approval_id:approvalId,binding_digest:bindingDigest,vacancy:archiveJob,review:archivePacket??null,cv_id:app.cv_id,source:confirmationSource});
   await transition(repository,applicationId,'SUBMITTING',{confirmed_submit_command_id:command.command_id});
   await repository.pool.query("UPDATE confirmed_submit_commands SET status='SUBMITTING',updated_at=now() WHERE command_id=$1",[command.command_id]);
   const result=await browser.call(`/sessions/${sessionId}/submit`,{selector:button.selector,confirmation_capability:capability});

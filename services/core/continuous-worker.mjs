@@ -112,7 +112,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='model'){
     if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
     if(!scheduleLoaded){if(store.loadModelSchedule)({nextModel,proseTurn}=await store.loadModelSchedule());scheduleLoaded=true;}
-    if(prose&&(proseTurn||proseBurst<2)){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){proseBurst++;states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
+    if(prose){proseTurn=false;await saveSchedule();const drafted=await prose(context);if(drafted?.processed>0){proseBurst++;states[lane]='IDLE';await store.status(lane,'IDLE');return;}}
     proseBurst=0;
     const candidates=await store.cvCandidates(profile,policy);
     const generate=async()=>{for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);
