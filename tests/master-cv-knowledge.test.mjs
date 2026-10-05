@@ -1,10 +1,13 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {resolveField} from '../services/core/application.mjs';import {standingRecruitmentConsent} from '../services/core/consent-policy.mjs';import {screenRelevance} from '../services/core/relevance-queue.mjs';import {cvSkillRelevance,renderCvV2Html} from '../services/core/cv-v2.mjs';
-const profile={onboarding:{date_of_birth:'2004-10-16'},education:[{id:'pwr',provenance:'EDUCATION',institution:'Wroclaw University of Science and Technology',degree:'Bachelor of Engineering',field:'Mechanical Engineering',status:'degree_in_progress',primary_for_forms:true,start_date:'2022-10',semesters_completed:5},{id:'wsb',provenance:'EDUCATION',institution:'WSB Merito',field:'IT Engineering',status:'degree_in_progress'}]};
+const profile={onboarding:{date_of_birth:'2004-10-16'},education:[{id:'pwr',provenance:'EDUCATION',institution:'Wroclaw University of Science and Technology',degree:'Bachelor of Engineering',degree_level:'BACHELOR',field:'Mechanical Engineering',status:'degree_in_progress',primary_for_forms:true,start_date:'2022-10',semesters_completed:5},{id:'wsb',provenance:'EDUCATION',institution:'WSB Merito',field:'IT Engineering',status:'degree_in_progress'}]};
 test('two universities do not cause another school-name question and birth date is a confirmed fact',()=>{
  assert.equal(resolveField({type:'text',label:'School Name'},{profile,job:{}}).value,profile.education[0].institution);
  assert.equal(resolveField({type:'date',label:'Date of birth'},{profile,job:{}}).value,'2004-10-16');
  assert.equal(resolveField({type:'text',label:'Graduation Date'},{profile,job:{}}),null);
+ assert.equal(resolveField({type:'radio',label:'Associate Degree',group_label:'Degree'},{profile,job:{}}).skip,true);
+ assert.equal(resolveField({type:'radio',label:"Bachelor's Degree",group_label:'Degree'},{profile,job:{}}).value,true);
+ assert.equal(resolveField({type:'radio',label:"Bachelor's Degree",group_label:'Completed Degree'},{profile,job:{}}),null);
 });
 test('standing consent authorizes recruitment processing but does not invent availability or marketing consent',()=>{
  const policy={consent_policy:{current_recruitment_data_processing:true}};

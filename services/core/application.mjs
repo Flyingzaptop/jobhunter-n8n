@@ -53,6 +53,8 @@ export function professionalYears(profile) {
 
 export function resolveField(field, { profile, job, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
+  const primaryEducation=profile.education?.find(e=>e.primary_for_forms)??profile.education?.[0];
+  if(field.type==='radio'&&/degree|education level/i.test(field.group_label??'')&&!/completed|obtained|awarded|earned/i.test(`${field.group_label} ${field.description??''}`)&&primaryEducation?.degree_level==='BACHELOR')return /^bachelor/i.test(field.label)?{value:true,source:'PROFILE'}:{skip:true};
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
   if(field.type==='radio'&&/how did you hear|where did you (?:hear|find)/i.test(field.group_label??''))return /^job board$/i.test(field.label.trim())?{value:true,source:'VACANCY_SOURCE'}:{skip:true};
