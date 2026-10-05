@@ -1,5 +1,16 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {answerIntent,reusableQuestionAnswer} from '../services/core/answer-memory.mjs';
+
+test('salary memory separates explicit contracts and role context without inferring a contract from full time',()=>{
+ const field={label:'Expected gross monthly salary in PLN B2B'};
+ const b2b=answerIntent(field,{country:'PL',roleContext:'Mechanical Engineer',employmentType:'Full-time'});
+ const employment=answerIntent({label:'Expected gross monthly salary in PLN umowa o pracę'},{country:'PL',roleContext:'Mechanical Engineer',employmentType:'Full-time'});
+ assert.equal(b2b.scope.contract_terms,'B2B');assert.equal(employment.scope.contract_terms,'EMPLOYMENT_CONTRACT');
+ assert.notDeepEqual(b2b.scope,employment.scope);
+ assert.notDeepEqual(b2b.scope,answerIntent(field,{country:'PL',roleContext:'IT Support',employmentType:'Full-time'}).scope);
+ const unqualified=answerIntent({label:'Expected gross monthly salary in PLN'},{country:'PL',roleContext:'Mechanical Engineer',employmentType:'Full-time'});
+ assert.equal(unqualified.scope.contract_terms,'full time');
+});
 test('salary answer scopes distinguish currency, period and gross/net, and vague salary is never guessed',()=>{
  const gross=answerIntent({label:'Expected gross monthly salary in PLN'},{country:'PL'});
  assert.deepEqual(gross.scope,{currency:'PLN',period:'MONTH',basis:'GROSS',country:'PL'});
