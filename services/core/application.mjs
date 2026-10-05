@@ -57,7 +57,7 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
   if(field.type==='radio'&&/how did you hear|where did you (?:hear|find)/i.test(field.group_label??''))return /^job board$/i.test(field.label.trim())?{value:true,source:'VACANCY_SOURCE'}:{skip:true};
   if(/github.*(?:profile|link)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
   if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
-  if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
+  if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*(?:and\s*)?country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
   if(/birth|born|urodze/.test(label)&&!['first_name','last_name','email','phone'].includes(field.name))return null;
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
   const direct={first_name:identity.first_name||(nameParts.length===2?nameParts[0]:undefined),last_name:identity.last_name||(nameParts.length===2?nameParts[1]:undefined),email:identity.email,phone:identity.phone,city:candidate.base_location?.city,country:candidate.base_location?.country,portfolio_url:identity.portfolio_url||identity.github_url,current_title:identity.current_job_title||(profile.experience||[]).find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.role,years_experience:professionalYears(profile),education:(profile.education||[]).filter(f=>f.provenance==='EDUCATION').map(f=>[f.degree,f.field,f.institution].filter(known).join(', ')).join('; '),start_date:identity.earliest_start_date,employment_type:candidate.availability?.full_time===true?'Full-time':undefined,authorized_poland:candidate.eu_citizen===true?'Yes':undefined,eu_authorized:candidate.eu_citizen===true?'yes':undefined};
@@ -92,6 +92,7 @@ export function resolveField(field, { profile, job, answerMemory = {} }) {
 }
 
 async function ask({repository,telegram,application,browser,sessionId,field,snapshot,type}) {
+  if(field.type==='radio'){const options=snapshot.fields.filter(f=>f.type==='radio'&&f.name===field.name&&f.visible&&!f.disabled);if(options.length>1)field={...field,label:`${field.group_label||'Выбери вариант'}\n${options.map(f=>f.label).join('\n')}`};}
   const status=type==='CAPTCHA'?'CAPTCHA_WAIT':'NEEDS_USER';
   const pending={selector:field.selector,field_name:field.name,field_type:field.type,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
   await transition(repository,application.application_id,status,{browser_session_id:sessionId,pending_question:pending,current_step:snapshot.current_step});
@@ -128,6 +129,12 @@ export function humanConsentAnswer(value){
  if(/^(?:yes|agree|approved|true|tak|да|согласен|согласна|разрешаю(?: для этой заявки)?)$/iu.test(text))return true;
  if(/^(?:no|false|nie|нет|отказываюсь|не согласен|не согласна|не разрешаю(?:\s*[—-]\s*пропустить заявку)?)$/iu.test(text))return false;
  return null;
+}
+export function radioAnswerTarget(field,fields,answer){
+ const peers=fields.filter(f=>f.type==='radio'&&f.name===field.name&&f.form===field.form&&f.visible&&!f.disabled),text=norm(answer);
+ const exact=peers.filter(f=>norm(f.label)===text||norm(f.value)===text);if(exact.length===1)return exact[0];
+ const boolean=humanConsentAnswer(answer);if(boolean===null)return null;
+ const matching=peers.filter(f=>(boolean?/^(?:yes|tak)\b/i:/^(?:no|nie)\b/i).test(f.label));return matching.length===1?matching[0]:null;
 }
 function acknowledgementContext(view,job,profile,cv){return {
  job_id:job.job_id,job_content_hash:job.content_hash??null,job_country:job.country??null,job_location:job.location??null,
@@ -202,11 +209,15 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const pending=application.last_state.pending_question, answerRow=(await repository.pool.query('SELECT * FROM application_questions WHERE application_id=$1 AND telegram_request_id=$2 AND answered_at IS NOT NULL',[application.application_id,pending?.request_id])).rows[0];
       if(!answerRow)return {application_id:application.application_id,status:application.status};
       await transition(repository,application.application_id,'FILLING',{pending_question:null});application.status='FILLING';
-      const field=view.fields.find(f=>f.selector===pending.selector);
+      let field=view.fields.find(f=>f.selector===pending.selector);
       const generation=view.fields.find(f=>f.name==='captcha_generation')?.value;
       if(!field || !field.visible || field.disabled || (view.fingerprint!==pending.fingerprint&&!(pending.type==='FACT'&&['text','url'].includes(field.type)&&/^Link to your (?:Github|LinkedIn) profile$/i.test(field.label))) || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
       const answer=answerRow.answer;
-      if(field.type==='checkbox'||field.type==='radio'){
+      if(field.type==='radio'){
+        const target=radioAnswerTarget(field,view.fields,answer);if(!target)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});
+        field=target;view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
+      }
+      else if(field.type==='checkbox'){
         const consent=humanConsentAnswer(answer);
         if(consent===false&&field.required&&pending.type==='CONSENT'){
           await transition(repository,application.application_id,'SKIPPED',{skip_reason:'USER_DECLINED_REQUIRED_CONSENT',pending_question:null});return {application_id:application.application_id,status:'SKIPPED',reason:'USER_DECLINED_REQUIRED_CONSENT'};
@@ -215,7 +226,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
       }
       else if(field.options)view=await browser.call(`/sessions/${sessionId}/select`,{selector:field.selector,value:answer});
-      else view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:answer});
+      else {if(/graduation|anticipated graduation|date.*degree/i.test(field.label)&&!/(?:19|20)\d{2}/.test(answer))return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});view=await browser.call(`/sessions/${sessionId}/fill`,{selector:field.selector,value:answer});}
       const observed=view.fields.find(f=>f.selector===field.selector);
       if(observed){
         const confirmed={label:observed.label,type:observed.type,value:observed.value,checked:observed.checked,fingerprint:view.fingerprint,question_id:answerRow.question_id,
