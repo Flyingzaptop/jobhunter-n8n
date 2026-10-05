@@ -4,6 +4,6 @@ export function confirmedFieldMatches(field,view,confirmed,context){
   &&confirmed.context&&Object.keys(context).every(key=>confirmed.context[key]===context[key])
   &&Object.keys(confirmed.context).length===Object.keys(context).length;
  return Boolean(confirmed&&field.selector&&confirmed.label===field.label&&confirmed.type===field.type
-  &&(confirmed.fingerprint===view.fingerprint||scopedConsent)&&confirmed.value===field.value&&confirmed.question_id
+  &&(confirmed.question_type==='CONSENT'&&confirmed.context?scopedConsent:confirmed.fingerprint===view.fingerprint)&&confirmed.value===field.value&&confirmed.question_id
   &&(!['checkbox','radio'].includes(field.type)||field.checked===(confirmed.checked??true)));
 }

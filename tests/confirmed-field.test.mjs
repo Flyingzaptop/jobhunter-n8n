@@ -20,6 +20,7 @@ test('same scoped consent survives unrelated upload UI changes but not a changed
  const view={fingerprint:'after-upload',url:field.form_action},confirmed={...field,question_id:'answer',question_type:'CONSENT',fingerprint:'before-upload',page_url:view.url,context};
  assert.equal(confirmedFieldMatches(field,view,confirmed,context),true);
  assert.equal(confirmedFieldMatches(field,view,confirmed,{...context,cv_sha256:'different-pdf'}),false);
+ assert.equal(confirmedFieldMatches(field,{...view,fingerprint:confirmed.fingerprint},confirmed,{...context,cv_sha256:'different-pdf'}),false);
  assert.equal(confirmedFieldMatches(field,view,confirmed,{...context,job_country:'DE'}),false);
  assert.equal(confirmedFieldMatches({...field,label:'Other terms'},view,confirmed,context),false);
  assert.equal(confirmedFieldMatches(field,view,{...confirmed,question_type:'FACT'},context),false);
