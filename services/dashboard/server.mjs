@@ -60,6 +60,15 @@ export function createDashboard({
   }
   const streams = new Set();
   let healthCache;
+  let productionReadinessCache,productionReadinessPending;
+  async function cachedProductionReadiness(){
+    const profile=await profileProvider(),key=JSON.stringify(profile);
+    if(productionReadinessCache?.key===key&&Date.now()-productionReadinessCache.at<60000)return productionReadinessCache.value;
+    if(productionReadinessPending?.key===key)return productionReadinessPending.promise;
+    const pending={key};
+    pending.promise=productionGateStatus({repository,profile}).then(value=>{productionReadinessCache={key,at:Date.now(),value};return value;}).finally(()=>{if(productionReadinessPending===pending)productionReadinessPending=null;});
+    productionReadinessPending=pending;return pending.promise;
+  }
   let controlWorkflowsReady;
   async function health() {
     if (healthCache && Date.now() - healthCache.at < 5000)
@@ -218,7 +227,7 @@ export function createDashboard({
       );
       return send({ logged_out: true });
     }
-    if(p==='/api/production-gate')return send(await productionGateStatus({repository,profile:await profileProvider()}));
+    if(p==='/api/production-gate')return send(await cachedProductionReadiness());
     if(p==='/api/board-sessions'&&req.method==='GET')return send({sessions:await Promise.all(Object.keys(BOARD_PROFILES).map(async board=>({...await boardProfileStatus(board),manual_login:boardLoginStates.get(board)??null})))});
     if(/^\/api\/board-sessions\/[^/]+\/connect$/.test(p)){
       if(req.method!=='POST')throw hitlError('POST_REQUIRED',405);

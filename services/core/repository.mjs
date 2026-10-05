@@ -48,6 +48,18 @@ export class Repository {
       await this.pool.query("SELECT * FROM jobs ORDER BY first_seen_at")
     ).rows.map((row) => ({ ...row.metadata, ...row }));
   }
+  async listReadinessJobs(){
+    return (await this.pool.query(`SELECT job_id,canonical_url,application_url,company,title,location,country,work_mode,
+      content_hash,availability_status,last_verified_open_at FROM jobs
+      WHERE COALESCE(metadata->>'test_fixture','false')<>'true' AND COALESCE(metadata->>'mode','REAL')<>'MOCK'`)).rows;
+  }
+  async readinessCoverage(jobIds,version){
+    const fields={title:'title',company:'company',description:'description_text',location:'location',country:'country',work_mode:'work_mode',canonical_url:'canonical_url',application_url:'application_url',availability:'availability_status'};
+    const parts=Object.entries(fields).map(([key,column])=>`'${JSON.stringify(key)}:'||COALESCE(to_json(j.${column})::text,'null')`).join("||','||");
+    return (await this.pool.query(`SELECT count(*)::int n FROM relevance_queue q JOIN jobs j USING(job_id)
+      WHERE q.job_id=ANY($1::uuid[]) AND q.relevance_version=$2 AND q.input_hash=encode(sha256(convert_to('{'||${parts}||'}','UTF8')),'hex')`,[jobIds,version])).rows[0].n;
+  }
+  async readinessFitJobs(jobIds){return (await this.pool.query('SELECT job_id,title,company,description_text,location,country,work_mode,canonical_url,application_url,availability_status FROM jobs WHERE job_id=ANY($1::uuid[])',[jobIds])).rows;}
   async listNormalizationJobs(){
     return (await this.pool.query(`SELECT job_id,canonical_url,application_url,company,title,location,country,work_mode,
       description_text,content_hash,availability_status,metadata->>'identity_key' AS identity_key,

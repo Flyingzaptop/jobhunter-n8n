@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 export const REPORT_TIMEZONE = 'Europe/Warsaw';
+const warsawDateFormatter=new Intl.DateTimeFormat('en-CA',{timeZone:REPORT_TIMEZONE,year:'numeric',month:'2-digit',day:'2-digit'});
 const actionable = new Set(['AUTO_APPLY', 'REVIEW', 'STRETCH']);
 const outcomeFields = { RECRUITER_REPLY: 'recruiter_replies', HR_SCREEN: 'hr_screens',
   TECHNICAL_INTERVIEW: 'technical_interviews', INTERVIEW_OTHER: 'other_interviews', OFFER: 'offers',
@@ -13,7 +14,7 @@ const md = value => String(value ?? '').replaceAll('|', '\\|').replace(/[\r\n]+/
 
 export function warsawDate(value = new Date()) {
   if (!value || !Number.isFinite(new Date(value).getTime())) throw new Error('Invalid reporting timestamp');
-  return new Intl.DateTimeFormat('en-CA', { timeZone: REPORT_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+  return warsawDateFormatter.format(new Date(value));
 }
 function calendarDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || new Date(value + 'T00:00:00Z').toISOString().slice(0, 10) !== value) throw new Error('Invalid report date');
