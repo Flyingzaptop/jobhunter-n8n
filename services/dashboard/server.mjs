@@ -54,7 +54,7 @@ export function createDashboard({
   answerDispatch = null,
   profileProvider = () => q.load('candidate_profile'),
 } = {}) {
-  const auth = createAuth(repository, { password });
+  const auth = createAuth(repository, { password,localAccess:host==='127.0.0.1' });
   const boardLoginStates=new Map();
   const boardLoginChildren=new Map();
   async function manualBrowserCall(endpoint,payload){

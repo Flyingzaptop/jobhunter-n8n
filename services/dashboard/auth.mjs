@@ -7,8 +7,17 @@ const equal = (a, b) => {
 };
 export function createAuth(
   repository,
-  { password = process.env.DASHBOARD_PASSWORD, ttlMs = 8 * 3600000 } = {},
+  { password = process.env.DASHBOARD_PASSWORD, ttlMs = 8 * 3600000, localAccess = false } = {},
 ) {
+  if(localAccess){
+    const csrf=randomBytes(32).toString('hex');
+    const localSession={session_hash:'LOCAL_OPERATOR',csrf_hash:hash(csrf),expires_at:new Date('2099-01-01'),local_access:true};
+    return {
+      async session(req){return ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress)?localSession:null;},
+      checkCsrf(req){if(typeof req.headers['x-csrf-token']!=='string'||!equal(req.headers['x-csrf-token'],csrf))throw Object.assign(new Error('CSRF validation failed'),{status:403});},
+      async rotateCsrf(){return csrf;},async logout(){},async login(){return {session:'',csrf};}
+    };
+  }
   if (!password || password.length < 16)
     throw new Error("DASHBOARD_PASSWORD must have at least16 characters");
   const failures = new Map();
