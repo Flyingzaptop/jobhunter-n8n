@@ -114,7 +114,7 @@ export class OllamaClient {
       throw new Error('Ollama must remain on a local/private endpoint');
     Object.defineProperties(this, Object.fromEntries(Object.entries({provider,baseUrl:url.href.replace(/\/$/, ''),model,strongModel})
       .map(([key,value]) => [key,{value,enumerable:true}])));
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > (provider === 'lmstudio' ? 3600000 : 600000))
+    if (!Number.isInteger(timeoutMs) || !(provider==='lmstudio'&&timeoutMs===0)&&timeoutMs < 1000 || timeoutMs > (provider === 'lmstudio' ? 3600000 : 600000))
       throw new Error('Invalid Ollama timeout');
     this.timeoutMs = timeoutMs; this.fetch = fetchImpl;
     this.contextLimit = contextLimit; this.structuredFormat = structuredFormat;
@@ -134,6 +134,7 @@ export class OllamaClient {
 
   async json(input){
     const controller=new AbortController();let timer;
+    if(this.timeoutMs===0)return this.#jsonOperation({...input,requestSignal:controller.signal});
     const timeout=new Promise((_,reject)=>{timer=setTimeout(()=>{const error=new StructuredOutputError('Inference operation deadline exceeded');error.code='INFERENCE_TIMEOUT';
       if(this.lastStats?.validation_codes&&!this.lastStats.validation_codes.includes('INFERENCE_TIMEOUT'))this.lastStats.validation_codes.push('INFERENCE_TIMEOUT');
       const request=this.lastStats?.requests?.at(-1);if(request){request.stage='timeout';request.elapsed_ms=Date.now()-Date.parse(request.started_at??new Date().toISOString());if(this.fetch===globalThis.fetch&&!this.sdkPredict)persistModelProgress(this.lastStats.model,request);}
@@ -187,7 +188,7 @@ export class OllamaClient {
             const measuring=this.tokenCounter ? this.tokenCounter({model:selectedModel,messages,baseUrl:this.baseUrl})
               : this.fetch === globalThis.fetch ? this.#measureLMStudioInput(selectedModel,messages) : Promise.resolve(null);
             let probeTimer;
-            const measured=await Promise.race([measuring,new Promise((_,reject)=>{probeTimer=setTimeout(()=>{const failure=new StructuredOutputError('Native budget probe timed out');failure.code='NATIVE_TOKEN_COUNT_UNVERIFIED';reject(failure);},Math.min(30000,this.timeoutMs));})]).finally(()=>clearTimeout(probeTimer));
+            const measured=await Promise.race([measuring,new Promise((_,reject)=>{probeTimer=setTimeout(()=>{const failure=new StructuredOutputError('Native budget probe timed out');failure.code='NATIVE_TOKEN_COUNT_UNVERIFIED';reject(failure);},this.timeoutMs===0?3600000:Math.min(30000,this.timeoutMs));})]).finally(()=>clearTimeout(probeTimer));
             requestSignal.throwIfAborted();
             if (measured && Number.isSafeInteger(measured.inputTokens) && measured.inputTokens > 0
               && Number.isSafeInteger(measured.contextLength) && measured.contextLength > 0) {
@@ -379,7 +380,7 @@ export class OllamaClient {
   async #lmStudioSDKResponse({model,messages,schema,numPredict,outerSignal}) {
     const request = this.lastStats.requests.at(-1);
     const started = Date.now();
-    const signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs),outerSignal]);
+    const signal = this.timeoutMs===0?outerSignal:AbortSignal.any([AbortSignal.timeout(this.timeoutMs),outerSignal]);
     Object.assign(request,{stage:'awaiting_inference',started_at:new Date(started).toISOString(),
       prompt_processing_progress:0,generated_fragments:0});
     const publish=()=>{if(this.fetch===globalThis.fetch&&!this.sdkPredict)persistModelProgress(model,request);};
@@ -413,6 +414,7 @@ export class OllamaClient {
       // Some SDK versions fail to reject the promise after aborting a queued or
       // generating prediction. A separate deadline must end our wait reliably.
       const timeout = new Promise((_,reject)=>{
+        if(this.timeoutMs===0)return;
         deadline=setTimeout(()=>{
           cancel();
           const error=new StructuredOutputError('LM Studio inference timed out');

@@ -4,6 +4,11 @@ import {OllamaClient,StructuredOutputError} from '../services/core/llm.mjs';
 
 const model = 'gemma4-26b-a4b-qat-uncensored-hauhaucs-balanced-mtp';
 const schema = {type:'object',properties:{quote:{type:'string'}},required:['quote'],additionalProperties:false};
+test('local zero deadline waits for slow native completion without cancelling it',async()=>{
+ let activeSignal;const {client}=harness([],{timeoutMs:0,sdkPredict:async request=>{activeSignal=request.options.signal;await new Promise(resolve=>setTimeout(resolve,60));assert.equal(activeSignal.aborted,false);return {content:'{"quote":"Python"}',modelInfo:{identifier:model},stats:{stopReason:'eosFound'}};}});
+ assert.deepEqual(await client.json({system:'Extract',prompt:'Python',schema}),{quote:'Python'});assert.equal(client.timeoutMs,0);
+ assert.throws(()=>new OllamaClient({provider:'local',timeoutMs:0}),/Invalid Ollama timeout/);
+});
 test('whole inference deadline bounds a stalled native budget probe and cannot start a late prediction',async()=>{
  let resolveCounter;
  const {client,calls}=harness([],{timeoutMs:1000,tokenCounter:()=>new Promise(resolve=>{resolveCounter=resolve;})});
