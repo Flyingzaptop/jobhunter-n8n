@@ -33,6 +33,7 @@ export function availabilityVerificationDue(job,{now=new Date(),maxAgeMs=8640000
   const j=jobSnapshot(job);const checked=Date.parse(j.last_verified_open_at??j.last_open_verification?.verified_at??'');
   return !Number.isFinite(checked)||now.getTime()-checked>=maxAgeMs;
 }
+export function canAssessStoredDescription(job){return job.availability_status!=='CLOSED'&&String(job.description_text??'').trim().length>=120;}
 export function verificationRetryPlan(verification,attempt,{now=new Date()}={}){
   if(verification.status==='CLOSED')return{status:'CLOSED',next_retry_at:null,error_code:'PUBLIC_POSTING_CLOSED'};
   const reason=String(verification.reason??'CURRENT_OPEN_NOT_CONFIRMED');
@@ -183,16 +184,16 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           const hard=await recordDeterministicHardReject({repository,job,profile,policy});
           if(hard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hard.analysis.reasons,model:null,inference_performed:false});continue;}
           const verifiedAt=Date.parse(job.last_verified_open_at??''),recentOpen=!regressionMode&&job.availability_status==='OPEN'&&Number.isFinite(verifiedAt)&&Date.now()-verifiedAt>=0&&Date.now()-verifiedAt<3600000&&(job.description_text??'').length>=120;
-          const verification=recentOpen?{status:'OPEN',job,evidence:'RECENT_SOURCE_OPEN_CHECK'}:await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
-          if(verification.status!=='OPEN'){
+          const verification=recentOpen?{status:'OPEN',job,evidence:'RECENT_SOURCE_OPEN_CHECK'}:!regressionMode&&canAssessStoredDescription(job)?{status:'UNKNOWN',job,reason:'FIT_FROM_STORED_DESCRIPTION_OPEN_CHECK_REQUIRED'}:await verifier({job,repository});if(verification.job)job=jobSnapshot(verification.job);
+          if(verification.status!=='OPEN'&&(verification.status==='CLOSED'||!canAssessStoredDescription(job)||regressionMode)){
             const plan=verificationRetryPlan(verification,claim.attempt_count);
             await repository.pool.query("UPDATE relevance_queue SET status=$2,error_code=$3,next_retry_at=$4,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,plan.status,plan.error_code,plan.next_retry_at]);
             results.push({job_id:row.job_id,status:plan.status,error:plan.error_code,retry_at:plan.next_retry_at});continue;
           }
-          await repository.pool.query("UPDATE jobs SET availability_status='OPEN',last_verified_open_at=now(),closed_at=NULL WHERE job_id=$1",[row.job_id]);
+          if(verification.status==='OPEN')await repository.pool.query("UPDATE jobs SET availability_status='OPEN',last_verified_open_at=now(),closed_at=NULL WHERE job_id=$1",[row.job_id]);
           const hydratedHard=await recordDeterministicHardReject({repository,job,profile,policy});
           if(hydratedHard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hydratedHard.analysis.reasons,model:null,inference_performed:false});continue;}
-          job.availability_status='OPEN';key=fitInputHash({job,profile,policy,model:llm.model});
+          if(verification.status==='OPEN')job.availability_status='OPEN';key=fitInputHash({job,profile,policy,model:llm.model});
           await repository.pool.query('UPDATE relevance_queue SET active_fit_hash=$2 WHERE job_id=$1',[row.job_id,key]);
           if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount){
             await repository.pool.query("UPDATE relevance_queue SET status='ANALYZED',claimed_by=NULL,last_completed_hash=$2,error_code=NULL,next_retry_at=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,key]);
@@ -200,7 +201,7 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           }
           inferenceAttempts++;const analysis=await analyzer({job,profile,policy,llm});
           Object.assign(analysis,computePriority({job,analysis,policy}),{model:llm.model,prompt_version:PROMPT_VERSION,profile_version:profile.profile_version??profile.profile_id,
-            profile_hash:hash(profile),policy_hash:hash(policy),job_content_hash:job.content_hash,fit_input_hash:key,runtime_statistics:llm.lastStats??null});
+            profile_hash:hash(profile),policy_hash:hash(policy),job_content_hash:job.content_hash,fit_input_hash:key,availability_verification_required:verification.status!=='OPEN',runtime_statistics:llm.lastStats??null});
           const client=await repository.pool.connect();
           try{await client.query('BEGIN');
             const analysisId=randomUUID();
