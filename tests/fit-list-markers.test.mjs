@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {mandatoryRequirementAnchors,sourceFragmentCatalog} from '../services/core/fit.mjs';
+test('standalone numbered-list markers are not candidate requirements',()=>{const job={title:'Engineer',description_text:'Requirements:\n1.\nPython experience required.\n2.\nCAD knowledge required.'};assert.deepEqual(mandatoryRequirementAnchors(job),['Python experience required.','CAD knowledge required.']);assert.equal(sourceFragmentCatalog(job).some(f=>['1.','2.'].includes(f.text)),false);});
