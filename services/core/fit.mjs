@@ -301,7 +301,7 @@ export function sourceFragmentCatalog(job) {
   const catalog = []; const seen = new Map();
   const add = (text, importance_hint = null, list_container = false, metadataOnly = false, contextOnly = false,categoryHint=null,conditionalRegion=null) => {
     text = text.trim();
-    if (!text || /^(?:\d+|[A-Za-z])[.)]$/.test(text)) return;
+    if (!text || /^(?:(?:\d+|[A-Za-z])[.)]|DU(?:…|\.\.\.))$/i.test(text)) return;
     if (seen.has(text)) {
       const entry = catalog[seen.get(text)];
       if (importance_hint) entry.importance_hint = importance_hint;
@@ -427,7 +427,7 @@ const hasSkill = (fact, skill) => !skill || (fact.skills || []).some(s => normal
 
 /** A narrow completeness guard: explicit mandatory sentences cannot disappear. */
 export function mandatoryRequirementAnchors(job) {
-  return qualificationSentences(job.description_text || '',{job}).filter(sentence => sentence.importance === 'MANDATORY'&&!/^(?:\d+|[A-Za-z])[.)]$/.test(sentence.text.trim())).map(sentence => sentence.text);
+  return sourceFragmentCatalog(job).filter(fragment=>fragment.importance_hint==='MANDATORY'&&!fragment.context_only&&!fragment.work_format_only).map(fragment=>fragment.text);
 }
 
 export function missingMandatoryListItems(analysis, job) {
