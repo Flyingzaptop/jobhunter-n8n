@@ -14,7 +14,7 @@ export async function finishBatchNormalization(repository,batchId){
  }catch(e){if(e.code)throw e;await repository.pool.query("UPDATE pipeline_batch_raw SET status='REJECTED_INVALID_RAW',error_code=$3 WHERE batch_id=$1 AND raw_id=$2",[batchId,row.raw_id,String(e.message).split('\n')[0].slice(0,200)]);}}
  return rows.length;
 }
-export async function batchProgress(repository,profile,policy){
+async function calculateBatchProgress(repository,profile,policy){
  const batch=(await repository.pool.query('SELECT * FROM pipeline_batches WHERE active=true')).rows[0];if(!batch)return null;
  const [raw,screen,fit,cv,fill]=await Promise.all([
  repository.pool.query("SELECT count(*)::int total,count(*) FILTER(WHERE status IN('NORMALIZED','REJECTED_INVALID_RAW'))::int done,count(*) FILTER(WHERE status='REJECTED_INVALID_RAW')::int rejected FROM pipeline_batch_raw WHERE batch_id=$1",[batch.batch_id]),
@@ -26,3 +26,6 @@ export async function batchProgress(repository,profile,policy){
  const fitted=normalized&&fit.rows[0].done===fit.rows[0].total;
  return {batch_id:batch.batch_id,discovery_paused:batch.discovery_paused,phase:!normalized?'NORMALIZE':!fitted?'FIT':'CV_HITL',normalization:{...raw.rows[0],screen:screen.rows[0]},fit:fit.rows[0],cv:cv.rows[0],applications:fill.rows};
 }
+
+const batchCache=new WeakMap();
+export async function batchProgress(repository,profile,policy){const key=hash([profile,policy]),entry=batchCache.get(repository);if(entry?.key===key&&Date.now()-entry.at<15000)return entry.value;if(entry?.pending&&entry.key===key)return entry.pending;const state={key,at:0,value:null,pending:null};state.pending=calculateBatchProgress(repository,profile,policy).then(value=>{state.value=value;state.at=Date.now();state.pending=null;return value;}).catch(error=>{batchCache.delete(repository);throw error;});batchCache.set(repository,state);return state.pending;}
