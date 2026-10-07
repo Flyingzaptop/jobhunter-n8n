@@ -24,7 +24,7 @@ const missingString = value => /^(?:unknown|unspecified|not specified|n\/?a|none
 export function normalizeWorkFormatUnknowns(format={}) {
   return Object.fromEntries(Object.entries(format).map(([key,value])=>[key,typeof value==='string'&&key!=='employment_route'?missingString(value):value]));
 }
-function explicitHybridQuote(job) {
+export function explicitHybridQuote(job) {
   return String(job.description_text??'').split(/\n|(?<=[.!?])\s+/).find(text=>
     /^(?:note\s*:\s*)?(?:this|the)\s+(?:(?:role|position|job|internship)\s+(?:is|will be|requires)|will be)\b[^.!?]*\bhybrid\b/i.test(text)
     || /^hybrid (?:role|position|work|working|arrangement)\b/i.test(text));
@@ -50,7 +50,7 @@ const polishHiringEvidence = /\bPolish\s+employment\s+contract\b|\b(?:hire|hirin
 export const FIT_SCHEMA = object({
   role_family: string, role_level: string,
   hard_blockers: {type: 'array', items: object({requirement_index: {type: 'integer', minimum: 0}, reason: string})},
-  requirements: {type: 'array', maxItems: 100, items: object({
+  requirements: {type: 'array', maxItems: 1000, items: object({
     requirement: string, source_quote: string,
     importance: {enum: Object.keys(importanceWeights)}, category: {enum: categories},
     candidate_evidence_fact_ids: strings,
@@ -180,7 +180,7 @@ function employerContextStatement(text) {
     || /\b(?:projects?|experience)\b.*\b(?:valid (?:hands-on )?evidence|projects count|not required)\b/i.test(text)
     || /^(?:full[- ]time|part[- ]time)[.!]?$/i.test(text);
 }
-function sourceCategoryHint(text) {
+export function sourceCategoryHint(text) {
   const value=normalize(text);
   if(/^ausbildung\s*:|^formation\s*\/(?:\s*experience)?|^(?:voraussetzung.*immatrikulation)/.test(value))return 'EDUCATION';
   if(/^sprachen\s*:|^(?:english|german|french|polish|deutsch|englisch)\s+(?:[abc][12]|language|fluency)/.test(value))return 'LANGUAGE';
@@ -302,6 +302,7 @@ export function sourceFragmentCatalog(job) {
   const add = (text, importance_hint = null, list_container = false, metadataOnly = false, contextOnly = false,categoryHint=null,conditionalRegion=null) => {
     text = text.trim();
     if (!text || /^(?:(?:\d+|[A-Za-z])[.)]|DU(?:…|\.\.\.))$/i.test(text)) return;
+    if(/^[*✅\s]*(?:(?:minimum\s+)?required|mandatory|(?:other|license\/certification|core competencies|clearance|key skills|skills|technical skills|experience|system specs|tools proficiency|critical skills) required|the following(?: qualifications)? are required|what skills\/qualities are required)\s*:\s*$/i.test(text)){importance_hint=null;contextOnly=true;}
     if (seen.has(text)) {
       const entry = catalog[seen.get(text)];
       if (importance_hint) entry.importance_hint = importance_hint;
@@ -466,7 +467,7 @@ export function schemaForJob(job, profile) {
 /** Reject hallucinated IDs, false provenance and ungrounded employer evidence. */
 export function validateFactIntegrity(analysis, profile, job) {
   analysis.work_format=normalizeWorkFormatUnknowns(analysis.work_format);
-  if (!validateSchema(analysis)) throw new StructuredOutputError('Fit analysis JSON schema mismatch');
+  if (!validateSchema(analysis)) throw new StructuredOutputError('Fit analysis JSON schema mismatch: '+validateSchema.errors.map(e=>`${e.instancePath} ${e.keyword} ${JSON.stringify(e.params)}`).join('; '));
   const facts = factIndex(profile);
   const source = [job.title, job.description_text, job.location, job.country, job.work_mode].filter(Boolean).join('\n');
   const allIds = [...analysis.matched_fact_ids, ...analysis.cv_focus_fact_ids];

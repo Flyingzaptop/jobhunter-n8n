@@ -1,6 +1,6 @@
 import {performance} from 'node:perf_hooks';
 import {FIT_SCHEMA,sourceFragmentCatalog,factIndex,validateFactIntegrity,routeAnalysis,
- enforceProfessionalYears,enforceEducation,enforceLanguageLevels,enforceSkillQualifiers,groundedWorkNumbers} from './fit.mjs';
+ enforceProfessionalYears,enforceEducation,enforceLanguageLevels,enforceSkillQualifiers,groundedWorkNumbers,explicitHybridQuote,sourceCategoryHint} from './fit.mjs';
 
 export const FAST_FIT_VERSION='fast-fit-v2-single-score';
 // Local inference may be deliberately slowed by laptop power/thermal settings.
@@ -15,7 +15,7 @@ const aliases=[[/mechanic\w*|mechanik\w*|mechaniczn\w*/g,' mechanical '],[/inzyn
 const stop=new Set('with from that this have your will must required requirements skills knowledge ability oraz pracy praca znajomosc umiejetnosc minimum dobra dobre bardzo podstawowa podstawowe technical experience'.split(' '));
 function tokens(value){let text=fold(value);for(const [pattern,replacement] of aliases)text=text.replace(pattern,replacement);return new Set((text.match(/[\p{L}\d+#.-]{2,}/gu)??[]).filter(word=>!stop.has(word)));}
 const factText=fact=>[fact.title,fact.role,fact.field,fact.language,fact.level,fact.status,fact.duration_approx_years?`${fact.duration_approx_years} years`:null,...(fact.statements??[]),...(fact.skills??[])].filter(Boolean).join('; ');
-function category(fragment){if(fragment.category_hint)return fragment.category_hint;const t=fold(fragment.text);
+function category(fragment){const direct=sourceCategoryHint(fragment.text);if(direct)return direct;if(fragment.category_hint)return fragment.category_hint;const t=fold(fragment.text);
  if(/citizen|visa|permit|authorization|prawo.*prac|uprawnien|licen[cs]|certyfikat/.test(t))return 'LEGAL';
  if(/language|english|polish|angielsk|niemieck|jezyk/.test(t))return 'LANGUAGE';
  if(/degree|education|student|studying|wyksztalcen|studi\w+|absolwent/.test(t))return 'EDUCATION';
@@ -44,7 +44,7 @@ export function fastWorkFormat(job){
  const lines=String(job.description_text??'').split(/\n|(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
  const mode=String(job.work_mode??'').toUpperCase(),location=fold(job.location);
  f.office_location=job.location||null;f.office_country=job.country||null;
- const hybrid=lines.find(s=>/^(?:note\s*:\s*)?(?:this|the)\s+(?:role|position|job|internship).*\bhybrid\b|^hybrid (?:role|position|work)/i.test(s));
+ const hybrid=explicitHybridQuote(job);
  if(mode==='HYBRID'||hybrid){f.hybrid_required=true;f.remote_allowed=true;if(hybrid)f.evidence.push(hybrid);}
  else if(mode==='ONSITE'){f.remote_allowed=false;f.hybrid_required=false;}
  else if(mode==='REMOTE'){f.remote_allowed=true;f.hybrid_required=false;}
@@ -76,6 +76,7 @@ export function expandFastFit(score,input,{job,profile,policy={}}){
    professional_only:Boolean(years&&/professional|commercial|zawodow/i.test(r.fragment.text)),skill:null,
    strict:Boolean(years||/\bmust\b|mandatory|required|wymagane|obowiazkowe|uko[nń]czone/i.test(r.fragment.text))};});
  const disciplined=enforceSkillQualifiers(enforceLanguageLevels(enforceEducation(enforceProfessionalYears(requirements,profile),profile),profile),profile);
+ for(const requirement of disciplined)delete requirement.professional_years_verified;
  const positive=disciplined.filter(r=>['YES','PARTIAL'].includes(r.match));const ids=[...new Set(positive.flatMap(r=>r.candidate_evidence_fact_ids))];
  const raw={role_family:job.title??'Unknown',role_level:'UNSPECIFIED',career_alignment:'MEDIUM',requirements:disciplined,
   hard_blockers:disciplined.flatMap((r,i)=>r.strict&&r.importance==='MANDATORY'&&r.match==='NO'&&r.category!=='LOCATION'?[{requirement_index:i,reason:r.reason}]:[]),
