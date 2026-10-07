@@ -15,7 +15,7 @@ const doc={headline:claim('Mechanical Engineering student | Embedded automation'
 test('engineering target selects engineering evidence before IT even when fit focus overemphasizes hospital work',()=>{
  const plan=cvTailoringPlan(profile,{cv_focus_fact_ids:['it','data']},engineering);
  assert.equal(plan.family,'ENGINEERING_AUTOMATION');assert.equal(plan.preferred_section_ids[0],'embedded');
- assert.ok(!plan.allowed_section_ids.includes('it'));assert.ok(cvTailoringQa(doc,profile,{},engineering).errors.includes('CONFIRMED_PROJECT_BREADTH_MISSING'));
+ assert.ok(plan.allowed_section_ids.includes('it'));assert.ok(plan.secondary_fact_ids.includes('it'));assert.ok(cvTailoringQa(doc,profile,{},engineering).errors.includes('CONFIRMED_PROJECT_BREADTH_MISSING'));
  assert.equal(cvTailoringQa({...doc,sections:[...doc.sections,{source_fact_id:'cad',bullets:[claim('Academic cycloidal gearbox design in CAD.','cad')]}]},profile,{},engineering).pass,true);
  assert.ok(!plan.primary_fact_ids.includes('data'),'feature engineering must not match finite-element FEA');
  const support=cvTailoringPlan(profile,{}, {title:'IT Support Specialist'});
@@ -32,10 +32,11 @@ test('target tailoring refuses generic IT headline/summary and unrelated top sec
  assert.ok(cvTailoringQa({...doc,skills:[claim('Windows','it'),claim('Active Directory','it')]},profile,{},engineering).errors.includes('TOP_SKILLS_UNRELATED_DOMINANCE'));
  assert.ok(cvTailoringQa({...doc,summary:[claim('Academic embedded projects.','embedded'),claim('Independent research in financial machine learning with extensive data processing and statistical experimentation pipelines.','data')]},profile,{},engineering).errors.includes('SUMMARY_UNRELATED_DOMINANCE'));
 });
-test('role schema prevents unrelated employment sections and preserves basic C++ and Linux caps',()=>{
+test('role schema permits secondary employment, rejects uncited sections and preserves skill caps',()=>{
  const plan=cvTailoringPlan(profile,{},engineering),schema=cvWriterSchema(profile,{allowedSectionIds:plan.allowed_section_ids}),validate=new Ajv().compile(schema);
  assert.equal(validate(doc),true);
- assert.equal(validate({...doc,sections:[{source_fact_id:'it',bullets:[claim('Supported Windows workstations.','it')]}]}),false);
+ assert.equal(validate({...doc,sections:[{source_fact_id:'it',bullets:[claim('Supported Windows workstations.','it')]}]}),true);
+ assert.equal(validate({...doc,sections:[{source_fact_id:'invented',bullets:[claim('Unsupported work.','invented')]}]}),false);
  const capped={...doc,skills:[claim('C++ (basic-to-intermediate)','cpp'),claim('Linux familiarity','skill_software_1')]};
  assert.equal(validate(capped),true);assert.equal(deterministicCvQa(capped,profile).pass,true);
  assert.equal(validate({...doc,skills:[claim('C++','cpp')]}),false);

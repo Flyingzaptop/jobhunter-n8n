@@ -8,11 +8,12 @@ import {PDFParse} from 'pdf-parse';
 import {factIndex,sourceFragmentCatalog} from './fit.mjs';
 import {OllamaClient, StructuredOutputError} from './llm.mjs';
 import {observe,operationContext} from './observability.mjs';
+import {composeExtractiveCv,verifyExtractiveCv} from './cv-extractive.mjs';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 
-export const CV_V2_VERSION = 'cv-factory-v2.4-project-breadth';
+export const CV_V2_VERSION = 'cv-factory-v2.5-extractive-fast';
 // Previously reviewed, evidence-verified PDFs remain valid until a new PDF replaces them.
-export const compatibleCvTemplate=version=>[CV_V2_VERSION,'cv-factory-v2.3-exact-vacancy'].includes(version);
+export const compatibleCvTemplate=version=>[CV_V2_VERSION,'cv-factory-v2.4-project-breadth','cv-factory-v2.3-exact-vacancy'].includes(version);
 const ajv = new Ajv({strict:true, allErrors:true});
 const str = {type:'string', minLength:1};
 const obj = properties => ({type:'object', additionalProperties:false, properties, required:Object.keys(properties)});
@@ -75,6 +76,7 @@ export function cvTargetFamily(job={},analysis={}){
  if(/mechanical|cad|constructor|konstruktor|mechanik|simulation|cae/.test(title))return 'MECHANICAL';
  if(/utrzymani.*ruchu|elektromechan|mechatron|automatyk/.test(title))return 'ENGINEERING_AUTOMATION';
  if(/support|helpdesk|service desk|it administr|informatyk|wsparci.*it|wsparci.*techniczn.*system/.test(title))return 'IT_SUPPORT';
+ if(/automat/.test(title)&&/playwright|selenium|rest assured|postman|zapier|n8n|low.code|no.code|software quality|api testing/.test(body)&&!/plc|robotic|sensors|actuators|industrial control/.test(body))return 'SOFTWARE';
  if(/embedded|automat|robotic|verification.*validation|hardware.*test|test.*hardware/.test(title))return 'ENGINEERING_AUTOMATION';
  if(/data scien|machine learning|\bml\b|data engineer/.test(title))return 'DATA';
  if(/software|developer|programmer|frontend|backend|full.?stack/.test(title))return 'SOFTWARE';
@@ -136,7 +138,7 @@ export function vacancyKeywordPlan(profile,analysis={},job={}){
 export function cvTailoringPlan(profile,analysis={},job={}){
  const family=cvTargetFamily(job,analysis),facts=[...factIndex(profile).values()];
  const vacancyKeywords=vacancyKeywordPlan(profile,analysis,job);
- const exactScore=fact=>vacancyKeywords.entries.filter(entry=>entry.source_fact_ids.includes(fact.id)).reduce((n,entry)=>n+entry.weight,0);
+ const exactScore=fact=>vacancyKeywords.entries.filter(entry=>entry.source_fact_ids.includes(fact.id)&&!(family==='SOFTWARE'&&/^automation$/i.test(entry.keyword)&&/plc|robotic|arduino|esp32|sensors|actuators/i.test(JSON.stringify(fact))&&!/python|software|web application/i.test(JSON.stringify(fact)))).reduce((n,entry)=>n+entry.weight,0);
  const strength=fact=>{const text=normalize([fact.title,fact.role,fact.field,fact.specialization,...(fact.skills??[]).map(skillText),...(fact.statements??[])].join(' '));
   if(family==='IT_SUPPORT')return /active directory|workstation|hospital|troubleshoot|it specialist/.test(text)?100:/network|linux|windows/.test(text)?55:0;
   if(family==='MECHANICAL')return /mechanical|\bcad\b|gearbox|turbine|prototyp|\bfea\b|\bcfd\b|flow.3d/.test(text)?100:/embedded|\bplc\b|robotic|automation/.test(text)?35:0;
@@ -152,7 +154,7 @@ export function cvTailoringPlan(profile,analysis={},job={}){
  const sections=ranked.filter(item=>item.fact.provenance&&!['EDUCATION','COURSE'].includes(item.fact.provenance));
  const focused=family==='GENERAL'&&!bestExact||!primary.length?sections.slice(0,4):sections.filter(item=>item.exact>0||item.core>=(family==='IT_SUPPORT'?70:1)).slice(0,4);
  const breadth=sections.filter(item=>/turbo.?jet|turbojet|cycloidal|cykloid|cycloid/i.test([item.fact.title,...(item.fact.statements??[])].join(' ')));
- const selected=[...focused,...breadth,...sections.filter(item=>item.fact.provenance!=='PROFESSIONAL'&&!focused.includes(item)).slice(0,1)].filter((item,i,all)=>all.findIndex(other=>other.fact.id===item.fact.id)===i).slice(0,6);
+ const selected=[...focused,...breadth,...sections.filter(item=>item.fact.provenance==='PROFESSIONAL'),...sections.filter(item=>item.fact.provenance!=='PROFESSIONAL'&&!focused.includes(item)).slice(0,1)].filter((item,i,all)=>all.findIndex(other=>other.fact.id===item.fact.id)===i).slice(0,6);
  const target=normalize(`${job.title??''} ${job.description_text??''}`);
  const relevantTraining=facts.filter(fact=>fact.provenance==='COURSE'&&(family==='GENERAL'||strength(fact)>=70
   ||(normalize(fact.title).match(/python|\bcad\b|\bplc\b|linux|machine learning|data science/g)??[]).some(term=>target.includes(term)))).map(fact=>fact.id);
@@ -198,7 +200,7 @@ export function cvKeywordCoverage(document,profile,plan){const claims=cvClaimCat
   return {...entry,status:entry.status==='SUPPORTED'?(cited.length||deterministic.length?'SUPPORTED_COVERED':'SUPPORTED_NOT_COVERED')
    :unsupportedMention?'UNSUPPORTED_KEYWORD_CLAIMED':'UNSUPPORTED_DO_NOT_CLAIM',covered_claim_ids:cited.map(claim=>claim.claim_id),deterministic_fact_ids:deterministic};});
 }
-function selectCatalog(profile, analysis, job) {
+export function selectCatalog(profile, analysis, job) {
   const index = factIndex(profile);
   const tailoring=cvTailoringPlan(profile,analysis,job),order=new Map(tailoring.ranked_fact_ids.map((id,n)=>[id,n]));
   const focus = new Set(analysis?.cv_focus_fact_ids ?? analysis?.matched_fact_ids ?? []);
@@ -213,7 +215,7 @@ function selectCatalog(profile, analysis, job) {
     if (!skillMap.has(key)) skillMap.set(key,{text:skill.replace(/_/g,' '), source_fact_ids:[]});
     skillMap.get(key).source_fact_ids.push(fact.id);
   }
-  const keywordScore=skill=>tailoring.vacancy_keywords.entries.filter(entry=>entry.status==='SUPPORTED'&&entry.aliases.some(term=>hasKeyword(skill.text,term))).reduce((n,entry)=>n+entry.weight,0);
+  const keywordScore=skill=>tailoring.vacancy_keywords.entries.filter(entry=>entry.status==='SUPPORTED'&&entry.aliases.some(term=>hasKeyword(skill.text,term))&&!(tailoring.family==='SOFTWARE'&&/^automation$/i.test(entry.keyword)&&cvSkillRelevance(skill.text,'SOFTWARE')===0)).reduce((n,entry)=>n+entry.weight,0);
   const relevance=skill=>keywordScore(skill)*10+cvSkillRelevance(skill.text,tailoring.family);
   return {index, facts,tailoring,skills:[...skillMap.values()].filter(skill=>relevance(skill)>0).sort((a,b) => relevance(b)-relevance(a)||Number(vacancy.includes(normalize(b.text)))-Number(vacancy.includes(normalize(a.text))))};
 }
@@ -361,7 +363,8 @@ async function renderPdf(html, target) {
   } finally {await browser.close();}
 }
 
-export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2'}) {
+export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2',writerMode=process.env.CV_WRITER_MODE??'auto'}) {
+  const totalStarted=performance.now();
   llm=resolveCvLlm(llm);
   if (job.availability_status!=='OPEN') throw new Error('Vacancy not verified OPEN');
   const catalog=selectCatalog(profile,analysis,job);
@@ -382,7 +385,7 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     language,model:llm.strongModel ?? llm.model ?? 'injected-gateway',verifier_model:llm.model ?? 'injected-gateway',created_at:new Date().toISOString(),
     pdf_path:null,html_path:null,document_path:null,source_map_path:path.join(dir,'source-fact-map.json'),manifest_path:path.join(dir,'manifest.json'),
     qa:{pass:false,claims:{pass:false},identity:{pass:identity.pass,status:identity.status,missing:identity.missing},pdf:{pass:false,status:'NOT_RENDERED'}}};
-  let document;
+  let document,extractiveProof;
   try {
     if(catalog.tailoring.vacancy_keywords.hard_missing_requirements.length){manifest.application_eligible=false;manifest.application_policy_blocker='UNSUPPORTED_STRICT_MANDATORY_QUALIFICATION';throw new StructuredOutputError('Unsupported strict mandatory qualification blocks CV generation');}
     const schema=cvWriterSchema(profile,{allowedSectionIds:catalog.tailoring.allowed_section_ids,allowedSkillNames:catalog.skills.map(skill=>skill.text)});
@@ -390,7 +393,14 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     const writerStarted=performance.now();
     const writerSystem=await readFile(new URL('../../prompts/cv_writer_v2.md',import.meta.url),'utf8');manifest.writer_prompt_sha256=hash(writerSystem);
     if(repository?.pool)await observe(repository,{event:'CV_WRITER_STARTED',entity_type:'job',entity_id:job.job_id,message:'Grounded CV writer running',model:manifest.model});
-    document=await llm.json({strong:true,numPredict:5000,schema,system:writerSystem,
+    if(writerMode==='extractive'||writerMode==='auto'&&llm instanceof OllamaClient){
+      const candidate=composeExtractiveCv({catalog,job});
+      const sourceProof=candidate&&verifyExtractiveCv(candidate,profile,catalog.skills);
+      const target=candidate&&cvTailoringQa(candidate,profile,analysis,job);
+      if(language==='English'&&!applicationRequested&&candidate&&validate(candidate)&&sourceProof.pass&&target.pass&&deterministicCvQa(candidate,profile).pass){document=candidate;extractiveProof=sourceProof;manifest.generation_method='EXTRACTIVE_VACANCY_TAILORING';manifest.model='SOURCE_FACT_COMPOSER';manifest.verifier_model='EXACT_SOURCE_PROOF';}
+      else {manifest.fast_path_fallback={language,applicationRequested,tailoring:target?.errors??[],schema:validate.errors??[],claims:candidate?deterministicCvQa(candidate,profile).errors:[]};if(writerMode==='extractive')throw new Error('EXTRACTIVE_CV_REQUIRES_FALLBACK');}
+    }
+    if(!document)document=await llm.json({strong:true,numPredict:5000,schema,system:writerSystem,
       prompt:JSON.stringify({current_date:new Date().toISOString().slice(0,10),language,application_text_requested:applicationRequested,target:{title:job.title,description:job.description_text,role_family:analysis?.role_family},
         exact_requirements:analysis?.requirements??[],tailoring_plan:catalog.tailoring,priority_fact_ids:catalog.tailoring.primary_fact_ids,facts:catalog.facts.map(writerFact),allowed_skills:catalog.skills}),
       repairInstruction:'Use only supplied source IDs and supported facts. Keep provenance, qualifiers and degree status. No seniority or skills inferred from target title. Fix unsupported claims.',
@@ -400,7 +410,7 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
         const qa=deterministicCvQa(value,profile); if (!qa.pass) throw new StructuredOutputError(`CV deterministic fact guards: ${qa.errors.map(e=>e.reason).join(', ')}`);}});
     if (!validate(document)) {document=undefined; throw new StructuredOutputError('CV writer schema invalid');}
     if (!applicationRequested && document.application_text.length) throw new StructuredOutputError('Unrequested application text');
-    manifest.writer_stats=structuredClone(llm.lastStats??null);manifest.writer_duration_ms=Math.round(performance.now()-writerStarted);
+    manifest.writer_stats=extractiveProof?{model_requests:0}:structuredClone(llm.lastStats??null);manifest.writer_duration_ms=Math.round(performance.now()-writerStarted);
     if(repository?.pool)await observe(repository,{event:'CV_WRITER_COMPLETED',entity_type:'job',entity_id:job.job_id,message:'CV writer completed; checking independent entailment',model:manifest.model,model_requests:llm.lastStats?.semantic_attempts});
     const deterministic=deterministicCvQa(document,profile);
     const tailoring=cvTailoringQa(document,profile,analysis,job);manifest.qa.tailoring=tailoring;
@@ -408,8 +418,8 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
       requirements_hash:catalog.tailoring.vacancy_keywords.requirements_hash,source_catalog_hash:catalog.tailoring.vacancy_keywords.source_catalog_hash,entries:tailoring.keyword_coverage};
     const verifierStarted=performance.now();
     if(repository?.pool)await observe(repository,{event:'CV_VERIFIER_STARTED',entity_type:'job',entity_id:job.job_id,message:'Independent CV entailment verifier running',model:manifest.verifier_model});
-    const semantic=await verifyCvEntailment(document,profile,llm);
-    manifest.verifier_stats=structuredClone(llm.lastStats??null);manifest.verifier_duration_ms=Math.round(performance.now()-verifierStarted);
+    const semantic=extractiveProof??await verifyCvEntailment(document,profile,llm);
+    manifest.verifier_stats=extractiveProof?{model_requests:0}:structuredClone(llm.lastStats??null);manifest.verifier_duration_ms=Math.round(performance.now()-verifierStarted);
     if(repository?.pool)await observe(repository,{event:'CV_VERIFIER_COMPLETED',entity_type:'job',entity_id:job.job_id,message:semantic.pass?'Every CV claim supported':'CV claims blocked by independent verifier',claims_pass:semantic.pass,model:manifest.verifier_model,model_requests:llm.lastStats?.semantic_attempts});
     manifest.qa.claims={pass:deterministic.pass && semantic.pass&&tailoring.pass,deterministic,semantic};
     manifest.document_path=path.join(dir,'cv.json');
@@ -419,6 +429,7 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     await writeFile(manifest.html_path,html);
     manifest.status=!manifest.qa.claims.pass ? 'BLOCKED_CLAIMS' : !identity.pass ? 'BLOCKED_IDENTITY' : 'BLOCKED_PDF';
     if (manifest.qa.claims.pass && identity.pass && !rejected) {
+      const renderStarted=performance.now();
       const pdfPath=path.join(dir,'cv.pdf');
       const visual=await renderPdf(html,pdfPath);
       const buffer=await readFile(pdfPath); const parser=new PDFParse({data:buffer});
@@ -430,13 +441,13 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
         no_placeholders:!/(?:UNKNOWN|\{\{|TODO|PLACEHOLDER)/.test(parsed.text),page_count:parsed.total,visual_sanity:visual,preview_paths:previewPaths,
         pdf_pages_rendered:raster.pages.length===parsed.total && raster.pages.every(p=>p.width>0 && p.height>0 && p.data.length>100)};
       pdfQa.pass=pdfQa.nonempty && pdfQa.name_present && pdfQa.contacts_present && pdfQa.no_placeholders && parsed.total>=1 && parsed.total<=2 && Object.values(visual).every(Boolean) && pdfQa.pdf_pages_rendered;
-      manifest.qa.pdf=pdfQa;
+      manifest.qa.pdf=pdfQa;manifest.render_and_pdf_qa_duration_ms=Math.round(performance.now()-renderStarted);
       manifest.pdf_path=pdfPath; manifest.sha256=hash(buffer);
       manifest.status=pdfQa.pass ? 'PASS' : 'BLOCKED_PDF';
     }
   } catch (error) {manifest.qa.error={code:error.name,message:error.message};}
   if (rejected) {manifest.content_status=manifest.status;manifest.status='REJECTED_DIAGNOSTIC_CONTENT';manifest.application_eligible=false;}
-  manifest.qa.pass=manifest.status==='PASS';
+  manifest.qa.pass=manifest.status==='PASS';manifest.total_duration_ms=Math.round(performance.now()-totalStarted);
   await writeFile(manifest.source_map_path,JSON.stringify({profile_version:manifest.profile_version,profile_hash:manifest.profile_hash,
     job_content_hash:manifest.job_content_hash,analysis_hash:manifest.analysis_hash,analysis_input_hash:manifest.analysis_input_hash,claims:document?cvClaimCatalog(document):[],
     deterministic_sections:{education:(profile.education??[]).map(f=>f.id),training:catalog.tailoring.relevant_training_ids,languages:(profile.languages??[]).map(f=>f.id),

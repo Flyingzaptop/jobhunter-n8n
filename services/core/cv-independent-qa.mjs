@@ -4,7 +4,8 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import path from 'node:path';
 import {getDocument,Util} from 'pdfjs-dist/legacy/build/pdf.mjs';
-import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,cvTailoringQa,CV_V2_VERSION} from './cv-v2.mjs';
+import {cvIdentityQa,deterministicCvQa,cvClaimCatalog,cvTailoringQa,selectCatalog,CV_V2_VERSION} from './cv-v2.mjs';
+import {verifyExtractiveCv} from './cv-extractive.mjs';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 
 const exec=promisify(execFile),hash=value=>createHash('sha256').update(Buffer.isBuffer(value)||typeof value==='string'?value:JSON.stringify(value)).digest('hex');
@@ -85,6 +86,7 @@ export async function auditIndependentCv({manifest,job,profile,analysis,artifact
   if(bytes.length>5*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-'||hash(bytes)!==manifest.sha256)return {pass:false,reasons:['CV_BYTES_CHANGED']};
   const document=JSON.parse(documentBytes);if(!deterministicCvQa(document,profile).pass)return {pass:false,reasons:['CURRENT_DETERMINISTIC_CLAIMS_FAILED']};
   if(manifest.template_version===CV_V2_VERSION){const target=cvTailoringQa(document,profile,analysis,job);if(!target.pass||target.target_requirements_hash!==manifest.keyword_coverage?.requirements_hash)return {pass:false,reasons:['EXACT_VACANCY_KEYWORD_QA_FAILED']};}
+  if(manifest.generation_method==='EXTRACTIVE_VACANCY_TAILORING'&&!verifyExtractiveCv(document,profile,selectCatalog(profile,analysis,job).skills).pass)return {pass:false,reasons:['EXACT_SOURCE_CLAIMS_CHANGED']};
   const sourceMap=JSON.parse(mapBytes),claims=cvClaimCatalog(document);
   if(sourceMap.profile_hash!==hash(profile)||sourceMap.job_content_hash!==job.content_hash||sourceMap.analysis_hash!==canonicalAnalysisHash(analysis)
    ||hash(sourceMap.claims)!==hash(claims))return {pass:false,reasons:['CV_SOURCE_MAP_CHANGED']};
