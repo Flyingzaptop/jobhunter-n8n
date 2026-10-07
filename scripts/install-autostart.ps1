@@ -4,8 +4,8 @@ $nodeBinary=(Get-Command node -ErrorAction Stop).Source
 $startupDirectory=[Environment]::GetFolderPath('Startup')
 $shellObject=New-Object -ComObject WScript.Shell
 $shortcut=$shellObject.CreateShortcut((Join-Path $startupDirectory 'JobHunter Supervisor.lnk'))
-$shortcut.TargetPath=$nodeBinary
-$shortcut.Arguments='--env-file=.env scripts/supervise.mjs'
+$shortcut.TargetPath=(Get-Command powershell.exe).Source
+$shortcut.Arguments='-NoProfile -WindowStyle Hidden -File "'+(Join-Path $PSScriptRoot 'start-independent.ps1')+'"'
 $shortcut.WorkingDirectory=$jobhunterRoot
 $shortcut.WindowStyle=7
 $shortcut.Description='Restore JobHunter services and local LM Studio after Windows sign-in'

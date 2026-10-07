@@ -31,31 +31,23 @@ Do not enable real submission. No successful unit test implies Stage 7 PASS.
 
 - Node.js 24 for native local development.
 - Docker and Docker Compose for the production stack.
-- Local Ollama; target hardware: 6 GB VRAM / 40 GB RAM.
+- Local LM Studio / Gemma; target hardware: 6 GB VRAM / 40 GB RAM.
 - Telegram bot token and allowed chat ID for actual human interaction.
 
 ## Windows local development
 
-```powershell
-npm ci
-npx playwright install chromium
-ollama pull qwen3.5:4b
-node scripts/init-local-env.mjs
-node --env-file=.env scripts/local-postgres.mjs
-```
-
-Keep PostgreSQL running; in another terminal:
+For the configured workspace, start every service hidden and independently of Codex:
 
 ```powershell
-npm run migrate
 npm start
 ```
 
-Run browser service in another terminal:
-
-```powershell
-node --env-file=.env services/browser-service/server.mjs
-```
+The launcher uses Windows WMI with hidden startup settings. Repeated launches reuse
+one supervisor. Closing the invoking terminal or Codex does not own these service
+processes. Logs and health state are in `data/runtime/`; the dashboard is at
+`http://127.0.0.1:3020`. `scripts/start-local.ps1` uses the same launcher.
+No scheduled task is required. The laptop must remain awake for processing.
+The supervisor waits for PostgreSQL SQL readiness before starting dependent services.
 
 `.env` is ignored; generated secrets are never printed. Local PostgreSQL binds
 to 127.0.0.1:55432 and stores its cluster under `data/local-postgres/`.
@@ -74,9 +66,9 @@ node --env-file=.env scripts/local-n8n.mjs
 Native n8n uses the `n8n` PostgreSQL schema and `data/n8n/` user folder.
 Bootstrap imports the HTTP header credential from `.env` and removes its
 temporary plaintext file, then imports six inactive workflows with the local
-core URL. Start core separately with `npm start`. The n8n editor is at
+core URL. `npm start` starts the complete hidden stack. The n8n editor is at
 `http://127.0.0.1:5678`; health is `http://127.0.0.1:5678/healthz`.
-Scheduled execution requires activating the workflows in n8n after setup.
+The continuous worker handles execution; leave scheduled workflows inactive.
 
 For isolated Stage 1/2 acceptance, stop the local n8n server and core first:
 

@@ -17,7 +17,7 @@ try{
   await new Promise(resolve=>setTimeout(resolve,5000));
  }
  await status('RESTARTING_IDLE_SERVICES');
- for(const entry of ['scripts/continuous-worker.mjs','services/core/server.mjs','services/dashboard/server.mjs']){
+ for(const entry of ['scripts/continuous-worker.mjs']){
   const pattern='\\s--env-file=\\.env\\s+'+entry.replaceAll('.','\\.')+'(?:\\s|$)';
   await execute('powershell.exe',['-NoProfile','-Command',`Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -and $_.CommandLine -match '${pattern}' } | ForEach-Object { Stop-Process -Id $_.ProcessId }`],{windowsHide:true});
  }
