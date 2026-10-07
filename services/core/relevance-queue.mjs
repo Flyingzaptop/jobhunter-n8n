@@ -160,6 +160,7 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
             errors:results.filter(x=>x.status!=='ANALYZED').map(x=>({job_id:x.job_id,status:x.status})),results,blocked_reason:'PAUSED'};
         const ready=(await repository.pool.query(`SELECT q.*,j.canonical_url FROM relevance_queue q JOIN jobs j USING(job_id)
           WHERE q.status IN('QUEUED','RETRY','ANALYZED','DEAD_LETTER','OPEN_UNVERIFIED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
+          AND NOT EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$2 AND a.analysis_json->>'policy_hash'=$3 AND a.analysis_json->>'job_content_hash'=j.content_hash)
           AND NOT EXISTS(SELECT 1 FROM job_analysis h WHERE h.job_id=q.job_id AND h.analysis_json->>'analysis_method'='DETERMINISTIC_HARD_GATE'
             AND h.analysis_json->>'profile_hash'=$2 AND h.analysis_json->>'policy_hash'=$3
             AND h.analysis_json->>'hard_gate_job_input_hash'=q.input_hash)

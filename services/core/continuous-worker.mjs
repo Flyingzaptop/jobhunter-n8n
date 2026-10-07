@@ -63,7 +63,7 @@ export class ContinuousStore {
  async resumeTask(){return (await this.repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;}
  async clearResumeTask(){await this.repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');}
  async pendingFitCount(profile,policy){return Number((await this.repository.pool.query(`SELECT count(*)::int count FROM relevance_queue q JOIN jobs j USING(job_id)
-  WHERE q.status IN ('QUEUED','RETRY','OPEN_UNVERIFIED','RUNNING','ANALYZED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
+  WHERE q.status IN ('QUEUED','RETRY','RUNNING','ANALYZED') AND (q.next_retry_at IS NULL OR q.next_retry_at<=now())
   AND NOT EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'policy_hash'=$2 AND a.analysis_json->>'job_content_hash'=j.content_hash)
   `,[digest(profile),digest(policy)])).rows[0].count);}
  async hasPendingFit(profile,policy){return (await this.pendingFitCount(profile,policy))>0;}
