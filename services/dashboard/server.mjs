@@ -124,6 +124,7 @@ export function createDashboard({
           `SELECT (SELECT max(discovered_at) FROM jobs_raw) AS discovery,(SELECT max(created_at) FROM job_analysis) AS analysis,(SELECT max(created_at) FROM cv_versions) AS cv,(SELECT max(updated_at) FROM applications) AS application,(SELECT count(*)::int FROM jobs) AS jobs,(SELECT count(*)::int FROM relevance_queue) AS keyword_screened,(SELECT count(*)::int FROM relevance_queue WHERE status='LOW_PRIORITY') AS keyword_discarded,(SELECT count(*)::int FROM jobs_raw) AS discovered,(SELECT count(DISTINCT job_id)::int FROM job_analysis) AS analyzed,(SELECT count(DISTINCT job_id)::int FROM job_analysis WHERE analysis_json->>'analysis_method'='GEMMA_SINGLE_SCORE') AS gemma_fit,(SELECT count(*)::int FROM relevance_queue WHERE status='QUEUED') AS fit_pending,(SELECT count(*)::int FROM cv_versions) AS cvs,(SELECT count(*)::int FROM cv_drafts) AS cv_drafts,(SELECT count(*)::int FROM applications) AS applications,(SELECT count(*)::int FROM applications WHERE status IN ('NEEDS_USER','CAPTCHA_WAIT')) AS awaiting_user,(SELECT count(*)::int FROM applications WHERE status='FAILED') AS failed,(SELECT count(*)::int FROM applications WHERE status='SUBMITTED') AS submitted`,
         ),
       ]);
+    latest.rows[0].fit_pending=pipeline.find(stage=>stage.stage===3)?.runnable_pending_count??latest.rows[0].fit_pending;
     return {
       mode: {
         paused: paused.rows[0]?.paused ?? false,

@@ -183,3 +183,7 @@ test('bulk CV never retries a fast-path exception as a slow model task',async()=
 test('CPU-only CV batch can progress while the GPU is occupied',async()=>{
  let generated=0;const {worker,store}=harness({modelBusy:async()=>true,fit:async()=>{throw Error('Must not use occupied GPU');},cv:async()=>{generated++;return {status:'REGISTERED'};}});store.phaseBarrier=async()=>({phase:'CV',discovery_paused:true});store.hasPendingFit=async()=>false;await worker.tick('model');assert.equal(generated,1);
 });
+
+test('frozen CV phase does not invoke already-completed FIT on every CV',async()=>{
+ let generated=0;const {worker,store}=harness({fit:async()=>{throw Error('Unexpected FIT invocation');},cv:async()=>{generated++;return {status:'REGISTERED'};}});store.phaseBarrier=async()=>({phase:'CV',discovery_paused:true});store.hasPendingFit=async()=>false;await worker.tick('model');assert.equal(generated,1);
+});

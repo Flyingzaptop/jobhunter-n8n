@@ -130,7 +130,8 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='model'){
     const busy=modelBusy&&await modelBusy();
     if(busy&&barrier?.phase!=='CV'){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
-    const fitted=busy?{attempted:0}:await fit(context);
+    const needsFit=barrier?barrier.phase==='FIT':true;
+    const fitted=busy||!needsFit?{attempted:0}:await fit(context);
     if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
     if(barrier?.phase==='FIT'){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_BATCH_NOT_100_PERCENT');return;}
     if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
@@ -175,7 +176,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
   if(digest(current.profile)!==digest(snapshot.profile)||digest(current.policy)!==digest(snapshot.policy))throw new Error('CONFIGURATION_CHANGED_DURING_OPERATION');};
  return createContinuousWorker({store:new ContinuousStore(repository),loadConfiguration,intervalMs,
   modelBusy:async()=>{const {localModelBusy}=await import('./model-busy.mjs');return localModelBusy(llm.model);},
-  discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});return applyDeterministicHardRejects({repository,profile,policy});},
+  discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});await repository.pool.query(`UPDATE relevance_queue q SET status='ANALYZED',error_code='CURRENT_FIT_REUSED',next_retry_at=NULL,updated_at=now() FROM jobs j WHERE j.job_id=q.job_id AND q.status IN('QUEUED','RETRY') AND EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'policy_hash'=$2 AND a.analysis_json->>'job_content_hash'=j.content_hash)`,[digest(profile),digest(policy)]);return applyDeterministicHardRejects({repository,profile,policy});},
   prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
   fit:async({profile,policy})=>{const resume=(await repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;const result=await runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:resume?.type==='FIT'?1:8,jobIds:resume?.type==='FIT'?[resume.job_id]:undefined,maxRuntimeMs:120000,inferenceAuthorized:true});if(resume?.type==='FIT')await repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');return result;},
   cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId,prepare_cv:true});
