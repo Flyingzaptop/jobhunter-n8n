@@ -725,7 +725,20 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
       }
       continue;
     }
-    if (!['greenhouse', 'lever', 'ashby', 'smartrecruiters'].includes(source.adapter)) continue;
+    if (!['greenhouse', 'lever', 'ashby', 'smartrecruiters'].includes(source.adapter)) {
+      try {
+        const response=await safeFetch(mapping.source_url,source,fetchOptions);
+        const postings=extractJobPostings(response.text);
+        const exact=postings.find(p=>String(p.title??'').trim().toLowerCase()===String(job.title??'').trim().toLowerCase());
+        if(exact&&descriptionContent(exact.description??'').length>=120){
+          const description=descriptionContent(exact.description);
+          const contentHash=(await import('node:crypto')).createHash('sha256').update(description).digest('hex');
+          await repository.pool.query("UPDATE jobs SET description_text=$2,content_hash=$3,metadata=metadata||jsonb_build_object('description_extraction',jsonb_build_object('method','EXACT_TITLE_JSONLD','url',$4::text,'at',now())) WHERE job_id=$1",[job.job_id,description,contentHash,mapping.source_url]);
+          return {status:'UNKNOWN',reason:'OPEN_CHECK_REQUIRED',job:{...job,description_text:description,content_hash:contentHash},verified_at:new Date().toISOString()};
+        }
+        return {status:'UNKNOWN',reason:'PUBLIC_DETAIL_DESCRIPTION_MISSING',verified_at:new Date().toISOString()};
+      }catch(error){return {status:'UNKNOWN',reason:error.message,verified_at:new Date().toISOString()};}
+    }
     try {
       let endpoint = marketEndpoint(source);
       if (source.adapter === 'greenhouse') endpoint = `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(source.board)}/jobs/${encodeURIComponent(mapping.source_item_id)}`;

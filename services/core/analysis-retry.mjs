@@ -14,7 +14,8 @@ export function retryPlan(
 ) {
   const kind = classifyAnalysisFailure(error);
   const infrastructure=kind==='INFRASTRUCTURE';
-  const retryable = infrastructure || kind === "TRANSIENT" && (error?.code==='HTTP_429'||attempt < maxAttempts);
+  const structured=error?.name==='StructuredOutputError' || /^(?:SCHEMA_VALIDATION_FAILED|SEMANTIC_VALIDATION_FAILED|OUTPUT_|JSON_)/.test(error?.code??'');
+  const retryable = infrastructure || structured && attempt < maxAttempts || kind === "TRANSIENT" && (error?.code==='HTTP_429'||attempt < maxAttempts);
   return {
     kind,
     retryable,
