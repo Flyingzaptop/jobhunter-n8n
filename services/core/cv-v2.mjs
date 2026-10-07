@@ -75,7 +75,7 @@ export function cvTargetFamily(job={},analysis={}){
  const title=normalize(job.title),body=normalize(job.description_text),role=normalize(analysis.role_family);
  if(/mechanical|cad|constructor|konstruktor|mechanik|simulation|cae/.test(title))return 'MECHANICAL';
  if(/utrzymani.*ruchu|elektromechan|mechatron|automatyk/.test(title))return 'ENGINEERING_AUTOMATION';
- if(/support|helpdesk|service desk|it administr|informatyk|wsparci.*it|wsparci.*techniczn.*system/.test(title))return 'IT_SUPPORT';
+ if(/support|customer service|helpdesk|service desk|it administr|informatyk|wsparci.*it|wsparci.*techniczn.*system/.test(title))return 'IT_SUPPORT';
  if(/automat/.test(title)&&/playwright|selenium|rest assured|postman|zapier|n8n|low.code|no.code|software quality|api testing/.test(body)&&!/plc|robotic|sensors|actuators|industrial control/.test(body))return 'SOFTWARE';
  if(/embedded|automat|robotic|verification.*validation|hardware.*test|test.*hardware/.test(title))return 'ENGINEERING_AUTOMATION';
  if(/data scien|machine learning|\bml\b|data engineer/.test(title))return 'DATA';
@@ -149,8 +149,10 @@ export function cvTailoringPlan(profile,analysis={},job={}){
   return 0;};
  const focus=new Set(analysis.cv_focus_fact_ids??analysis.matched_fact_ids??[]);
  const ranked=facts.map(fact=>({fact,score:exactScore(fact)*10+strength(fact)+(focus.has(fact.id)?15:0),core:strength(fact),exact:exactScore(fact)})).sort((a,b)=>b.score-a.score);
- const bestExact=Math.max(0,...ranked.map(item=>item.exact));
- const primary=ranked.filter(item=>bestExact?item.exact>0:item.core>=70).map(item=>item.fact.id);
+ const narrative=ranked.filter(item=>item.fact.provenance&&item.fact.provenance!=='COURSE');
+ const bestExact=Math.max(0,...narrative.map(item=>item.exact));
+ const primaryRows=narrative.filter(item=>bestExact?item.exact>0:item.core>=70);
+ const primary=(primaryRows.length?primaryRows:narrative.slice(0,2)).map(item=>item.fact.id);
  const sections=ranked.filter(item=>item.fact.provenance&&!['EDUCATION','COURSE'].includes(item.fact.provenance));
  const focused=family==='GENERAL'&&!bestExact||!primary.length?sections.slice(0,4):sections.filter(item=>item.exact>0||item.core>=(family==='IT_SUPPORT'?70:1)).slice(0,4);
  const breadth=sections.filter(item=>/turbo.?jet|turbojet|cycloidal|cykloid|cycloid/i.test([item.fact.title,...(item.fact.statements??[])].join(' ')));

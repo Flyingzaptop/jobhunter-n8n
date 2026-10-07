@@ -174,3 +174,8 @@ test('CV batch phase blocks all forms and prose until every available CV is prep
  await worker.tick('preparation-1');await worker.tick('model');await worker.tick('preparation-2');assert.equal(generated,1);assert.equal(applied.length,0);assert.equal(proseCalls,0);
  phase='CV_HITL';store.cvCandidates=async()=>[];await worker.tick('preparation-1');assert.equal(applied.length,1);
 });
+
+test('bulk CV never retries a fast-path exception as a slow model task',async()=>{
+ const {worker,outcomes}=harness({cv:async()=>({status:'BLOCKED_CLAIMS',fast_path_fallback:{tailoring:['KEYWORD_MISSING']}})});
+ await worker.tick('model');await worker.tick('model');assert.equal(outcomes.length,1);assert.equal(outcomes[0].status,'DRAFT_PENDING_VISUAL');
+});

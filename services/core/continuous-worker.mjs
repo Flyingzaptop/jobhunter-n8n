@@ -110,6 +110,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
    if(result?.blocked_reason||result?.prose_pending){await store.finish(key,'RETRY',safeCode(result.blocked_reason??'MODEL_PROSE_PENDING'));return true;}
+   if(lane==='cv'&&result?.fast_path_fallback){await store.finish(key,'DRAFT_PENDING_VISUAL','EXTRACTIVE_CV_REQUIRES_REVIEW');return true;}
    if(lane==='cv' && /^BLOCKED_/.test(result?.status??'')){
     await store.finish(key,'RETRY',safeCode(result.status));return true;}
    const state=lane==='cv'&&result?.status!=='REGISTERED'?'DRAFT_PENDING_VISUAL':waiting.has(result?.status)?'WAITING_USER':'COMPLETED';

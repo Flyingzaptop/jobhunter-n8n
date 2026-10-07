@@ -178,7 +178,7 @@ export function createCore({
         if(verified.job)Object.assign(job,verified.job);
         job.availability_status='OPEN';}
         await observe(repository,{event:'CV_WRITING',entity_type:'job',entity_id:job.job_id,message:`Tailoring verified facts for ${job.title}`});
-        const {buildTailoredCv}=await import('./cv-v2.mjs');return buildTailoredCv({job,profile,analysis:rows[0].analysis_json,llm,repository,outputRoot:'data/cv-v2',allowUnverifiedSource:body.prepare_cv===true});
+        const {buildTailoredCv}=await import('./cv-v2.mjs');return buildTailoredCv({job,profile,analysis:rows[0].analysis_json,llm,repository,outputRoot:'data/cv-v2',allowUnverifiedSource:body.prepare_cv===true,writerMode:body.prepare_cv?'extractive':undefined});
       }
       return createCv({
         job,
