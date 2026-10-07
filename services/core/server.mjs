@@ -243,7 +243,7 @@ export function createCore({
     if(!Number.isInteger(number)||number<1||number>6)throw new Error('Invalid stage');
     return runObserved(repository,number,body,async()=>{
       if(number<6&&(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused)return {blocked_reason:'PAUSED',processed:0};
-      if(!testMode&&(number===3||(number===4&&body.job_id))){
+      if(!testMode&&(number===3||(number===4&&body.job_id&&!body.prepare_cv))){
         return withExclusiveLocalGpu(repository,()=>executeStage(number,body));
       }
       return executeStage(number,body);

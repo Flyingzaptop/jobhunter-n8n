@@ -179,3 +179,7 @@ test('bulk CV never retries a fast-path exception as a slow model task',async()=
  const {worker,outcomes}=harness({cv:async()=>({status:'BLOCKED_CLAIMS',fast_path_fallback:{tailoring:['KEYWORD_MISSING']}})});
  await worker.tick('model');await worker.tick('model');assert.equal(outcomes.length,1);assert.equal(outcomes[0].status,'DRAFT_PENDING_VISUAL');
 });
+
+test('CPU-only CV batch can progress while the GPU is occupied',async()=>{
+ let generated=0;const {worker,store}=harness({modelBusy:async()=>true,fit:async()=>{throw Error('Must not use occupied GPU');},cv:async()=>{generated++;return {status:'REGISTERED'};}});store.phaseBarrier=async()=>({phase:'CV',discovery_paused:true});store.hasPendingFit=async()=>false;await worker.tick('model');assert.equal(generated,1);
+});

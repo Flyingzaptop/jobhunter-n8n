@@ -128,8 +128,9 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    if(lane==='ingestion')await discovery(context);
    else if(lane==='screening')await buildQueue(context);
    else if(lane==='model'){
-    if(modelBusy&&await modelBusy()){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
-    const fitted=await fit(context);
+    const busy=modelBusy&&await modelBusy();
+    if(busy&&barrier?.phase!=='CV'){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
+    const fitted=busy?{attempted:0}:await fit(context);
     if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
     if(barrier?.phase==='FIT'){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_BATCH_NOT_100_PERCENT');return;}
     if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
