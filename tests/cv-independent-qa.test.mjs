@@ -19,6 +19,10 @@ test('registration evidence binds current profile, source and canonical latest a
  const manifest={job_id:'job',status:'PASS',profile_hash:profileHash,profile_version:profileHash,job_content_hash:'v1',
   analysis_hash:canonicalAnalysisHash(analysis),application_eligible:true,qa:{pass:true,claims:{pass:true},identity:{pass:true},pdf:{pass:true}}};
  assert.equal(checkCvBindings({manifest,job,profile,analysis}).pass,true);
+ const pending={...manifest,source_verification_required:true,application_eligible:false};
+ assert.equal(checkCvBindings({manifest:pending,job:{...job,availability_status:'UNKNOWN'},profile,analysis}).pass,true);
+ assert.equal(checkCvBindings({manifest:pending,job:{...job,availability_status:'CLOSED'},profile,analysis}).pass,false);
+ assert.equal(checkCvBindings({manifest,job:{...job,availability_status:'UNKNOWN'},profile,analysis}).pass,false);
  assert.ok(checkCvBindings({manifest,job:{...job,content_hash:'v2'},profile,analysis}).reasons.includes('CV_SOURCE_CHANGED'));
  assert.ok(checkCvBindings({manifest,job:{...job,availability_status:'CLOSED'},profile,analysis}).reasons.includes('CURRENT_OFFICIAL_SOURCE_NOT_OPEN'));
  assert.ok(checkCvBindings({manifest,job,profile:{...profile,new_fact:1},analysis}).reasons.includes('CV_PROFILE_CHANGED'));

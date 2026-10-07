@@ -8,7 +8,7 @@ const digest=value=>createHash('sha256').update(typeof value==='string'?value:JS
 const safeCode=value=>/^[A-Z][A-Z0-9_]{0,79}$/.test(value??'')?value:'OPERATION_FAILED';
 const waiting=new Set(['NEEDS_USER','CAPTCHA_WAIT','MANUAL_TAKEOVER','MANUAL','READY_STOP','READY_TO_SUBMIT']);
 export function cvWorkKey(job,analysis,profile,templateVersion=CV_V2_VERSION){return 'cv:'+digest([templateVersion,job.job_id,job.content_hash,canonicalAnalysisHash(analysis),digest(profile)]);}
-function currentNonBlockedAnalysis(job,analysis,profile,policy={}){return job.availability_status==='OPEN'
+function currentNonBlockedAnalysis(job,analysis,profile,policy={},requireOpen=true){return (requireOpen?job.availability_status==='OPEN':job.availability_status!=='CLOSED')
  && analysis?.prompt_version===PROMPT_VERSION
  && ['REVIEW','STRETCH','AUTO_APPLY'].includes(analysis?.decision) && Number(analysis.overall_fit)>=45
  && analysis.profile_hash===digest(profile)&&analysis.job_content_hash===job.content_hash
@@ -19,12 +19,8 @@ function currentNonBlockedAnalysis(job,analysis,profile,policy={}){return job.av
  && Array.isArray(analysis.hard_blockers)&&analysis.hard_blockers.length===0;}
 export function eligibleAnalysis(job,analysis,profile,policy={}){return currentNonBlockedAnalysis(job,analysis,profile,policy)
  && workFormatAnalysis({job,profile,policy,workFormat:analysis.work_format}).location_policy_status==='COMPATIBLE';}
-export function eligibleCvAnalysis(job,analysis,profile,policy={}){
- if(!currentNonBlockedAnalysis(job,analysis,profile,policy))return false;
- const location=workFormatAnalysis({job,profile,policy,workFormat:analysis.work_format});
- return location.location_policy_status==='COMPATIBLE'||location.location_policy_status==='UNVERIFIED'
-  && analysis.employment_eligibility?.work_from_poland_allowed===true;
-}
+export function eligibleCvAnalysis(job,analysis,profile,policy={}){return currentNonBlockedAnalysis(job,analysis,profile,policy,false);}
+
 export function currentTailoredCv(manifest,job,analysis){return manifest?.template_version===CV_V2_VERSION&&manifest?.qa?.tailoring?.pass===true
  && manifest.job_content_hash===job.content_hash&&manifest.analysis_hash===canonicalAnalysisHash(analysis);}
 
@@ -76,7 +72,7 @@ export class ContinuousStore {
  async cvCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.job_id,j.title,j.company,j.content_hash,j.availability_status,j.location,j.country,j.work_mode,j.first_seen_at,j.description_text,a.analysis_json,
   (SELECT coalesce(jsonb_agg(c.manifest_json),'[]'::jsonb) FROM cv_versions c WHERE c.job_id=j.job_id AND c.profile_version=$1) existing_cv_manifests FROM jobs j JOIN LATERAL
   (SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
-  WHERE j.availability_status='OPEN'
+  WHERE j.availability_status<>'CLOSED'
   AND a.analysis_json->>'decision' IN ('REVIEW','STRETCH','AUTO_APPLY')
   AND (a.analysis_json->>'overall_fit')::numeric>=45
   AND a.analysis_json->>'profile_hash'=$1
@@ -125,7 +121,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    const context=structuredClone(await loadConfiguration());const {profile,policy}=context;
    if(!profile||!policy)throw new Error('CURRENT_CONFIGURATION_REQUIRED');
    const barrier=store.phaseBarrier?await store.phaseBarrier(profile,policy):null;
-   const blocked=barrier&&(lane==='ingestion'&&barrier.discovery_paused||barrier.phase==='NORMALIZE'&&!['screening','notifications'].includes(lane)||barrier.phase==='FIT'&&lane.startsWith('preparation-'));
+   const blocked=barrier&&(lane==='ingestion'&&barrier.discovery_paused||barrier.phase==='NORMALIZE'&&!['screening','notifications'].includes(lane)||['FIT','CV'].includes(barrier.phase)&&lane.startsWith('preparation-'));
    if(blocked){states[lane]='WAITING';await store.status(lane,'IDLE',lane==='ingestion'?'DISCOVERY_FROZEN':`${barrier.phase}_BARRIER`);return;}
    if(lane==='screening'&&barrier?.phase==='NORMALIZE'&&store.normalizeBatch)await store.normalizeBatch(barrier.batch_id);
    if(lane==='ingestion')await discovery(context);
@@ -136,13 +132,13 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
     if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
     if(barrier?.phase==='FIT'){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_BATCH_NOT_100_PERCENT');return;}
     if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
-    if(barrier?.phase==='CV_HITL'&&cvHitlTurn&&prose){cvHitlTurn=false;const drafted=await prose(context);if(drafted?.processed>0){states[lane]='IDLE';await store.status(lane,'IDLE','HITL_WITH_CV_PHASE');return;}}
+
     const candidates=await (store.runnableCvCandidates?store.runnableCvCandidates(profile,policy):store.cvCandidates(profile,policy));
     const resume=store.resumeTask&&await store.resumeTask();if(resume?.type==='CV'){candidates.sort((a,b)=>Number(b.job_id===resume.job_id)-Number(a.job_id===resume.job_id));if(store.clearResumeTask)await store.clearResumeTask();}
     for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){cvHitlTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
-    if(prose)await prose(context);
+    if(barrier?.phase!=='CV'&&prose)await prose(context);
    } else if(lane.startsWith('preparation-')){
-    const priority=barrier?.phase==='CV_HITL'?null:store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
+    const priority=store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
     for(const row of await store.preparationCandidates(profile,policy)){
      if(waiting.has(row.application_status)||row.last_state?.ready_stop||row.last_state?.captcha)continue;
      const key='prepare:'+digest([profile.profile_id,row.job_id,digest(profile),digest(policy),CV_V2_VERSION,row.cv_id]);
@@ -180,7 +176,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
   discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});return applyDeterministicHardRejects({repository,profile,policy});},
   prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
   fit:async({profile,policy})=>{const resume=(await repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;const result=await runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:resume?.type==='FIT'?1:8,jobIds:resume?.type==='FIT'?[resume.job_id]:undefined,maxRuntimeMs:120000,inferenceAuthorized:true});if(resume?.type==='FIT')await repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');return result;},
-  cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId});
+  cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId,prepare_cv:true});
    if(manifest?.blocked_reason||manifest?.status!=='PASS')return manifest;
    await ensureCurrent(context);
    const {registerIndependentCv}=await import('./cv-independent-qa.mjs');

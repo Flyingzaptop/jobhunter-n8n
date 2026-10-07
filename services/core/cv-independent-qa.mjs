@@ -32,8 +32,8 @@ export function checkPdfGeometry(pages){const reasons=[];let words=0,overlaps=0,
  return {pass:reasons.length===0,reasons:[...new Set(reasons)],pages:pages.length,word_count:words,overlap_count:overlaps,min_text_height_pt:Number.isFinite(minHeight)?minHeight:null};
 }
 
-export function checkCvBindings({manifest,job,profile,analysis}){const reasons=[];const profileHash=hash(profile);
- if(job?.availability_status!=='OPEN')reasons.push('CURRENT_OFFICIAL_SOURCE_NOT_OPEN');
+export function checkCvBindings({manifest,job,profile,analysis}){const reasons=[];const profileHash=hash(profile);const sourcePending=manifest?.source_verification_required===true&&job?.availability_status!=='CLOSED'&&manifest?.application_eligible===false;
+ if(job?.availability_status!=='OPEN'&&!sourcePending)reasons.push('CURRENT_OFFICIAL_SOURCE_NOT_OPEN');
  if(manifest?.job_id!==job?.job_id)reasons.push('CV_JOB_MISMATCH');
  if(manifest?.status!=='PASS'||!manifest.qa?.pass||!manifest.qa.claims?.pass||!manifest.qa.identity?.pass||!manifest.qa.pdf?.pass)reasons.push('EXISTING_CV_QA_REQUIRED');
  if(manifest?.profile_hash!==profileHash||manifest?.profile_version!==profileHash)reasons.push('CV_PROFILE_CHANGED');
@@ -41,7 +41,7 @@ export function checkCvBindings({manifest,job,profile,analysis}){const reasons=[
  if(!analysis||analysis.profile_hash!==profileHash||analysis.job_content_hash!==job?.content_hash
   ||!['REVIEW','STRETCH','AUTO_APPLY'].includes(analysis.decision)||!analysis.requirements?.length||analysis.overall_fit==null||analysis.hard_blockers?.length)reasons.push('CURRENT_NON_BLOCKED_ANALYSIS_REQUIRED');
  if(manifest?.analysis_hash!==canonicalAnalysisHash(analysis))reasons.push('CV_ANALYSIS_CHANGED');
- if(manifest?.application_eligible!==true||Object.hasOwn(manifest??{},'application_policy_blocker'))reasons.push('CV_NOT_EMPLOYER_READY');
+ if(manifest?.application_eligible!==true&&!sourcePending||Object.hasOwn(manifest??{},'application_policy_blocker'))reasons.push('CV_NOT_EMPLOYER_READY');
  return {pass:reasons.length===0,reasons};
 }
 

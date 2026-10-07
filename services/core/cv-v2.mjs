@@ -363,10 +363,10 @@ async function renderPdf(html, target) {
   } finally {await browser.close();}
 }
 
-export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2',writerMode=process.env.CV_WRITER_MODE??'auto'}) {
+export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2',writerMode=process.env.CV_WRITER_MODE??'auto',allowUnverifiedSource=false}) {
   const totalStarted=performance.now();
   llm=resolveCvLlm(llm);
-  if (job.availability_status!=='OPEN') throw new Error('Vacancy not verified OPEN');
+  if (job.availability_status==='CLOSED'||job.availability_status!=='OPEN'&&!allowUnverifiedSource) throw new Error('Vacancy not verified OPEN');
   const catalog=selectCatalog(profile,analysis,job);
   const language=/^(pl|polish)$/i.test(job.language ?? job.metadata?.language ?? '') ? 'Polish' : 'English';
   const applicationRequested=Boolean(job.metadata?.cover_letter_required || job.metadata?.motivation_required || analysis?.application_text_requested);
@@ -381,7 +381,7 @@ export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient
     analysis_hash:canonicalAnalysisHash(analysis),analysis_input_hash:analysis?.fit_input_hash??null,
     operation_run_id:operationContext.getStore()?.run_id??null,
     analysis_prompt_version:analysis?.prompt_version??null,
-    source_decision:analysis?.decision ?? null,application_eligible:!rejected && ['AUTO_APPLY','REVIEW','STRETCH'].includes(analysis?.decision),
+    source_decision:analysis?.decision ?? null,source_verification_required:job.availability_status!=='OPEN',application_eligible:job.availability_status==='OPEN'&&!rejected && ['AUTO_APPLY','REVIEW','STRETCH'].includes(analysis?.decision),
     language,model:llm.strongModel ?? llm.model ?? 'injected-gateway',verifier_model:llm.model ?? 'injected-gateway',created_at:new Date().toISOString(),
     pdf_path:null,html_path:null,document_path:null,source_map_path:path.join(dir,'source-fact-map.json'),manifest_path:path.join(dir,'manifest.json'),
     qa:{pass:false,claims:{pass:false},identity:{pass:identity.pass,status:identity.status,missing:identity.missing},pdf:{pass:false,status:'NOT_RENDERED'}}};

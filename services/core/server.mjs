@@ -158,9 +158,8 @@ export function createCore({
           catch(error){await repository.event('job',item.job_id,'CV_GENERATION_FAILED',{error:error.name});results.push({job_id:item.job_id,error:error.message});}}
         return {generated:results.filter(r=>!r.error).length,results};
       }
-      const job = (await repository.listCanonicalJobs()).find(
-        (j) => j.job_id === body.job_id,
-      );
+      const row = !testMode ? (await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[body.job_id])).rows[0] : null;
+      const job = !testMode ? row&&({...row.metadata,...row}) : (await repository.listCanonicalJobs()).find(j=>j.job_id===body.job_id);
       if (!job) throw new Error("Job missing");
       if(requireCvReverification && (testMode||process.env.CV_FACTORY_V2_ENABLED==='false') && process.env.VACANCY_REVERIFY_BEFORE_CV !== 'false'){
         const open = await reverify({browser:browserClient??new BrowserClient(),job,applicationId:`cv-${job.job_id}`});
@@ -174,12 +173,12 @@ export function createCore({
       );
       if (!rows[0]) throw new Error("Job analysis missing");
       if(!testMode&&process.env.CV_FACTORY_V2_ENABLED!=='false'){
-        const {reverifyMarketJob}=await import('./discovery-v2.mjs');const verified=await reverifyMarketJob({job,repository});
+        if(!body.prepare_cv){const {reverifyMarketJob}=await import('./discovery-v2.mjs');const verified=await reverifyMarketJob({job,repository});
         if(verified.status!=='OPEN')throw new Error('Current official vacancy is not verified OPEN');
         if(verified.job)Object.assign(job,verified.job);
-        job.availability_status='OPEN';
+        job.availability_status='OPEN';}
         await observe(repository,{event:'CV_WRITING',entity_type:'job',entity_id:job.job_id,message:`Tailoring verified facts for ${job.title}`});
-        const {buildTailoredCv}=await import('./cv-v2.mjs');return buildTailoredCv({job,profile,analysis:rows[0].analysis_json,llm,repository,outputRoot:'data/cv-v2'});
+        const {buildTailoredCv}=await import('./cv-v2.mjs');return buildTailoredCv({job,profile,analysis:rows[0].analysis_json,llm,repository,outputRoot:'data/cv-v2',allowUnverifiedSource:body.prepare_cv===true});
       }
       return createCv({
         job,

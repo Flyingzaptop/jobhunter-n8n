@@ -5,6 +5,6 @@ test('real SQL excludes exceptions from the phase barrier but keeps future FIT r
  await client.query('INSERT INTO job_analysis VALUES($1,$2)',['done',{profile_hash:hash,policy_hash:hash,job_content_hash:'v1'}]);
  const repo=()=>({pool:{query:async(sql,args)=>{if(sql.startsWith('SELECT * FROM pipeline_batches'))return {rows:[{batch_id:'batch',discovery_paused:true}]};if(sql.startsWith('WITH classified'))return client.query(sql,args);if(sql.includes('FROM pipeline_batch_raw'))return {rows:[{done:4,total:4}]};if(sql.includes('relevance_version'))return {rows:[{done:4,total:4}]};if(sql.includes('cv_versions'))return {rows:[{done:0,total:1}]};return {rows:[]};}}});
  let p=await batchProgress(repo(),{},{});assert.equal(p.phase,'FIT');assert.equal(p.fit.pending,1);assert.equal(p.fit.exceptions,2);
- await client.query("DELETE FROM relevance_queue WHERE job_id='retry'");p=await batchProgress(repo(),{},{});assert.equal(p.phase,'CV_HITL');assert.equal(p.fit.done,1);assert.equal(p.fit.exceptions,2);assert.equal(p.fit.total,3);
+ await client.query("DELETE FROM relevance_queue WHERE job_id='retry'");p=await batchProgress(repo(),{},{});assert.equal(p.phase,'CV');assert.equal(p.fit.done,1);assert.equal(p.fit.exceptions,2);assert.equal(p.fit.total,3);
  }finally{await client.query('ROLLBACK');await client.end();}
 });

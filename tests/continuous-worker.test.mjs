@@ -22,7 +22,10 @@ test('CV may be drafted while work format remains unresolved, but form preparati
  const uncertainAnalysis={...analysis,work_format:{remote_allowed:false},employment_eligibility:{work_from_poland_allowed:true}};
  assert.equal(eligibleCvAnalysis(uncertainJob,uncertainAnalysis,profile,policy),true);
  assert.equal(eligibleAnalysis(uncertainJob,uncertainAnalysis,profile,policy),false);
- assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,employment_eligibility:{work_from_poland_allowed:null}},profile,policy),false);
+ assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,employment_eligibility:{work_from_poland_allowed:null}},profile,policy),true);
+ assert.equal(eligibleCvAnalysis({...uncertainJob,availability_status:'UNKNOWN'},uncertainAnalysis,profile,policy),true);
+ assert.equal(eligibleAnalysis({...uncertainJob,availability_status:'UNKNOWN'},uncertainAnalysis,profile,policy),false);
+ assert.equal(eligibleCvAnalysis({...uncertainJob,availability_status:'CLOSED'},uncertainAnalysis,profile,policy),false);
  assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,hard_blockers:['NONLOCAL_PRESENCE']},profile,policy),false);
 });
 function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[];
@@ -163,4 +166,11 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
   await client.query("INSERT INTO applications VALUES($1,$2,'SUBMITTED')",[better,profile.profile_id]);assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);await client.query('DELETE FROM applications');
   await client.query('UPDATE jobs SET content_hash=$2 WHERE job_id=$1',[better,'changed-offer']);assert.deepEqual((await store.cvCandidates(profile,policy)).map(row=>row.job_id),[job.job_id]);
  }finally{await client.query(`DROP SCHEMA ${schema} CASCADE`);client.release();await repo.close();}
+});
+
+test('CV batch phase blocks all forms and prose until every available CV is prepared',async()=>{
+ let phase='CV',generated=0,proseCalls=0;const {worker,store,applied}=harness({fit:async()=>({attempted:0}),cv:async()=>{generated++;return {status:'REGISTERED'};},prose:async()=>{proseCalls++;return {processed:1};}});
+ store.phaseBarrier=async()=>({phase,discovery_paused:true});store.hasPendingFit=async()=>false;
+ await worker.tick('preparation-1');await worker.tick('model');await worker.tick('preparation-2');assert.equal(generated,1);assert.equal(applied.length,0);assert.equal(proseCalls,0);
+ phase='CV_HITL';store.cvCandidates=async()=>[];await worker.tick('preparation-1');assert.equal(applied.length,1);
 });
