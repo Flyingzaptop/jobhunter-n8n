@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {rememberQuestionAnswer} from './answer-memory.mjs';
+import {siteControlReason} from '../browser-service/field-purpose.mjs';
 
 export const QUESTION_ANSWER_LIMIT = 2000;
 const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
@@ -27,6 +28,25 @@ export function questionEligibility(question, application, profileId) {
 }
 async function event(client, applicationId, kind, payload) {
   await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)', [randomUUID(), 'application', applicationId, kind, payload]);
+}
+
+// Retire a mistaken question only after observing the same non-application
+// control in the current browser session. Never synthesize a candidate answer.
+export async function dismissSiteQuestion(repository,{applicationId,snapshot}){
+ const client=await repository.pool.connect();
+ try{
+  await client.query('BEGIN');
+  const app=(await client.query('SELECT * FROM applications WHERE application_id=$1 FOR UPDATE',[applicationId])).rows[0];
+  const pending=app?.last_state?.pending_question;
+  const field=snapshot.fields?.find(f=>f.selector===pending?.selector&&f.type===pending?.field_type&&f.label===(pending?.field_label??pending?.question));
+  const reason=field&&siteControlReason(field);
+  if(app?.status!=='NEEDS_USER'||!pending?.request_id||!reason){await client.query('COMMIT');return false;}
+  await client.query("UPDATE application_questions SET closed_at=now(),closed_reason=$3 WHERE application_id=$1 AND telegram_request_id=$2 AND closed_at IS NULL",[applicationId,pending.request_id,reason]);
+  const patch={pending_question:null,model_review:null,full_fields_checked:false,form_answers:(app.last_state.form_answers??[]).filter(f=>!siteControlReason(f))};
+  await client.query("UPDATE applications SET status='FILLING',last_state=last_state||$2::jsonb,updated_at=now() WHERE application_id=$1",[applicationId,patch]);
+  await event(client,applicationId,'SITE_CONTROL_QUESTION_DISMISSED',{request_id:pending.request_id,field_label:field.label,reason});
+  await client.query('COMMIT');return true;
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
 // Caller owns the transaction. Telegram can invoke this inside its durable inbox
 // transaction; dashboard and trusted chat tooling invoke the wrapper below.
@@ -63,6 +83,7 @@ export async function persistPendingApplicationQuestion(repository, { applicatio
     const app = (await client.query('SELECT * FROM applications WHERE application_id=$1 FOR UPDATE', [applicationId])).rows[0];
     if (!app || !['NEEDS_USER','CAPTCHA_WAIT'].includes(app.status) || !app.last_state?.pending_question) throw hitlError('APPLICATION_HAS_NO_PENDING_QUESTION');
     const pending = app.last_state.pending_question;
+    if(siteControlReason(pending))throw hitlError('SITE_CONTROL_IS_NOT_AN_APPLICATION_QUESTION');
     if (pending.type !== 'CAPTCHA' && pending.question !== rawQuestion) throw hitlError('PENDING_QUESTION_TEXT_MISMATCH');
     if (pending.request_id) {
       const previous = (await client.query('SELECT * FROM application_questions WHERE application_id=$1 AND telegram_request_id=$2 AND answered_at IS NULL', [applicationId, pending.request_id])).rows[0];

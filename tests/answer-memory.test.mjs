@@ -1,5 +1,20 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {answerIntent,reusableQuestionAnswer} from '../services/core/answer-memory.mjs';
+
+test('confirmed product use is reusable without inventing professional or project details',async()=>{
+ const intent=answerIntent({label:'Have you used ElevenLabs - even in a personal or side project? What did you build or explore?'});
+ assert.deepEqual(intent,{key:'product_usage',scope:{product:'elevenlabs',extent:'ANY_USE'}});
+ assert.deepEqual(answerIntent({label:'Have you ever used ElevenLabs?'}),intent);
+ assert.deepEqual(answerIntent({label:'Have you ever used ElevenLabs?',group_label:'Have you ever used ElevenLabs?'}),intent);
+ assert.equal(answerIntent({label:'Have you ever used ElevenLabs?',group_label:'Professional production experience'}),null);
+ assert.notDeepEqual(answerIntent({label:'Have you used Figma?'}),intent);
+ for(const label of ['Have you used ElevenLabs professionally?','Have you used ElevenLabs in production?','How many years have you used ElevenLabs?','Have you used ElevenLabs API?'])assert.equal(answerIntent({label}),null);
+ assert.equal(answerIntent({label:'Have you used ElevenLabs?',description:'In a paid production project'}),null);
+ const repository={pool:{query:async()=>({rows:[{answer_json:'Yes, I have used ElevenLabs.',memory_id:'m',version:1}]})}};
+ const input={profileId:'p',job:{},field:{type:'textarea',label:'Have you used ElevenLabs?'}};
+ assert.equal((await reusableQuestionAnswer(repository,input)).value,'Yes, I have used ElevenLabs.');
+ assert.equal((await reusableQuestionAnswer(repository,{...input,field:{...input.field,type:'select-one',options:[{label:'Yes',value:'yes'},{label:'No',value:'no'}]}})).value,'yes');
+});
 test('personal GitHub profile links reuse across job countries without borrowing repository answers',()=>{const a=answerIntent({label:'Link to your Github profile'},{country:'PL'}),b=answerIntent({label:'Link to your Github profile'},{country:'DE'});assert.equal(a.key,'github_profile_url');assert.deepEqual(a,b);assert.equal(answerIntent({label:'Link to the GitHub repository for this project'}),null);});
 test('optional Github or personal website uses the same confirmed personal profile memory',()=>{assert.deepEqual(answerIntent({label:'Github or personal website'}),answerIntent({label:'Link to your Github profile'}));});
 

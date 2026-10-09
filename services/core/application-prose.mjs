@@ -3,10 +3,12 @@ import Ajv from 'ajv';
 import {factIndex} from './fit.mjs';
 import {withExclusiveLocalGpu} from './gpu-lock.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
+import {siteControlReason} from '../browser-service/field-purpose.mjs';
 const hash=value=>createHash('sha256').update(typeof value==='string'?value:JSON.stringify(value)).digest('hex');
 const norm=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/ł/g,'l').toLowerCase().replace(/[_\W]+/g,' ').trim();
 const labelOf=field=>field.label??field.field_label??field.question??'';
 export function isModelAnswerable(field){
+ if(siteControlReason(field))return false;
  const type=field.type??field.field_type;
  if(!['text','textarea'].includes(type)||field.options||field.role==='combobox')return false;
  if(/^(?:start typing|type here|select|choose)(?:\s*\.\.\.)?$/i.test(labelOf(field).trim()))return false;

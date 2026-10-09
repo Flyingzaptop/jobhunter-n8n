@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { transition } from './state.mjs';
 import { browserConfig } from '../browser-service/server.mjs';
-import {persistPendingApplicationQuestion} from './hitl.mjs';
+import {persistPendingApplicationQuestion,dismissSiteQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
 import {settleApplicationForm} from './form-settling.mjs';
 import {confirmedFieldMatches,confirmedConsentScopeMatches} from './confirmed-field.mjs';
@@ -19,6 +19,7 @@ import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browse
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from '../browser-service/required-fields.mjs';
 import {standingRecruitmentConsent} from './consent-policy.mjs';
+import {siteControlReason} from '../browser-service/field-purpose.mjs';
 export {missingRequiredFields} from '../browser-service/required-fields.mjs';
 
 export class BrowserClient {
@@ -100,9 +101,10 @@ export function resolveField(field, { profile, job, view, answerMemory = {} }) {
 }
 
 async function ask({repository,telegram,application,browser,sessionId,field,snapshot,type}) {
+  if(siteControlReason(field))throw new Error('SITE_CONTROL_IS_NOT_AN_APPLICATION_QUESTION');
   if(field.type==='radio'){const options=snapshot.fields.filter(f=>f.type==='radio'&&f.name===field.name&&f.visible&&!f.disabled);if(options.length>1)field={...field,label:`${field.group_label||'Выбери вариант'}\n${options.map(f=>f.label).join('\n')}`};}
   const status=type==='CAPTCHA'?'CAPTCHA_WAIT':'NEEDS_USER';
-  const pending={selector:field.selector,field_name:field.name,field_type:field.type,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
+  const pending={selector:field.selector,field_name:field.name,field_type:field.type,required:field.required,form:field.form,group_label:field.group_label,field_path:field.field_path,description:field.description,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
   await transition(repository,application.application_id,status,{browser_session_id:sessionId,pending_question:pending,current_step:snapshot.current_step});
   const question=await persistPendingApplicationQuestion(repository,{applicationId:application.application_id,rawQuestion:field.label,chatId:telegram?.chatId??null});
   pending.request_id=question.telegram_request_id;
@@ -222,6 +224,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
       }
 if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=await settleApplicationForm({browser,sessionId,initialView:recovery.snapshot});await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
     if(view.captcha&&['OPENING','FILLING','READY_TO_SUBMIT'].includes(application.status)){if(application.status==='READY_TO_SUBMIT')await transition(repository,application.application_id,'FILLING',{ready_stop:false});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}
+    if(application.status==='NEEDS_USER'&&await dismissSiteQuestion(repository,{applicationId:application.application_id,snapshot:view})){
+      application.status='FILLING';application.last_state.pending_question=null;
+    }
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
     view=initialScope.view;
@@ -327,7 +332,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       view=await browser.call(`/sessions/${sessionId}/snapshot`);
       const saveDeadline=Date.now()+5000;
       while(unsavedRequiredFields(view.fields).length&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
-      const earlier=application.last_state?.form_answers??[];const answerScope=scopeApplicationForm(view);const answered=(answerScope.pass?answerScope.view.fields:view.fields).filter(f=>f.visible&&!['hidden','password','file'].includes(f.type)&&!/captcha|otp|token|secret/i.test(f.name??'')).map(f=>({step:view.current_step,label:f.label,type:f.type,value:f.value,checked:f.checked,required:f.required}));const allAnswers=[...earlier.filter(f=>f.step!==view.current_step),...answered];application.last_state={...application.last_state,form_answers:allAnswers};
+      const earlier=application.last_state?.form_answers??[];const answerScope=scopeApplicationForm(view);const answered=(answerScope.pass?answerScope.view.fields:view.fields).filter(f=>f.visible&&!['hidden','password','file'].includes(f.type)&&!/captcha|otp|token|secret/i.test(f.name??'')).map(f=>({step:view.current_step,label:f.label,type:f.type,value:f.value,checked:f.checked,required:f.required,name:f.name,form:f.form,group_label:f.group_label,field_path:f.field_path,role:f.role}));const allAnswers=[...earlier.filter(f=>f.step!==view.current_step),...answered];application.last_state={...application.last_state,form_answers:allAnswers};
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url,form_answers:allAnswers}]);
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
@@ -356,7 +361,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       }
       const next=view.buttons.find(b=>/^(?:next|continue)(\s+step)?$|^(?:dalej|kontynuuj|nastepny krok)$/i.test(norm(b.text)));if(!next){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_FORM'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
       const previous=view.current_step;view=await browser.call(`/sessions/${sessionId}/click`,{selector:next.selector});
-      if(view.current_step===previous){const invalid=view.fields.find(f=>f.visible&&f.validation_message);if(invalid)return ask({repository,telegram,application,browser,sessionId,field:{...invalid,label:invalid.label+' — '+invalid.validation_message},snapshot:view,type:'VALIDATION'});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'STEP_DID_NOT_ADVANCE',validation_errors:view.validation_errors});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
+      if(view.current_step===previous){const invalid=view.fields.find(f=>f.visible&&f.validation_message&&!siteControlReason(f));if(invalid)return ask({repository,telegram,application,browser,sessionId,field:{...invalid,label:invalid.label+' — '+invalid.validation_message},snapshot:view,type:'VALIDATION'});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'STEP_DID_NOT_ADVANCE',validation_errors:view.validation_errors});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
     }
     await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'MAX_FORM_STEPS'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};
   } catch(error) {await repository.event('application',application.application_id,'APPLICATION_RUN_FAILED',{error:error.name,reason:error.message.slice(0,200)});const current=(await repository.pool.query('SELECT status FROM applications WHERE application_id=$1',[application.application_id])).rows[0]?.status;if(['OPENING','FILLING'].includes(current)){await transition(repository,application.application_id,'FAILED',{failure_reason:error.message.slice(0,200)});return {application_id:application.application_id,status:'FAILED',reason:error.message};}if(current==='SUBMITTING'){await transition(repository,application.application_id,'SUBMISSION_UNKNOWN');return {application_id:application.application_id,status:'SUBMISSION_UNKNOWN'};}return {application_id:application.application_id,status:current||'FAILED',reason:error.message};}

@@ -1,6 +1,8 @@
+import {withoutSiteControls} from './field-purpose.mjs';
 // Narrow a multi-form employer page to its uniquely identifiable CV application.
 // Form-less SPA applications retain their complete snapshot and fingerprint.
 export function scopeApplicationForm(view) {
+ view=withoutSiteControls(view);
  const visible=(view.fields??[]).filter(f=>f.visible);
  const candidateForms=new Set(visible.filter(f=>f.type==='file'&&f.required&&/\bresume\b|\bcv\b|curriculum vitae/i.test(`${f.name} ${f.label} ${f.selector}`)&&Number.isInteger(f.form)).map(f=>f.form));
  const activeForms=new Set(visible.filter(f=>Number.isInteger(f.form)).map(f=>f.form));

@@ -64,6 +64,12 @@ export async function transition(repo, id, to, patch = {}) {
       `INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES(gen_random_uuid(),'application',$1,$2,$3)`,
       [id, `STATE_${to}`, { from: rows[0].status, ...patch }],
     );
+    // A human answer can finish the form after its send worker was parked.
+    // Wake that existing task; its normal Gemma review and submit gates remain.
+    if (to === 'READY_TO_SUBMIT') await client.query(
+      "UPDATE continuous_work SET status='RETRY',next_retry_at=now(),updated_at=now() WHERE lane='auto-submit' AND entity_id=$1 AND status='WAITING_USER'",
+      [id],
+    );
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK");

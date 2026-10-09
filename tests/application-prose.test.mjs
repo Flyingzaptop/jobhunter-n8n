@@ -10,7 +10,8 @@ test('general employer prose is automated while unknown personal/legal/security 
  for(const label of ['Why Linear?','What is your experience troubleshooting APIs?','How would you approach an integration failure?','Describe your strengths and working style.','What is authentication and how would you troubleshoot it?'])assert.equal(isModelAnswerable({type:'textarea',label}),true,label);
  for(const label of ['Work authorization','Expected salary','When can you start? Earliest start date','Do you require an export license?','Privacy consent','Enter authentication code','Will you relocate?','How many years of commercial experience?','What is your graduation date?','Has someone referred you for this role?','Name (required)'])assert.equal(isModelAnswerable({type:'text',label}),false,label);
  assert.equal(isModelAnswerable({type:'select-one',label:'Why this role?',options:[]}),false);
- assert.equal(isModelAnswerable({type:'text',label:'Optional additional note',required:false}),false);
+ const previous=process.env.APPLICATION_FILL_ALL_FIELDS;
+ try {process.env.APPLICATION_FILL_ALL_FIELDS='false';assert.equal(isModelAnswerable({type:'text',label:'Optional additional note',required:false}),false);process.env.APPLICATION_FILL_ALL_FIELDS='true';assert.equal(isModelAnswerable({type:'text',label:'Optional additional note',required:false}),true);}finally{if(previous===undefined)delete process.env.APPLICATION_FILL_ALL_FIELDS;else process.env.APPLICATION_FILL_ALL_FIELDS=previous;}
  assert.equal(isModelAnswerable({type:'textarea',label:'Why this role?',required:false}),true);
  for(const label of ['What is your phone number?','Please provide your legal name','Current or most recent title','How did you hear about this role?'])assert.equal(isModelAnswerable({type:'text',label}),false,label);
  assert.equal(isModelAnswerable({type:'textarea',label:'How would you validate email addresses in an API?'}),true);
