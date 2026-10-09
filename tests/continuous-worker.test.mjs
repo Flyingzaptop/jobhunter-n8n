@@ -187,3 +187,5 @@ test('CPU-only CV batch can progress while the GPU is occupied',async()=>{
 test('frozen CV phase does not invoke already-completed FIT on every CV',async()=>{
  let generated=0;const {worker,store}=harness({fit:async()=>{throw Error('Unexpected FIT invocation');},cv:async()=>{generated++;return {status:'REGISTERED'};}});store.phaseBarrier=async()=>({phase:'CV',discovery_paused:true});store.hasPendingFit=async()=>false;await worker.tick('model');assert.equal(generated,1);
 });
+
+test('exhausted CV and prose queues enter idle backoff instead of a tight scan loop',async()=>{const {worker,store}=harness({fit:async()=>({attempted:0}),prose:async()=>({processed:0})});store.phaseBarrier=async()=>({phase:'CV_HITL',discovery_paused:true});store.cvCandidates=async()=>[];await worker.tick('model');assert.equal(worker.states.model,'EMPTY_QUEUE');});

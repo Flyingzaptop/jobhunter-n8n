@@ -140,7 +140,8 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
     const resume=store.resumeTask&&await store.resumeTask();if(resume?.type==='CV'){candidates.sort((a,b)=>Number(b.job_id===resume.job_id)-Number(a.job_id===resume.job_id));if(store.clearResumeTask)await store.clearResumeTask();}
     for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){cvHitlTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
     if(barrier?.phase==='CV'){states[lane]='WAITING_REVIEW';await store.status(lane,'IDLE','CV_REVIEW_REQUIRED');return;}
-    if(prose)await prose(context);
+    const proseResult=prose?await prose(context):null;
+    if(!proseResult?.processed){states[lane]='EMPTY_QUEUE';await store.status(lane,'IDLE','MODEL_QUEUE_EMPTY');return;}
    } else if(lane.startsWith('preparation-')){
     const priority=store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
     for(const row of await store.preparationCandidates(profile,policy)){
@@ -158,7 +159,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  async function laneLoop(lane,signal){const release=await store.acquireLane(lane);if(!release)return;
   try{while(!signal.aborted){await tick(lane);if(signal.aborted)break;
    await new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
-    const delay=lane==='model'?(states[lane]==='WAITING_REVIEW'?Math.max(intervalMs,30000):Math.min(intervalMs,100)):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
+    const delay=lane==='model'?(['WAITING_REVIEW','EMPTY_QUEUE'].includes(states[lane])?Math.max(intervalMs,30000):Math.min(intervalMs,100)):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
     const timer=setTimeout(done,delay);signal.addEventListener('abort',done,{once:true});});}
   }finally{await release();}}
  const lanes=['ingestion','screening','model','preparation-1','preparation-2','notifications'];
