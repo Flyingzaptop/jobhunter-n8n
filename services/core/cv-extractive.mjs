@@ -31,7 +31,11 @@ export function composeExtractiveCv({catalog,job}){
  const lead=engineering??primary[0]??index.get(sections[0]?.source_fact_id);
  if(!lead)return null;
  const title=lead.role??lead.title??lead.field??lead.statements?.[0];
- const headline=claim(`${scope[lead.provenance]??'Verified background'}: ${title}${lead.provenance==='EDUCATION'&&lead.status==='degree_in_progress'?' (degree in progress)':''}.`,lead.id);
+ let headline=claim(`${scope[lead.provenance]??'Verified background'}: ${title}${lead.provenance==='EDUCATION'&&lead.status==='degree_in_progress'?' (degree in progress)':''}.`,lead.id);
+ if(tailoring.engineering_education_first&&!/mechanical|engineering|embedded|automation|robotic|simulation|cad|gearbox|turbine|plc/i.test(headline.text)){
+  const education=[...index.values()].find(f=>f.provenance==='EDUCATION'&&f.status==='degree_in_progress'&&/engineering|mechanical/i.test(f.field??''));
+  if(education)headline={text:`${education.field} (degree in progress) | ${headline.text}`,source_fact_ids:[...new Set([education.id,lead.id])]};
+ }
  const summaryFacts=primary.filter(f=>f.statements?.length).slice(0,2);
  if(!summaryFacts.length)summaryFacts.push(lead);
  const summary=summaryFacts.map(f=>{
@@ -49,8 +53,9 @@ export function verifyExtractiveCv(document,profile,allowedSkills){
    const options=f?extractivePhrases(f):[];
    const title=f?.role??f?.title??f?.field??f?.statements?.[0];
    if(title)options.push(`${scope[f.provenance]??'Verified background'}: ${title}${f.provenance==='EDUCATION'&&f.status==='degree_in_progress'?' (degree in progress)':''}.`);
+   const composedEngineering=kind==='headline'&&c.source_fact_ids?.length===2&&c.source_fact_ids.some(educationId=>{const e=facts.get(educationId);if(e?.provenance!=='EDUCATION'||e.status!=='degree_in_progress')return false;const other=facts.get(c.source_fact_ids.find(x=>x!==educationId));return other&&extractivePhrases(other).some(text=>`${e.field} (degree in progress) | ${text}`===c.text);});
    const supported=kind==='skill'?allowedSkills.some(s=>s.text===c.text&&c.source_fact_ids.length>0&&c.source_fact_ids.every(id=>s.source_fact_ids.includes(id))):c.source_fact_ids?.length===1&&options.some(text=>text===c.text||kind==='summary'&&scope[f.provenance]&&`${scope[f.provenance]}: ${text}`===c.text);
-   checks.push({claim_id:`claim_${checks.length}`,verdict:supported?'SUPPORTED':'UNSUPPORTED',reason:'Exact source clause or provenance-labelled metadata'});
+   checks.push({claim_id:`claim_${checks.length}`,verdict:supported||composedEngineering?'SUPPORTED':'UNSUPPORTED',reason:'Exact source clause or provenance-labelled metadata'});
  };
  check(document.headline,'headline');document.summary.forEach(c=>check(c,'summary'));document.skills.forEach(c=>check(c,'skill'));document.sections.forEach(s=>s.bullets.forEach(c=>check(c,'bullet')));
  document.application_text.forEach(t=>t.claims.forEach(c=>checks.push({claim_id:`claim_${checks.length}`,verdict:'UNSUPPORTED',reason:'Application prose requires separate verification'})));

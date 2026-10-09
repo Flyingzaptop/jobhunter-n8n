@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {normalizePdfClaimText} from '../services/core/cv-independent-qa.mjs';
+test('PDF line wrapping preserves exact qualifiers without accepting changed claims',()=>{const source='C++ (basic-to-intermediate)';assert.equal(normalizePdfClaimText('C++ (basic-to- intermediate)'),normalizePdfClaimText(source));assert.notEqual(normalizePdfClaimText('C++ (expert)'),normalizePdfClaimText(source));assert.notEqual(normalizePdfClaimText('C++'),normalizePdfClaimText(source));});

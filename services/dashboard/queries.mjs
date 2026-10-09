@@ -26,6 +26,7 @@ export async function pipeline(repo) {
   ).rows[0]?.paused;
   const progress=await batchProgress(repo,await load('candidate_profile'),await load('search_policy'));
   const cvWorker=progress?.phase==='CV'?(await repo.pool.query("SELECT state,outcome_code,updated_at FROM continuous_worker_status WHERE lane='model'")).rows[0]:null;
+  let cvRepair=null;try{const state=JSON.parse(await readFile('data/runtime/cv-review-repair.json','utf8'));if(state.state==='RUNNING'&&Date.now()-Date.parse(state.at)<30000){process.kill(state.pid,0);cvRepair=state;}}catch{}
   return STAGE_NAMES.map((title, i) => {
     const run = runs.find((r) => r.stage === i + 1);
     const result={
@@ -50,7 +51,7 @@ export async function pipeline(repo) {
       if(i===0){done=total=progress.normalization.total;status=progress.discovery_paused?'PAUSED':'RUNNING';}
       if(i===1){done=progress.normalization.done;total=progress.normalization.total;result.progress_percent=Math.min(pct(done,total),pct(progress.normalization.screen.done,progress.normalization.screen.total));status=progress.phase==='NORMALIZE'?'RUNNING':'SUCCEEDED';}
       if(i===2){done=progress.fit.done;total=progress.fit.total;status=progress.phase==='NORMALIZE'?'WAITING':progress.phase==='FIT'?(progress.fit.running?'RUNNING':'WAITING'):'SUCCEEDED';result.message=progress.phase==='FIT'?(progress.fit.running?'Gemma выполняет FIT':`Ожидание: ${progress.fit.waiting_access} страниц · ${progress.fit.failed} ошибок`):`Доступные FIT завершены · ${progress.fit.exceptions??0} исключений`;result.next_retry_at=progress.fit.next_retry_at;result.waiting_access=progress.fit.waiting_access;result.runnable_pending_count=progress.fit.pending;result.failed_count=progress.fit.failed;result.exception_count=progress.fit.exceptions??0;if(['CV','CV_HITL'].includes(progress.phase)&&result.exception_count)status='COMPLETED_WITH_EXCEPTIONS';}
-      if(i===3){done=progress.cv.done;total=progress.cv.total;status=progress.phase==='CV'?(cvBatchActive(cvWorker)?'RUNNING':'WAITING'):progress.phase==='CV_HITL'?'SUCCEEDED':'WAITING';result.message=progress.phase==='CV'?`Подготовка всех CV: ${done} / ${total}`:result.message;}
+      if(i===3){done=progress.cv.done;total=progress.cv.total;status=progress.phase==='CV'?(cvRepair||cvBatchActive(cvWorker)?'RUNNING':'WAITING'):progress.phase==='CV_HITL'?'SUCCEEDED':'WAITING';result.message=progress.phase==='CV'?(cvRepair?`Восстановление CV: ${cvRepair.ready} проверены; всего ${done} / ${total}`:cvWorker?.outcome_code==='CV_REVIEW_REQUIRED'?`Готово ${done} / ${total}; ${total-done} требуют проверки`:`Подготовка всех CV: ${done} / ${total}`):result.message;}
       if(i===4){done=progress.applications.filter(r=>['SUBMITTED','SKIPPED','ALREADY_APPLIED'].includes(r.status)).reduce((n,r)=>n+r.count,0);total=progress.applications.reduce((n,r)=>n+r.count,0);status=progress.phase==='CV_HITL'?result.status:'WAITING';if(progress.phase==='CV')result.message='Сначала завершить подготовку всех CV';}
       result.progress_percent??=pct(done,total);result.processed_count=done;result.total_count=total;result.status=status;result.batch_phase=progress.phase;result.blocked_count=i===2?progress.fit.blocked:0;result.remaining_count=Math.max(0,total-done);if(paused)result.status='PAUSED';if(i===5&&total===0)result.progress_percent=0;
     }

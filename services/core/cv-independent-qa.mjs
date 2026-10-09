@@ -12,6 +12,7 @@ const exec=promisify(execFile),hash=value=>createHash('sha256').update(Buffer.is
 const REVIEWER='AUTOMATED_INDEPENDENT_RENDER_QA';
 const inside=(root,target)=>{const rel=path.relative(root,target);return !rel.startsWith('..')&&!path.isAbsolute(rel);};
 const normalized=value=>String(value??'').replace(/\s+/g,' ').trim();
+export const normalizePdfClaimText=value=>normalized(value).replace(/-\s+(?=[\p{L}\p{N}])/gu,'-');
 
 /** Geometry checks are intentionally independent of the HTML/CSS DOM checks. */
 export function checkPdfGeometry(pages){const reasons=[];let words=0,overlaps=0,minHeight=Infinity;
@@ -95,7 +96,7 @@ export async function auditIndependentCv({manifest,job,profile,analysis,artifact
   const text=normalized(pages.flatMap(page=>page.boxes.map(box=>box.text)).join(' '));
   if(![identity.identity.name,identity.identity.email,identity.identity.phone].every(value=>text.includes(normalized(value))))return {pass:false,reasons:['PDF_IDENTITY_NOT_VISIBLE']};
   if(/UNKNOWN|\{\{|TODO|PLACEHOLDER/.test(text))return {pass:false,reasons:['PDF_PLACEHOLDER_VISIBLE']};
-  if(claims.some(claim=>!text.includes(normalized(claim.text))))return {pass:false,reasons:['PDF_CLAIM_NOT_VISIBLE']};
+  if(claims.some(claim=>!normalizePdfClaimText(text).includes(normalizePdfClaimText(claim.text))))return {pass:false,reasons:['PDF_CLAIM_NOT_VISIBLE']};
   const proofs=await renderer(pdf,pages.length,{popplerBinDir,proofRoot:proofRoot??path.join(path.dirname(pdf),'independent-render-qa')});
   if(proofs.length!==pages.length)return {pass:false,reasons:['ALL_RENDERED_PAGES_REQUIRED']};
   return {pass:true,reasons:[],reviewer:REVIEWER,method:'PDFJS_TEXT_GEOMETRY_AND_INDEPENDENT_POPPLER_PNG_PPM',
