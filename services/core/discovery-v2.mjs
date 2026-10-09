@@ -679,6 +679,23 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
   for (const mapping of mappings) {
     const source = sources.find(item => item.name === mapping.source_name);
     if (!source?.enabled || !source.permitted_access) continue;
+    if(source.adapter==='himalayas'){
+      try{
+        const parts=new URL(job.canonical_url).pathname.split('/').filter(Boolean),company=parts[parts.indexOf('companies')+1];
+        const endpoint=new URL('https://himalayas.app/jobs/api/search');endpoint.searchParams.set('company',company);endpoint.searchParams.set('q',job.title);endpoint.searchParams.set('page','1');
+        const data=JSON.parse((await safeFetch(endpoint.href,source,fetchOptions)).text);
+        const found=data.jobs?.find(item=>String(item.guid)===String(mapping.source_item_id)||item.applicationLink===job.canonical_url);
+        if(!found)return {status:'UNKNOWN',reason:'CURRENT_HIMALAYAS_ENTRY_NOT_FOUND'};
+        const deadline=iso(found.expiryDate);if(!deadline)return {status:'UNKNOWN',reason:'HIMALAYAS_EXPIRY_UNVERIFIED'};
+        if(Date.parse(deadline)<=Date.now()){await repository.pool.query("UPDATE jobs SET availability_status='CLOSED',closed_at=now() WHERE job_id=$1",[job.job_id]);return {status:'CLOSED',reason:'HIMALAYAS_EXPIRED'};}
+        if(String(found.title).trim().toLowerCase()!==String(job.title).trim().toLowerCase()||String(found.companyName).trim().toLowerCase()!==String(job.company).trim().toLowerCase())return {status:'UNKNOWN',reason:'HIMALAYAS_IDENTITY_CHANGED'};
+        const conflict=officialDeadlineConflict({raw_payload:found});if(conflict)return conflict;
+        const description=descriptionContent(found.description??''),unchanged=description.replace(/\s+/g,' ').trim()===descriptionContent(job.description_text??'').replace(/\s+/g,' ').trim();
+        const contentHash=unchanged?job.content_hash:(await import('node:crypto')).createHash('sha256').update(description).digest('hex');
+        await repository.pool.query("UPDATE jobs SET description_text=$2,content_hash=$3,availability_status='OPEN',last_verified_open_at=now(),metadata=metadata||jsonb_build_object('validated_applicant_locations',$4::jsonb,'last_open_verification',jsonb_build_object('method','CURRENT_HIMALAYAS_SEARCH_API','at',now())) WHERE job_id=$1",[job.job_id,description,contentHash,JSON.stringify(found.locationRestrictions??[])]);
+        return {status:'OPEN',method:'CURRENT_HIMALAYAS_SEARCH_API',job:{...job,description_text:description,content_hash:contentHash,availability_status:'OPEN'},verified_at:new Date().toISOString()};
+      }catch(error){return {status:'UNKNOWN',reason:error.message};}
+    }
     if(['poland_board','global_board'].includes(source.source_class)&&['public_listing_html','public_headless_jobposting'].includes(source.adapter)){
       try{
         const verified=await verifyPublicBoardPosting({source,url:mapping.source_url,fetchOptions});
@@ -732,9 +749,19 @@ export async function reverifyMarketJob({ job, repository, registryPath = MARKET
         const exact=postings.find(p=>String(p.title??'').trim().toLowerCase()===String(job.title??'').trim().toLowerCase());
         if(exact&&descriptionContent(exact.description??'').length>=120){
           const description=descriptionContent(exact.description);
-          const contentHash=(await import('node:crypto')).createHash('sha256').update(description).digest('hex');
+          const unchanged=descriptionContent(job.description_text??'').replace(/\s+/g,' ').trim()===description.replace(/\s+/g,' ').trim();
+          const declaredMode=String(exact.workplaceType??exact.jobLocationType??'');const workMode=/on[- ]?site|in[- ]?office/i.test(declaredMode)?'ONSITE':/hybrid/i.test(declaredMode)?'HYBRID':/remote|telecommute/i.test(declaredMode)?'REMOTE':job.work_mode;
+          const contentHash=unchanged&&workMode===job.work_mode?job.content_hash:(await import('node:crypto')).createHash('sha256').update(description+'|'+workMode).digest('hex');
+          const org=typeof exact.hiringOrganization==='string'?exact.hiringOrganization:exact.hiringOrganization?.name;
+          const sameOrg=String(org??'').trim().toLowerCase()===String(job.company??'').trim().toLowerCase();
+          const applicantLocations=[exact.applicantLocationRequirements].flat().filter(Boolean).map(x=>x.name??x.address?.addressCountry).filter(x=>typeof x==='string');
+          const expiry=exact.validThrough?Date.parse(exact.validThrough):null;
+          const apply=[...response.text.matchAll(/<(?:a|button)\b[^>]*>([\s\S]*?)<\/(?:a|button)>/gi)].some(m=>/^(?:apply|apply now|apply for (?:this )?job|aplikuj)(?:\s|$)/i.test(descriptionContent(m[1]).trim()));
+          const status=expiry!==null&&Number.isFinite(expiry)&&expiry<=Date.now()?'CLOSED':sameOrg&&apply&&(expiry===null||Number.isFinite(expiry))?'OPEN':'UNKNOWN';
           await repository.pool.query("UPDATE jobs SET description_text=$2,content_hash=$3,metadata=metadata||jsonb_build_object('description_extraction',jsonb_build_object('method','EXACT_TITLE_JSONLD','url',$4::text,'at',now())) WHERE job_id=$1",[job.job_id,description,contentHash,mapping.source_url]);
-          return {status:'UNKNOWN',reason:'OPEN_CHECK_REQUIRED',job:{...job,description_text:description,content_hash:contentHash},verified_at:new Date().toISOString()};
+          await repository.pool.query("UPDATE jobs SET availability_status=$2,last_verified_open_at=CASE WHEN $2='OPEN' THEN now() ELSE last_verified_open_at END WHERE job_id=$1",[job.job_id,status]);
+          await repository.pool.query("UPDATE jobs SET work_mode=$3,metadata=metadata||jsonb_build_object('validated_applicant_locations',$2::jsonb) WHERE job_id=$1",[job.job_id,JSON.stringify(applicantLocations),workMode]);
+          return {status,reason:status==='OPEN'?'CURRENT_MATCHED_JOBPOSTING_WITH_APPLY':'OPEN_CHECK_REQUIRED',job:{...job,description_text:description,content_hash:contentHash,availability_status:status},verified_at:new Date().toISOString()};
         }
         return {status:'UNKNOWN',reason:'PUBLIC_DETAIL_DESCRIPTION_MISSING',verified_at:new Date().toISOString()};
       }catch(error){return {status:'UNKNOWN',reason:error.message,verified_at:new Date().toISOString()};}

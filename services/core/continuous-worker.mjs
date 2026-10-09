@@ -25,7 +25,7 @@ export function currentTailoredCv(manifest,job,analysis){return manifest?.templa
  && manifest.job_content_hash===job.content_hash&&manifest.analysis_hash===canonicalAnalysisHash(analysis);}
 
 export class ContinuousStore {
- constructor(repository,{ownerId=randomUUID(),leaseMs=7200000}={}){this.repository=repository;this.ownerId=ownerId;this.leaseMs=leaseMs;}
+ constructor(repository,{ownerId=randomUUID(),leaseMs=300000}={}){this.repository=repository;this.ownerId=ownerId;this.leaseMs=leaseMs;}
  async loadModelSchedule(){
   const row=(await this.repository.pool.query("SELECT outcome_code FROM continuous_work WHERE work_key='model:scheduler:v1'")).rows[0];
   try{const state=JSON.parse(row?.outcome_code??'null');if(['fit','cv'].includes(state?.nextModel)&&typeof state.proseTurn==='boolean')return state;}catch{}
@@ -70,7 +70,7 @@ export class ContinuousStore {
   return (await this.repository.pool.query("SELECT 1 FROM continuous_work w JOIN continuous_worker_status s ON s.owner_id=w.owner_id AND s.lane='model' WHERE w.lane='cv' AND w.status='RUNNING' LIMIT 1")).rowCount?'CV':null;}
 
  async cvCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.job_id,j.title,j.company,j.content_hash,j.availability_status,j.location,j.country,j.work_mode,j.first_seen_at,j.description_text,a.analysis_json,
-  (SELECT coalesce(jsonb_agg(c.manifest_json),'[]'::jsonb) FROM cv_versions c WHERE c.job_id=j.job_id AND c.profile_version=$1) existing_cv_manifests FROM jobs j JOIN LATERAL
+  (SELECT coalesce(jsonb_agg(jsonb_build_object('template_version',c.template_version,'job_content_hash',c.manifest_json->>'job_content_hash','analysis_hash',c.manifest_json->>'analysis_hash','qa',jsonb_build_object('tailoring',jsonb_build_object('pass',c.qa_json->'tailoring'->'pass')))),'[]'::jsonb) FROM cv_versions c WHERE c.job_id=j.job_id AND c.profile_version=$1) existing_cv_manifests FROM jobs j JOIN LATERAL
   (SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
   WHERE j.availability_status<>'CLOSED'
   AND a.analysis_json->>'decision' IN ('REVIEW','STRETCH','AUTO_APPLY')
@@ -83,7 +83,7 @@ export class ContinuousStore {
   ORDER BY (a.analysis_json->>'overall_fit')::numeric DESC NULLS LAST,coalesce((a.analysis_json->>'application_priority')::numeric,0) DESC,j.first_seen_at`,[digest(profile),digest(policy),PROMPT_VERSION,profile.profile_id])).rows;
   return rows.filter(row=>eligibleCvAnalysis(row,row.analysis_json,profile,policy)&&!row.existing_cv_manifests.some(manifest=>
    currentTailoredCv(manifest,row,row.analysis_json)));}
- async preparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
+ async calculatePreparationCandidates(profile,policy){const rows=(await this.repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json AS cv_manifest_json,app.application_id,app.status AS application_status,
   app.last_state FROM jobs j JOIN LATERAL (SELECT * FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC,analysis_id DESC LIMIT 1) a ON true
   JOIN cv_versions c ON c.job_id=j.job_id AND c.profile_version=$1 AND c.qa_json->>'pass'='true'
   AND c.manifest_json->>'application_eligible'='true' AND c.manifest_json->>'job_content_hash'=j.content_hash
@@ -94,22 +94,24 @@ export class ContinuousStore {
   AND a.analysis_json->>'policy_hash'=$4
   AND a.analysis_json->>'prompt_version'=$5
   AND (app.application_id IS NULL OR (app.status IN('QUEUED','OPENING','FILLING') AND app.dry_run=true))
-  ORDER BY j.first_seen_at,c.created_at DESC LIMIT 100`,[digest(profile),profile.profile_id,CV_V2_VERSION,digest(policy),PROMPT_VERSION])).rows;
+  ORDER BY a.overall_fit DESC,j.first_seen_at,c.created_at DESC`,[digest(profile),profile.profile_id,CV_V2_VERSION,digest(policy),PROMPT_VERSION])).rows;
   const seen=new Set();return rows.filter(row=>{const continuing=row.application_id&&compatibleCvTemplate(row.cv_manifest_json?.template_version)&&row.cv_manifest_json?.qa?.tailoring?.pass&&row.cv_manifest_json.job_content_hash===row.content_hash&&row.cv_manifest_json.analysis_hash===canonicalAnalysisHash(row.analysis_json);if(seen.has(row.job_id)||!eligibleAnalysis(row,row.analysis_json,profile,policy)||!currentTailoredCv(row.cv_manifest_json,row,row.analysis_json)&&!continuing)return false;seen.add(row.job_id);return true;});}
+ async preparationCandidates(profile,policy){const key=digest([profile,policy]),old=this.prepCache;if(old?.key===key&&Date.now()-old.at<3000)return old.value;if(old?.key===key&&old.pending)return old.pending;const state={key,at:0,value:null,pending:null};state.pending=this.calculatePreparationCandidates(profile,policy).then(value=>{state.value=value;state.at=Date.now();state.pending=null;return value;}).catch(error=>{this.prepCache=null;throw error;});this.prepCache=state;return state.pending;}
 }
 
 /** Independent lane ticks are injectable for deterministic scheduler tests. */
-export function createContinuousWorker({store,profile,policy={},loadConfiguration=async()=>({profile,policy}),discovery,buildQueue,fit,cv,prose,prepare,apply,notify,modelBusy,
+export function createContinuousWorker({store,profile,policy={},loadConfiguration=async()=>({profile,policy}),discovery,buildQueue,fit,cv,prose,prepare,apply,notify,modelBusy,autoSubmit,validateSource,preparationWorkers=2,submitWorkers=2,sourceWorkers=2,
  enabled=process.env.CONTINUOUS_WORKER_ENABLED==='true',dryRun=process.env.DRY_RUN==='true',
  allowRealSubmit=process.env.ALLOW_REAL_SUBMIT==='true',intervalMs=60000,onError=()=>{}}){
  if(!enabled)throw new Error('CONTINUOUS_WORKER_AUTHORIZATION_REQUIRED');
  if(!dryRun||allowRealSubmit)throw new Error('CONTINUOUS_WORKER_REQUIRES_DRY_RUN');
+ if(!Number.isInteger(preparationWorkers)||preparationWorkers<1||preparationWorkers>24||!Number.isInteger(submitWorkers)||submitWorkers<1||submitWorkers>8||!Number.isInteger(sourceWorkers)||sourceWorkers<1||sourceWorkers>8)throw Error('INVALID_WORKER_CONCURRENCY');
  if(!Number.isInteger(intervalMs)||intervalMs<10)throw new Error('INVALID_WORKER_INTERVAL');
- const states={};let cvHitlTurn=false;
+ const states={};let cvHitlTurn=false,applicationModelTurn=true;
  async function claimed(key,lane,entityId,operation){if(!(await store.claim(key,lane,entityId)))return false;
   const heartbeat=store.heartbeat&&setInterval(()=>store.heartbeat(key).catch(()=>{}),60000);
   try{const result=await operation();
-   if(result?.blocked_reason||result?.prose_pending){await store.finish(key,'RETRY',safeCode(result.blocked_reason??'MODEL_PROSE_PENDING'));return true;}
+   if(result?.blocked_reason||result?.prose_pending){await store.finish(key,'RETRY',safeCode(result.blocked_reason??'MODEL_PROSE_PENDING'));if(lane==='auto-submit'&&result.blocked_reason==='MODEL_FORM_REVIEW_PENDING'||lane==='preparation'&&result.prose_pending)await store.repository.pool.query("UPDATE continuous_work SET next_retry_at=now()+interval '5 seconds' WHERE work_key=$1 AND owner_id=$2",[key,store.ownerId]);return true;}
    if(lane==='cv'&&result?.fast_path_fallback){await store.finish(key,'DRAFT_PENDING_VISUAL','EXTRACTIVE_CV_REQUIRES_REVIEW');return true;}
    if(lane==='cv' && /^BLOCKED_/.test(result?.status??'')){
     await store.finish(key,'RETRY',safeCode(result.status));return true;}
@@ -122,7 +124,7 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    const context=structuredClone(await loadConfiguration());const {profile,policy}=context;
    if(!profile||!policy)throw new Error('CURRENT_CONFIGURATION_REQUIRED');
    const barrier=store.phaseBarrier?await store.phaseBarrier(profile,policy):null;
-   const blocked=barrier&&(lane==='ingestion'&&barrier.discovery_paused||barrier.phase==='NORMALIZE'&&!['screening','notifications'].includes(lane)||['FIT','CV'].includes(barrier.phase)&&lane.startsWith('preparation-'));
+   const blocked=barrier&&(lane==='ingestion'&&barrier.discovery_paused||barrier.phase==='NORMALIZE'&&!['screening','notifications'].includes(lane)||lane.startsWith('validation-')&&barrier.phase!=='CV_HITL'||['FIT','CV'].includes(barrier.phase)&&lane.startsWith('preparation-')&&!autoSubmit);
    if(blocked){states[lane]='WAITING';await store.status(lane,'IDLE',lane==='ingestion'?'DISCOVERY_FROZEN':`${barrier.phase}_BARRIER`);return;}
    if(lane==='screening'&&barrier?.phase==='NORMALIZE'&&store.normalizeBatch)await store.normalizeBatch(barrier.batch_id);
    if(lane==='ingestion')await discovery(context);
@@ -130,20 +132,21 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
    else if(lane==='model'){
     const busy=modelBusy&&await modelBusy();
     if(busy&&barrier?.phase!=='CV'){states[lane]='IDLE';await store.status(lane,'IDLE','MODEL_INSTANCE_BUSY');return;}
+    if(autoSubmit&&prose&&!busy&&applicationModelTurn){const answer=await prose(context);if(answer?.processed){applicationModelTurn=false;states[lane]='IDLE';await store.status(lane,'IDLE','APPLICATION_MODEL_PRIORITY');return;}}
     const needsFit=barrier?barrier.phase==='FIT':true;
     const fitted=busy||!needsFit?{attempted:0}:await fit(context);
-    if((fitted?.attempted??0)>0||fitted?.blocked_reason){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
+    if((fitted?.attempted??0)>0||fitted?.blocked_reason){applicationModelTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PRIORITY');return;}
     if(barrier?.phase==='FIT'){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_BATCH_NOT_100_PERCENT');return;}
     if(store.hasPendingFit&&await store.hasPendingFit(profile,policy)){states[lane]='IDLE';await store.status(lane,'IDLE','FIT_PENDING_CV_FORBIDDEN');return;}
 
-    const candidates=await (store.runnableCvCandidates?store.runnableCvCandidates(profile,policy):store.cvCandidates(profile,policy));
+    const candidates=barrier?.phase==='CV_HITL'?[]:await (store.runnableCvCandidates?store.runnableCvCandidates(profile,policy):store.cvCandidates(profile,policy));
     const resume=store.resumeTask&&await store.resumeTask();if(resume?.type==='CV'){candidates.sort((a,b)=>Number(b.job_id===resume.job_id)-Number(a.job_id===resume.job_id));if(store.clearResumeTask)await store.clearResumeTask();}
-    for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){cvHitlTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
+    for(const job of candidates){const key=cvWorkKey(job,job.analysis_json,profile);if(await claimed(key,'cv',job.job_id,()=>cv(job.job_id,context))){cvHitlTurn=true;applicationModelTurn=true;states[lane]='IDLE';await store.status(lane,'IDLE','CV_PRIORITY');return;}}
     if(barrier?.phase==='CV'){states[lane]='WAITING_REVIEW';await store.status(lane,'IDLE','CV_REVIEW_REQUIRED');return;}
-    const proseResult=prose?await prose(context):null;
+    const proseResult=prose?await prose(context):null;applicationModelTurn=true;
     if(!proseResult?.processed){states[lane]='EMPTY_QUEUE';await store.status(lane,'IDLE','MODEL_QUEUE_EMPTY');return;}
    } else if(lane.startsWith('preparation-')){
-    const priority=store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
+    const priority=autoSubmit||barrier?.phase==='CV_HITL'?null:store.higherPriorityPending&&await store.higherPriorityPending(profile,policy);if(priority){states[lane]='IDLE';await store.status(lane,'IDLE',`${priority}_PRIORITY`);return;}
     for(const row of await store.preparationCandidates(profile,policy)){
      if(waiting.has(row.application_status)||row.last_state?.ready_stop||row.last_state?.captcha)continue;
      const key='prepare:'+digest([profile.profile_id,row.job_id,digest(profile),digest(policy),CV_V2_VERSION,row.cv_id]);
@@ -152,6 +155,12 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
       return apply(row.job_id,app.application_id,context,row.cv_id);
      }))break;
     }
+   } else if(lane.startsWith('validation-')&&validateSource){const {validationCandidates}=await import('./source-validation.mjs');for(const job of await validationCandidates(store.repository,profile,policy)){const key=`source:${job.job_id}:${job.content_hash}`;if(await claimed(key,'source-validation',job.job_id,()=>validateSource(job,context)))break;}
+   } else if(lane.startsWith('submit-')&&autoSubmit){
+    const grant=await (await import('./autonomous-authorization.mjs')).autonomousAuthorization(profile);
+    for(const app of (await store.repository.pool.query("SELECT application_id FROM applications a WHERE candidate_profile_id=$1 AND status='READY_TO_SUBMIT' AND NOT EXISTS(SELECT 1 FROM confirmed_submit_commands c WHERE c.application_id=a.application_id AND c.superseded_at IS NULL) ORDER BY updated_at LIMIT 20",[profile.profile_id])).rows){
+     if(await claimed(`auto-submit:${grant.authorization_id}:${app.application_id}`,'auto-submit',app.application_id,()=>autoSubmit(app.application_id,context)))break;
+    }
    } else if(lane==='notifications')await notify(context);
    states[lane]='IDLE';await store.status(lane,'IDLE');
   }catch(error){states[lane]='RETRY';await store.status(lane,'RETRY',safeCode(error.code??error.message));onError({lane,code:safeCode(error.code??error.message)});}
@@ -159,11 +168,11 @@ export function createContinuousWorker({store,profile,policy={},loadConfiguratio
  async function laneLoop(lane,signal){const release=await store.acquireLane(lane);if(!release)return;
   try{while(!signal.aborted){await tick(lane);if(signal.aborted)break;
    await new Promise(resolve=>{const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
-    const delay=lane==='model'?(['WAITING_REVIEW','EMPTY_QUEUE'].includes(states[lane])?Math.max(intervalMs,30000):Math.min(intervalMs,100)):lane.startsWith('preparation-')?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
+    const delay=lane==='model'?(['WAITING_REVIEW','EMPTY_QUEUE'].includes(states[lane])?(autoSubmit?Math.min(intervalMs,3000):Math.max(intervalMs,30000)):Math.min(intervalMs,100)):(lane.startsWith('preparation-')||lane.startsWith('submit-')||lane.startsWith('validation-'))?Math.min(intervalMs,5000):lane==='notifications'?Math.min(intervalMs,10000):intervalMs;
     const timer=setTimeout(done,delay);signal.addEventListener('abort',done,{once:true});});}
   }finally{await release();}}
- const lanes=['ingestion','screening','model','preparation-1','preparation-2','notifications'];
- return {tick,states,start:signal=>Promise.all(lanes.map(lane=>laneLoop(lane,signal)))};
+ const lanes=['ingestion','screening','model',...Array.from({length:preparationWorkers},(_,i)=>`preparation-${i+1}`),...(autoSubmit?Array.from({length:submitWorkers},(_,i)=>`submit-${i+1}`):[]),...(validateSource?Array.from({length:sourceWorkers},(_,i)=>`validation-${i+1}`):[]),'notifications'];
+ return {tick,states,lanes,start:signal=>Promise.all(lanes.map(lane=>laneLoop(lane,signal)))};
 }
 
 export async function createProductionContinuousWorker({repository,configDir='config',core,intervalMs=60000,workerStartedAt=new Date().toISOString()}){
@@ -179,7 +188,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
  return createContinuousWorker({store:new ContinuousStore(repository),loadConfiguration,intervalMs,
   modelBusy:async()=>{const {localModelBusy}=await import('./model-busy.mjs');return localModelBusy(llm.model);},
   discovery:async()=>{const {runParallelDiscovery}=await import('./parallel-discovery.mjs');return runParallelDiscovery({repository,concurrency:6});},buildQueue:async({profile,policy})=>{const {applyDeterministicHardRejects}=await import('./relevance-queue.mjs');await buildRelevanceQueue({repository});await repository.pool.query(`UPDATE relevance_queue q SET status='ANALYZED',error_code='CURRENT_FIT_REUSED',next_retry_at=NULL,updated_at=now() FROM jobs j WHERE j.job_id=q.job_id AND q.status IN('QUEUED','RETRY') AND EXISTS(SELECT 1 FROM job_analysis a WHERE a.job_id=q.job_id AND a.analysis_json->>'profile_hash'=$1 AND a.analysis_json->>'policy_hash'=$2 AND a.analysis_json->>'job_content_hash'=j.content_hash)`,[digest(profile),digest(policy)]);return applyDeterministicHardRejects({repository,profile,policy});},
-  prose:async({profile,policy})=>{const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
+  prose:async({profile,policy})=>{if(process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true'){const {drainFormModelReviews}=await import('./form-model-review.mjs');const checked=await drainFormModelReviews({repository,profile,policy,llm,browser});if(checked?.processed)return checked;}const {drain}=await import('./application-prose.mjs');return drain({repo:repository,profile,policy,llm,max:1});},
   fit:async({profile,policy})=>{const resume=(await repository.pool.query('SELECT resume_model_task FROM runtime_control WHERE id=true')).rows[0]?.resume_model_task;const result=await runRelevanceFitBatch({repository,profile,policy,llm,maxJobs:resume?.type==='FIT'?1:8,jobIds:resume?.type==='FIT'?[resume.job_id]:undefined,maxRuntimeMs:120000,inferenceAuthorized:true});if(resume?.type==='FIT')await repository.pool.query('UPDATE runtime_control SET resume_model_task=NULL WHERE id=true');return result;},
   cv:async (jobId,context)=>{await ensureCurrent(context);const manifest=await core.stage(4,{job_id:jobId,prepare_cv:true});
    if(manifest?.blocked_reason||manifest?.status!=='PASS')return manifest;
@@ -188,7 +197,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
    return registerIndependentCv({repository,manifest,profile:context.profile});},
   prepare:async(jobId,cvId,context)=>{await ensureCurrent(context);return createControlledPreparation({repository,jobId,cvId,profile:context.profile,policy:context.policy});},
   apply:async(jobId,applicationId,context,cvId)=>{await ensureCurrent(context);if(cvId){const {refreshPreparationCv}=await import('./controlled-preparation.mjs');const refreshed=await refreshPreparationCv({repository,applicationId,cvId,profile:context.profile,policy:context.policy});if(refreshed.blocked_reason)return refreshed;}return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
-   config:{...config,dryRun:true,allowRealSubmit:false}});},
+   config:{...config,dryRun:true,allowRealSubmit:false,fillAllFields:process.env.APPLICATION_FILL_ALL_FIELDS==='true'}});},
   notify:async({profile})=>{
    const {sendReadyApplications}=await import('./telegram-applications.mjs');
    const results=await Promise.allSettled([drainCaptchaHandoffs({repository,browser,telegram}),
@@ -196,5 +205,8 @@ export async function createProductionContinuousWorker({repository,configDir='co
     sendReadyApplications({repository,profile,browser,telegram})]);
    if(results.some(result=>result.status==='rejected'))throw new Error('NOTIFICATION_LANE_PARTIAL_FAILURE');
    return results.map(result=>result.value);},
+  sourceWorkers:Number(process.env.SOURCE_VALIDATION_WORKERS??2),validateSource:process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true'?async(job,{profile,policy})=>(await import('./source-validation.mjs')).validateSourceForCv({repository,job,profile,policy}):null,
+  preparationWorkers:Number(process.env.APPLICATION_PREPARATION_WORKERS??2),submitWorkers:Number(process.env.APPLICATION_SUBMIT_WORKERS??2),
+  autoSubmit:process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true'?async(applicationId,{profile})=>(await import('./autonomous-submit.mjs')).submitAutonomousApplication({repository,applicationId,profile,browser}):null,
   onError:event=>console.error(JSON.stringify({event:'CONTINUOUS_LANE_RETRY',...event}))});
 }

@@ -1,3 +1,5 @@
+import {formModelBinding} from './form-model-review.mjs';
+import {autonomousAuthorization} from './autonomous-authorization.mjs';
 import {randomUUID} from 'node:crypto';
 import {consumeApplicationReview,digest,formBinding} from '../dashboard/review-gates.mjs';
 import {issueSubmitCapability} from '../browser-service/submit-capability.mjs';
@@ -7,15 +9,17 @@ import {hitlError} from './hitl.mjs';
 import {confirmedSubmissionResult} from './submission-result.mjs';
 import {finalSubmitLabel} from '../browser-service/ats-adapters.mjs';
 export async function executeConfirmedSubmit({repository,applicationId,approvalId,bindingDigest,idempotencyKey,profile,browser,confirmationSource='USER_DASHBOARD',secret=process.env.BROWSER_SERVICE_TOKEN}){
- if(!['USER_DASHBOARD','USER_TELEGRAM'].includes(confirmationSource))throw hitlError('INVALID_CONFIRMATION_SOURCE');
+ if(!['USER_DASHBOARD','USER_TELEGRAM','USER_AUTONOMOUS'].includes(confirmationSource))throw hitlError('INVALID_CONFIRMATION_SOURCE');
  for(const id of [applicationId,approvalId,idempotencyKey])if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id??''))throw hitlError('INVALID_SUBMIT_COMMAND',400);
  if(!/^[a-f0-9]{64}$/i.test(bindingDigest??''))throw hitlError('INVALID_SUBMIT_BINDING',400);
+ if(confirmationSource==='USER_AUTONOMOUS')await autonomousAuthorization(profile);
  const client=await repository.pool.connect();let locked=false,command;
  try{
   locked=(await client.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[applicationId])).rows[0].locked;
   if(!locked)throw hitlError('APPLICATION_BUSY');
   const app=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
   if(!app)throw hitlError('APPLICATION_NOT_FOR_ACTIVE_PROFILE',404);
+  if(confirmationSource==='USER_AUTONOMOUS'||process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true'){if(app.last_state?.full_fields_checked!==true)throw hitlError('ALL_FIELDS_RECHECK_REQUIRED');const cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[app.cv_id])).rows[0];const live=await browser.call(`/sessions/${app.last_state.browser_session_id}/snapshot`);if(app.last_state.model_review?.status!=='APPROVED'||app.last_state.model_review.binding_hash!==formModelBinding(live,profile,cv))throw hitlError('MODEL_FORM_APPROVAL_REQUIRED_OR_STALE');}
   const previous=(await repository.pool.query('SELECT * FROM confirmed_submit_commands WHERE application_id=$1 AND superseded_at IS NULL',[applicationId])).rows[0];
   if(previous){if(previous.idempotency_key!==idempotencyKey||previous.approval_id!==approvalId||previous.binding_digest!==bindingDigest)throw hitlError('APPLICATION_ALREADY_HAS_SUBMIT_COMMAND');return {command_id:previous.command_id,status:previous.status,confirmation_id:previous.result_json?.confirmation_id??null,duplicate:true};}
   const paused=(await repository.pool.query('SELECT paused FROM runtime_control WHERE id=true')).rows[0]?.paused;

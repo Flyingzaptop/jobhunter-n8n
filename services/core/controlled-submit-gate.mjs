@@ -1,3 +1,4 @@
+import {currentPreparationPolicy} from './preparation-policy.mjs';
 import {readFile} from 'node:fs/promises';import {createHash} from 'node:crypto';import YAML from 'yaml';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';import {reverifyMarketJob} from './discovery-v2.mjs';
 import {workFormatAnalysis,PROMPT_VERSION} from './fit.mjs';import {compatibleCvTemplate} from './cv-v2.mjs';import {hitlError} from './hitl.mjs';
@@ -10,6 +11,7 @@ export async function assertControlledApplicationReady({repository,applicationId
  const cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1',[app.cv_id])).rows[0];
  const analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[app.job_id])).rows[0]?.analysis_json;
  const policy=YAML.parse(await readFile('config/search_policy.yaml','utf8'));
+ if(!currentPreparationPolicy({job,profile,policy,analysis,cv}).pass)throw hitlError('CURRENT_APPLICATION_LOCATION_POLICY_REJECTED');
  if(!compatibleCvTemplate(cv?.template_version)||!cv.qa_json?.tailoring?.pass||analysis?.prompt_version!==PROMPT_VERSION||Number(analysis.overall_fit)<45||analysis.policy_hash!==createHash('sha256').update(JSON.stringify(policy)).digest('hex')||workFormatAnalysis({job,profile,policy,workFormat:analysis.work_format}).location_policy_status!=='COMPATIBLE'||!(await verifyCurrentCvEvidence({cv,job,analysis,profile})).pass)throw hitlError('CURRENT_APPLICATION_EVIDENCE_REQUIRED');
  return true;
 }

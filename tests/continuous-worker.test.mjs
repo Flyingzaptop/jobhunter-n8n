@@ -58,7 +58,7 @@ test('frozen batch blocks discovery and every later stage until normalization re
  let phase='NORMALIZE';store.phaseBarrier=async()=>({phase,discovery_paused:true,batch_id:'frozen'});store.normalizeBatch=async()=>calls.push('NORMALIZE');
  await worker.tick('ingestion');await worker.tick('model');await worker.tick('preparation-1');assert.deepEqual(calls,[]);assert.equal(applied.length,0);
  await worker.tick('screening');assert.deepEqual(calls,['NORMALIZE']);phase='FIT';await worker.tick('model');assert.deepEqual(calls,['NORMALIZE','FIT']);assert.equal(applied.length,0);
- phase='CV_HITL';await worker.tick('model');assert.equal(calls.at(-1),'CV');await worker.tick('preparation-1');assert.equal(applied.length,1);
+ phase='CV';await worker.tick('model');assert.equal(calls.at(-1),'CV');await worker.tick('preparation-1');assert.equal(applied.length,0);phase='CV_HITL';await worker.tick('preparation-1');assert.equal(applied.length,1);
 });
 
 test('cheap screening processes arrivals while a slow source scan is still pending',async()=>{

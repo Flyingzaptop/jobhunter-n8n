@@ -19,7 +19,7 @@ export function vacancySummary(job,analysis={}){
 export async function searchCounts(repository,profile){
  const jobs=(await repository.pool.query("SELECT count(*)::int n FROM jobs WHERE canonical_url LIKE 'https://%' AND COALESCE(metadata->>'test_fixture','false')<>'true'")).rows[0].n;
  const stages=(await repository.pool.query('SELECT status,count(*)::int n FROM applications WHERE candidate_profile_id=$1 GROUP BY status',[profile.profile_id])).rows;
- const cvs=(await repository.pool.query("SELECT count(DISTINCT c.job_id)::int n FROM cv_versions c JOIN jobs j USING(job_id) WHERE c.profile_version=$1 AND c.template_version='cv-factory-v2.3-exact-vacancy' AND c.qa_json->>'pass'='true'",[activeProfileDigest(profile)])).rows[0].n;
+ const cvs=(await repository.pool.query("SELECT count(DISTINCT c.job_id)::int n FROM cv_versions c JOIN jobs j USING(job_id) WHERE c.profile_version=$1 AND c.template_version IN('cv-factory-v2.3-exact-vacancy','cv-factory-v2.4-project-breadth','cv-factory-v2.5-extractive-fast') AND c.qa_json->>'pass'='true'",[activeProfileDigest(profile)])).rows[0].n;
  const get=status=>stages.find(r=>r.status===status)?.n??0;
  return {found:jobs,cv:cvs,ready:get('READY_TO_SUBMIT'),submitted:get('SUBMITTED'),waiting:get('NEEDS_USER')+get('CAPTCHA_WAIT'),unknown:get('SUBMISSION_UNKNOWN')};
 }
@@ -27,6 +27,7 @@ export function countsText(c){return `СВОДКА JOBHUNTER\n\nПОИСК\nСо
 export function countsHtml(c){return `<b>СВОДКА JOBHUNTER</b>\n\n<b>Поиск</b>\nСобрано объявлений: <b>${c.found}</b>\nИндивидуальных CV: <b>${c.cv}</b>\n\n<b>Заявки</b>\nГотовы к подтверждению: <b>${c.ready}</b>\nНужно твоё действие: <b>${c.waiting}</b>\nПодтверждённо отправлено: <b>${c.submitted}</b>\n${c.unknown?'⚠ Неопределённый результат: <b>'+c.unknown+'</b>\n':''}\n<i>Объявления не считаются отправленными заявками.</i>`;}
 
 export async function sendReadyApplications({repository,profile,browser,telegram}){
+ if(process.env.TELEGRAM_READY_NOTIFICATIONS==='false'||process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true')return {disabled:true};
  const apps=(await repository.pool.query("SELECT * FROM applications WHERE candidate_profile_id=$1 AND status='READY_TO_SUBMIT' ORDER BY updated_at LIMIT 20",[profile.profile_id])).rows;
  for(const app of apps){
   try{

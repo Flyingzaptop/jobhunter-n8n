@@ -51,9 +51,12 @@ export function professionalYears(profile) {
   return Math.floor(merged.reduce((n,[a,b])=>n+b-a,0)/86400000/365.25+0.01);
 }
 
-export function resolveField(field, { profile, job, answerMemory = {} }) {
+export function resolveField(field, { profile, job, view, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const primaryEducation=profile.education?.find(e=>e.primary_for_forms)??profile.education?.[0];
+  if(field.required===false&&/^if other.*specify/i.test(label)&&view?.fields?.filter(f=>/^if other.*specify/i.test(f.label??'')).length===1){const selected=view.fields.find(f=>f.type==='radio'&&f.checked&&/how did you hear|where did you (?:hear|find)/i.test(f.group_label??''));if(selected&&!/^other/i.test(selected.label??''))return {value:`Not applicable — selected ${selected.label}.`,source:'OBSERVED_DISCOVERY_CHOICE'};}
+  if(/gender|pronoun|ethnic|race|disabilit|veteran/i.test((field.group_label??'')+' '+label)){if(field.type==='radio')return /prefer not|decline|do not wish|nie chce|nie chcę/i.test(label)?{value:true,source:'PRIVACY_NONDISCLOSURE'}:{skip:true};const option=field.options?.find(o=>/prefer not|decline|do not wish|nie chce|nie chcę/i.test(o.label??''));if(option)return {value:option.value,source:'PRIVACY_NONDISCLOSURE'};}
+  if(field.required===false&&/^(?:x|twitter)(?: profile| account| url| link)?$/i.test(label))return {skip:true,source:'USER_DECLARED_NO_X_PROFILE'};
   if(field.type==='radio'&&/degree|education level/i.test(field.group_label??'')&&!/completed|obtained|awarded|earned/i.test(`${field.group_label} ${field.description??''}`)&&primaryEducation?.degree_level==='BACHELOR')return /^bachelor/i.test(field.label)?{value:true,source:'PROFILE'}:{skip:true};
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
@@ -149,7 +152,7 @@ function acknowledgementContext(view,job,profile,cv){return {
 };}
 export async function reverify({browser,job,applicationId}) {
   const opened=await browser.call('/sessions',{application_id:applicationId,url:job.canonical_url});
-  try {const evidence=postingOpenEvidence(opened.snapshot,job);return evidence==='OPEN'?true:evidence==='CLOSED'?false:null;}
+  try {let view=opened.snapshot,evidence=postingOpenEvidence(view,job);const until=Date.now()+6000;while(evidence==='UNKNOWN'&&!view.captcha&&!/access denied|forbidden|just a moment/i.test(view.title??'')&&Date.now()<until){await new Promise(done=>setTimeout(done,250));view=await browser.call(`/sessions/${opened.session_id}/snapshot`);evidence=postingOpenEvidence(view,job);}return evidence==='OPEN'?true:evidence==='CLOSED'?false:null;}
   finally{await browser.call(`/sessions/${opened.session_id}`,undefined,'DELETE');}
 }
 
@@ -202,12 +205,23 @@ export async function runApplication({ repository, jobId, applicationId, profile
     let sessionId=application.last_state?.browser_session_id, view;
     if(application.status==='QUEUED'||application.status==='OPENING') {
       if(application.status==='QUEUED'){await transition(repository,application.application_id,'OPENING');application.status='OPENING';}
-      const open=await verifyOpen({browser,job,applicationId:application.application_id});
+      const checkedAt=Date.parse(job.last_verified_open_at??'');const apiProof=!isMockUrl(new URL(job.canonical_url),config)&&verifyOpen===reverify&&job.availability_status==='OPEN'&&Number.isFinite(checkedAt)&&Date.now()-checkedAt>=0&&Date.now()-checkedAt<60000&&['CURRENT_HIMALAYAS_SEARCH_API','CURRENT_OFFICIAL_ATS_GET'].includes(job.metadata?.last_open_verification?.method);
+      const open=apiProof?true:await verifyOpen({browser,job,applicationId:application.application_id});
       if(open!==true){const status=open===false?'SKIPPED':'MANUAL_TAKEOVER';await transition(repository,application.application_id,status,open===false?{skip_reason:'JOB_CONFIRMED_CLOSED'}:{reason:'JOB_OPEN_VERIFICATION_UNCERTAIN'});return {status,application_id:application.application_id};}
       const opened=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url});sessionId=opened.session_id;
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);
       view=await settleApplicationForm({browser,sessionId,initialView:opened.snapshot});await transition(repository,application.application_id,'FILLING',{browser_session_id:sessionId});application.status='FILLING';}
-    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{const recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=await settleApplicationForm({browser,sessionId,initialView:recovery.snapshot});await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
+    else {try{view=await browser.call(`/sessions/${sessionId}/snapshot`);}catch{let recovery;
+      try{recovery=await browser.call(`/sessions/${sessionId}/recover`,{});if(recovery.status==='MANUAL_TAKEOVER'&&recovery.reason==='RECOVERY_LIMIT')throw Error('UNSUBMITTED_DRAFT_RECOVERY_LIMIT');}catch(recoveryError){
+       const submitted=(await repository.pool.query('SELECT 1 FROM confirmed_submit_commands WHERE application_id=$1 LIMIT 1',[application.application_id])).rowCount;
+       if(submitted||!['READY_TO_SUBMIT','FILLING'].includes(application.status))throw recoveryError;
+       const fresh=await browser.call('/sessions',{application_id:application.application_id,url:job.application_url||job.canonical_url});
+       recovery={session_id:fresh.session_id,snapshot:fresh.snapshot,status:'FILLING'};application.last_state={...application.last_state,model_review:null,form_answers:[],full_fields_checked:false};
+       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{model_review:null,form_answers:[],full_fields_checked:false}]);
+       await repository.event('application',application.application_id,'EXPIRED_UNSUBMITTED_DRAFT_REOPENED',{});
+      }
+if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status)){await transition(repository,application.application_id,recovery.status,{confirmation_id:recovery.confirmation_id,reason:recovery.reason??null});return {application_id:application.application_id,...recovery};}sessionId=recovery.session_id;view=await settleApplicationForm({browser,sessionId,initialView:recovery.snapshot});await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId}]);}}
+    if(view.captcha&&['OPENING','FILLING','READY_TO_SUBMIT'].includes(application.status)){if(application.status==='READY_TO_SUBMIT')await transition(repository,application.application_id,'FILLING',{ready_stop:false});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}
     const initialScope=scopeApplicationForm(view);
     if(!initialScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:initialScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:initialScope.reason};}
     view=initialScope.view;
@@ -243,10 +257,10 @@ export async function runApplication({ repository, jobId, applicationId, profile
       }
       await repository.event('application',application.application_id,'ANSWER_CONSUMED',{question_id:answerRow.question_id});
     }
-    if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT'});application.status='FILLING';}
+    if(application.status==='READY_TO_SUBMIT'){await transition(repository,application.application_id,'FILLING',{reason:'REINSPECT_BEFORE_SUBMIT',ready_stop:false});application.status='FILLING';}
     for(let count=0;count<maxSteps;count++){
       const entry=view.buttons?.find(button=>safeNavigationButton({adapter:atsAdapterFor(view.url),url:view.url,button,fields:view.fields??[]}));
-      if(entry&&!view.fields?.some(f=>f.type==='file')){
+      if(entry&&!view.fields?.some(f=>f.type==='file'&&f.visible&&/resume|\bcv\b|curriculum/i.test((f.name??'')+' '+(f.label??'')+' '+(f.selector??'')))){
         view=entry.href?await browser.call(`/sessions/${sessionId}/navigate`,{url:new URL(entry.href,view.url).href}):await browser.call(`/sessions/${sessionId}/click`,{selector:entry.selector});
         view=await settleApplicationForm({browser,sessionId,initialView:view});continue;
       }
@@ -258,12 +272,13 @@ export async function runApplication({ repository, jobId, applicationId, profile
       const authentication=view.fields.some(f=>f.visible&&(f.type==='password'||/^(?:otp|totp|2fa|authentication_code|webauthn)$/i.test(f.name??'')));
       if(authentication){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'AUTHENTICATION_REQUIRED',browser_session_id:sessionId,current_url:view.url});if(telegram?.send)await telegram.send(`MANUAL TAKEOVER REQUIRED\nApplication: ${application.application_id}\nCompany: ${job.company}\nRole: ${job.title}\nReason: authentication or security verification\nSession: ${sessionId}\nURL: ${view.url}`);return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'AUTHENTICATION_REQUIRED'};}
       if(view.captcha){const field=view.fields.find(f=>f.visible&&/captcha/i.test(f.name||f.label)&&['text','textarea'].includes(f.type));if(!field){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'INTERACTIVE_CAPTCHA',browser_session_id:sessionId,current_url:view.url});try{await enqueueCaptchaHandoff({repository,applicationId:application.application_id,sessionId,snapshot:view,chatId:telegram?.chatId});}catch{await repository.event('application',application.application_id,'CAPTCHA_HANDOFF_PERSIST_FAILED',{reason:'DURABLE_HANDOFF_REQUIRED'});}return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'INTERACTIVE_CAPTCHA'};}if(!field.value)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'CAPTCHA'});}
-      const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button'].includes(f.type));
+      const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button','search'].includes(f.type)&&f.role!=='searchbox');
       fieldsToFill.sort((a,b)=>Number(a.type==='file')-Number(b.type==='file')||Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
+        if(field.type==='file'&&!field.required&&!String(field.label??'').trim()&&!/resume|\bcv\b|letter|document|attachment|certificate|portfolio/i.test((field.name??'')+' '+(field.selector??'')))continue;
         if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
-        const knownOptional=resolveField(field,{profile,job,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
-        if(!field.required&&field.type!=='file'&&!knownOptional)continue;
+        const knownOptional=resolveField(field,{profile,job,view,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
+        if(!config.fillAllFields&&!field.required&&field.type!=='file'&&!knownOptional)continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
         if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
@@ -274,7 +289,9 @@ export async function runApplication({ repository, jobId, applicationId, profile
           const praca=atsAdapterFor(view.url)==='praca',confirmed=view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT');
           if(field.value&&field.server_saved!==false&&(praca?confirmed:view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256)))continue;
           const resume=/\bcv\b|resume|curriculum vitae/i.test(field.name+' '+field.label+' '+field.selector);
-          if(!field.required&&!resume)continue;
+          const coverLetter=/cover.?letter|motivation letter|list motywacyjny/i.test(field.name+' '+field.label);
+          if(coverLetter&&config.fillAllFields){const {coverLetterAsset}=await import('./application-document.mjs');const asset=await coverLetterAsset({repository,application,job,cv,profile});if(!view.uploaded_file_hashes?.some(f=>f.sha256===asset.sha256))view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:asset.path,sha256:asset.sha256});continue;}
+          if(!field.required&&!resume&&!config.fillAllFields)continue;
           if(!resume){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_REQUIRED_DOCUMENT'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'UNSUPPORTED_REQUIRED_DOCUMENT'};}
           view=await browser.call(`/sessions/${sessionId}/upload`,{selector:field.selector,path:cv.pdf_path,sha256:cv.sha256});
           if(praca&&!view.uploaded_file_hashes?.some(upload=>upload.sha256===cv.sha256&&upload.evidence==='SERVER_UPLOAD_RECEIPT')){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'CV_UPLOAD_UNCONFIRMED'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'CV_UPLOAD_UNCONFIRMED'};}
@@ -287,8 +304,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
           if(field.checked)continue;
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,verified_facts:true});await repository.pool.query('INSERT INTO consents(consent_id,application_id,consent_text,consent_text_hash,consent_type,source) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),application.application_id,consent.consent_text,consent.consent_text_hash,consent.consent_type,'RECRUITMENT_POLICY']);continue;
         }
-        if(field.type==='checkbox' && field.checked || radioGroupAnswered(field,view.fields))continue;
-        if(!field.options && !['checkbox','radio'].includes(field.type)&&known(field.value))continue;
+        if(field.type==='checkbox'&&field.checked||radioGroupAnswered(field,view.fields)&&!(config.fillAllFields&&knownOptional?.value===true&&!field.checked))continue;
+        if(!field.options&&!['checkbox','radio'].includes(field.type)&&known(field.value)&&(!config.fillAllFields||knownOptional&&String(field.value).trim()===String(knownOptional.value).trim()))continue;
         const answer=knownOptional??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
         if(!answer){
           if(isModelAnswerable(field)){
@@ -302,7 +319,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
             await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{prose_pending_question:{selector:field.selector,field_label:field.label,fingerprint:view.fingerprint,draft_id:queued.draft_id},pending_question:null}]);
             return {application_id:application.application_id,status:'FILLING',prose_pending:true,draft_id:queued.draft_id};
           }
-          if(field.required)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
+          if(field.required||config.fillAllFields)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
         }
         const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
         if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
@@ -310,7 +327,8 @@ export async function runApplication({ repository, jobId, applicationId, profile
       view=await browser.call(`/sessions/${sessionId}/snapshot`);
       const saveDeadline=Date.now()+5000;
       while(unsavedRequiredFields(view.fields).length&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
-      await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url}]);
+      const earlier=application.last_state?.form_answers??[];const answerScope=scopeApplicationForm(view);const answered=(answerScope.pass?answerScope.view.fields:view.fields).filter(f=>f.visible&&!['hidden','password','file'].includes(f.type)&&!/captcha|otp|token|secret/i.test(f.name??'')).map(f=>({step:view.current_step,label:f.label,type:f.type,value:f.value,checked:f.checked,required:f.required}));const allAnswers=[...earlier.filter(f=>f.step!==view.current_step),...answered];application.last_state={...application.last_state,form_answers:allAnswers};
+      await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url,form_answers:allAnswers}]);
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
       view=finalScope.view;
@@ -321,7 +339,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL AND closed_at IS NULL',[application.application_id])).rows[0].n;
         const review=finalReviewEvidence({view,profile,job,cv,outstanding});
         if(!review.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED',final_review:review});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}
-        await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{final_review:review}]);
+        await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{final_review:review,full_fields_checked:config.fillAllFields===true}]);
         if(application.status!=='READY_TO_SUBMIT'){await transition(repository,application.application_id,'READY_TO_SUBMIT',{browser_session_id:sessionId});application.status='READY_TO_SUBMIT';}
         const reason=controlledSubmitPermission(view.url,config);if(reason){await repository.pool.query('UPDATE applications SET submit_blocked_reason=$2,dry_run=$3 WHERE application_id=$1',[application.application_id,reason,config.dryRun]);return {application_id:application.application_id,status:'READY_TO_SUBMIT',submit_blocked_reason:reason};}
         await mutex.query("SELECT pg_advisory_lock(hashtextextended('jobhunter-submission-quota',0))");quotaLock=true;
@@ -333,7 +351,7 @@ export async function runApplication({ repository, jobId, applicationId, profile
         try{result=await browser.call(`/sessions/${sessionId}/submit`,{selector:final.selector});}catch{result={status:'SUBMISSION_UNKNOWN'};}
         if(result.status!=='SUBMITTED'||!result.confirmation_id||result.confirmation_evidence!=='NETWORK_AND_PAGE')result={...result,status:'SUBMISSION_UNKNOWN'};
         await transition(repository,application.application_id,result.status,{confirmation_id:result.confirmation_id});
-        if(telegram?.send){try{await telegram.send(result.status==='SUBMITTED'?`✅ Application submitted\nCompany: ${job.company}\nRole: ${job.title}\nLocation: ${job.location??''}\nApplication ID: ${application.application_id}\nCV: ${path.basename(cv.pdf_path)}\nConfirmation: ${result.confirmation_id}\nSource: ${job.canonical_url}`:`SUBMISSION STATUS UNKNOWN\nCompany: ${job.company}\nRole: ${job.title}\nApplication: ${application.application_id}\nManual review required. Submit will not be repeated.`);await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_SENT',{status:result.status});}catch{await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_FAILED',{status:result.status});}}
+        if(telegram?.send&&(result.status!=='SUBMITTED'||process.env.TELEGRAM_SUBMITTED_NOTIFICATIONS!=='false')){try{await telegram.send(result.status==='SUBMITTED'?`✅ Application submitted\nCompany: ${job.company}\nRole: ${job.title}\nLocation: ${job.location??''}\nApplication ID: ${application.application_id}\nCV: ${path.basename(cv.pdf_path)}\nConfirmation: ${result.confirmation_id}\nSource: ${job.canonical_url}`:`SUBMISSION STATUS UNKNOWN\nCompany: ${job.company}\nRole: ${job.title}\nApplication: ${application.application_id}\nManual review required. Submit will not be repeated.`);await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_SENT',{status:result.status});}catch{await repository.event('application',application.application_id,'SUBMISSION_NOTIFICATION_FAILED',{status:result.status});}}
         return {application_id:application.application_id,...result};
       }
       const next=view.buttons.find(b=>/^(?:next|continue)(\s+step)?$|^(?:dalej|kontynuuj|nastepny krok)$/i.test(norm(b.text)));if(!next){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'UNSUPPORTED_FORM'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}

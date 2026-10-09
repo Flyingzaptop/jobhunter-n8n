@@ -127,6 +127,7 @@ export function createDashboard({
     latest.rows[0].fit_pending=pipeline.find(stage=>stage.stage===3)?.runnable_pending_count??latest.rows[0].fit_pending;
     return {
       mode: {
+        autonomous_applications:process.env.AUTONOMOUS_APPLICATIONS_ENABLED==='true',
         paused: paused.rows[0]?.paused ?? false,
         dry_run: browserConfig().dryRun,
         real_submit_enabled: browserConfig().allowRealSubmit,

@@ -1,3 +1,4 @@
+import {autonomousAuthorization} from '../core/autonomous-authorization.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
@@ -59,7 +60,7 @@ async function lockApplication(client, binding) {
   const app = (await client.query('SELECT * FROM applications WHERE application_id=$1 FOR UPDATE', [binding.application.application_id])).rows[0];
   if (!app || app.status !== 'READY_TO_SUBMIT' || app.cv_id !== binding.application.cv_id || app.candidate_profile_id !== binding.application.candidate_profile_id || app.last_state?.browser_session_id !== binding.application.last_state?.browser_session_id) throw hitlError('APPLICATION_CHANGED_DURING_REVIEW');
 }
-export async function prepareApplicationReview(repository, applicationId, profile, browser,{ttlMs=REVIEW_TTL_MS}={}) {
+export async function prepareApplicationReview(repository, applicationId, profile, browser,{ttlMs=REVIEW_TTL_MS,campaignId=REVIEW_CAMPAIGN}={}) {
   if(!Number.isInteger(ttlMs)||ttlMs<REVIEW_TTL_MS||ttlMs>86400000)throw hitlError('INVALID_REVIEW_TTL');
   const binding = await buildBinding(repository, applicationId, profile, browser), client = await repository.pool.connect();
   try {
@@ -67,21 +68,22 @@ export async function prepareApplicationReview(repository, applicationId, profil
     if((await client.query("SELECT approval_id FROM application_review_gates WHERE application_id=$1 AND status='CONSUMED' LIMIT 1",[applicationId])).rows.length)throw hitlError('APPLICATION_REVIEW_ALREADY_CONSUMED');
     await client.query("UPDATE application_review_gates SET status='REVOKED',revoked_at=now() WHERE application_id=$1 AND status IN ('PREPARED','APPROVED')", [applicationId]);
     const gate = (await client.query(`INSERT INTO application_review_gates(approval_id,application_id,candidate_profile_id,campaign_id,digests,binding_digest,expires_at)
-      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [randomUUID(), applicationId, profile.profile_id, REVIEW_CAMPAIGN, binding.digests, binding.binding_digest, new Date(Date.now() + ttlMs)])).rows[0];
+      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [randomUUID(), applicationId, profile.profile_id, campaignId, binding.digests, binding.binding_digest, new Date(Date.now() + ttlMs)])).rows[0];
     await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'application',applicationId,'USER_REVIEW_PREPARED',{approval_id:gate.approval_id,binding_digest:gate.binding_digest,source:'USER_DASHBOARD',review_only:true}]);
     await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'application',applicationId,'APPLICATION_REVIEW_PACKET_SAVED',{approval_id:gate.approval_id,binding_digest:gate.binding_digest,summary:binding.summary}]);
     await client.query('COMMIT'); return { gate, summary: binding.summary, real_submit_enabled: false, review_only: true };
   } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
 }
 export async function approveApplicationReview(repository, applicationId, approvalId, expectedDigest, profile, browser,{source='USER_DASHBOARD'}={}) {
-  if(!['USER_DASHBOARD','USER_TELEGRAM'].includes(source))throw hitlError('INVALID_CONFIRMATION_SOURCE');
+  if(!['USER_DASHBOARD','USER_TELEGRAM','USER_AUTONOMOUS'].includes(source))throw hitlError('INVALID_CONFIRMATION_SOURCE');
+  if(source==='USER_AUTONOMOUS')await autonomousAuthorization(profile);
   const binding = await buildBinding(repository, applicationId, profile, browser), client = await repository.pool.connect();
   try {
     await client.query('BEGIN'); await client.query("SELECT pg_advisory_xact_lock(hashtextextended('jobhunter:manual-review-v1',0))"); await lockApplication(client, binding);
     const gate = (await client.query('SELECT * FROM application_review_gates WHERE approval_id=$1 AND application_id=$2 FOR UPDATE', [approvalId, applicationId])).rows[0];
     if (!gate || gate.status !== 'PREPARED' || new Date(gate.expires_at).getTime() <= Date.now() || gate.candidate_profile_id !== profile.profile_id || gate.binding_digest !== expectedDigest || gate.binding_digest !== binding.binding_digest) throw hitlError('REVIEW_STALE_OR_ALREADY_APPROVED');
     const count = Number((await client.query("SELECT count(*) AS n FROM application_review_gates WHERE campaign_id=$1 AND status IN ('APPROVED','CONSUMED')", [REVIEW_CAMPAIGN])).rows[0].n);
-    if (count >= REVIEW_APPLICATION_LIMIT) throw hitlError('TEN_APPLICATION_APPROVAL_LIMIT_REACHED');
+    if (source!=='USER_AUTONOMOUS' && count >= REVIEW_APPLICATION_LIMIT) throw hitlError('TEN_APPLICATION_APPROVAL_LIMIT_REACHED');
     const saved = (await client.query("UPDATE application_review_gates SET status='APPROVED',approved_at=now() WHERE approval_id=$1 RETURNING *", [approvalId])).rows[0];
     await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)', [randomUUID(), 'application', applicationId, 'USER_REVIEW_APPROVED', { approval_id: approvalId, binding_digest: expectedDigest, source, review_only: true }]);
     await client.query('COMMIT'); return { gate: saved, review_only: true, real_submit_enabled: false };
