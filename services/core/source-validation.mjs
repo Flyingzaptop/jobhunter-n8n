@@ -1,16 +1,29 @@
 import {readFile,writeFile} from 'node:fs/promises';
-import {eligibleAnalysis} from './continuous-worker.mjs';
+import {eligibleCvAnalysis} from './continuous-worker.mjs';
 import {reverifyMarketJob} from './discovery-v2.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 import {currentPreparationPolicy} from './preparation-policy.mjs';
 import {canonicalAnalysisHash} from './evidence-hash.mjs';
 import {activeProfileDigest} from '../dashboard/review-gates.mjs';
+import {workFormatAnalysis} from './fit.mjs';
+import {SharedSnapshot} from './worker-pacing.mjs';
 
 const caches=new WeakMap();
+export function needsSourceVerification(row,profile,policy){
+ const location=workFormatAnalysis({job:row,profile,policy,workFormat:row.analysis_json?.work_format}).location_policy_status;
+ return eligibleCvAnalysis(row,row.analysis_json,profile,policy)&&location!=='INCOMPATIBLE'&&
+  (row.cv_manifest.source_verification_required===true||location==='UNVERIFIED')&&row.cv_manifest.analysis_hash===canonicalAnalysisHash(row.analysis_json);
+}
 export async function validationCandidates(repository,profile,policy){
- const old=caches.get(repository);if(old&&Date.now()-old.at<5000)return old.promise;
- const promise=repository.pool.query(`SELECT DISTINCT ON(j.job_id) j.*,a.analysis_json,c.cv_id,c.manifest_json cv_manifest FROM jobs j JOIN cv_versions c USING(job_id) JOIN LATERAL(SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1)a ON true WHERE j.availability_status<>'CLOSED' AND c.profile_version=$1 AND c.template_version='cv-factory-v2.5-extractive-fast' AND c.qa_json->>'pass'='true' AND c.manifest_json->>'source_verification_required'='true' AND c.manifest_json->>'job_content_hash'=j.content_hash ORDER BY j.job_id,c.created_at DESC`,[activeProfileDigest(profile)]).then(result=>result.rows.filter(row=>currentPreparationPolicy({job:{...row,availability_status:'OPEN'},profile,policy,analysis:row.analysis_json}).pass&&eligibleAnalysis({...row,availability_status:'OPEN'},row.analysis_json,profile,policy)&&row.cv_manifest.analysis_hash===canonicalAnalysisHash(row.analysis_json)).sort((a,b)=>Number(b.analysis_json.overall_fit)-Number(a.analysis_json.overall_fit)));
- caches.set(repository,{at:Date.now(),promise});return promise;
+ let cache=caches.get(repository);if(!cache){cache=new SharedSnapshot(60000);caches.set(repository,cache);}
+ const rows=await cache.get(activeProfileDigest({profile,policy}),async()=>{
+  const result=await repository.pool.query(`SELECT DISTINCT ON(j.job_id) j.*,a.analysis_json,c.cv_id,c.manifest_json cv_manifest FROM jobs j JOIN cv_versions c USING(job_id) JOIN LATERAL(SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1)a ON true WHERE j.availability_status<>'CLOSED' AND c.profile_version=$1 AND c.template_version='cv-factory-v2.5-extractive-fast' AND c.qa_json->>'pass'='true' AND (c.manifest_json->>'source_verification_required'='true' OR c.manifest_json->>'application_eligible'='true') AND c.manifest_json->>'job_content_hash'=j.content_hash ORDER BY j.job_id,c.created_at DESC`,[activeProfileDigest(profile)]);
+  return result.rows.filter(row=>needsSourceVerification(row,profile,policy)).sort((a,b)=>Number(b.analysis_json.overall_fit)-Number(a.analysis_json.overall_fit));
+ });
+ if(!rows.length)return rows;
+ const keys=rows.map(row=>`source:v2:${row.job_id}:${row.content_hash}`);
+ const unavailable=new Set((await repository.pool.query("SELECT work_key FROM continuous_work WHERE work_key=ANY($1::text[]) AND NOT(status='RETRY' AND next_retry_at<=now() OR status='RUNNING' AND lease_until<now())",[keys])).rows.map(r=>r.work_key));
+ return rows.filter((row,i)=>!unavailable.has(keys[i]));
 }
 export async function validateSourceForCv({repository,job,profile,policy}){
  const verified=await reverifyMarketJob({repository,job});

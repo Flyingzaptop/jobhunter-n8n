@@ -37,6 +37,11 @@ function harness(overrides={}){const claims=new Map(),outcomes=[];let applied=[]
   prepare:async(jobId)=>({application_id:jobId}),apply:async(jobId)=>{applied.push(jobId);return {status:jobId===job.job_id?'CAPTCHA_WAIT':'READY_STOP'};},...overrides});
  return {worker,store,claims,outcomes,applied};}
 
+test('a draft which could not start remains retryable rather than falsely completed',async()=>{
+ const {worker,outcomes}=harness({apply:async()=>({status:'QUEUED',started:false,reason:'CURRENT_EMPLOYER_READY_CV_REQUIRED'})});
+ await worker.tick('preparation-1');assert.equal(outcomes[0].status,'RETRY');
+});
+
 test('strict FIT then CV then forms, and new FIT preempts the next lower task',async()=>{
  let pendingFit=3,pendingCv=2;const calls=[];
  const {worker,store,applied}=harness({fit:async()=>{if(pendingFit){pendingFit--;calls.push('FIT');return {attempted:1};}return {attempted:0};},cv:async()=>{pendingCv--;calls.push('CV');return {status:'REGISTERED'};},prose:async()=>({processed:0})});
@@ -152,7 +157,7 @@ test('PostgreSQL CV selection cannot be starved by a thousand obsolete analyses'
   await client.query(`CREATE SCHEMA ${schema}`);await client.query(`SET search_path TO ${schema},public`);
   await client.query('CREATE TABLE jobs(job_id uuid PRIMARY KEY,content_hash text,availability_status text,first_seen_at timestamptz,location text,country text,work_mode text,title text,company text,description_text text)');
   await client.query('CREATE TABLE job_analysis(analysis_id uuid,job_id uuid,analysis_json jsonb,created_at timestamptz)');
-  await client.query('CREATE TABLE cv_versions(job_id uuid,profile_version text,manifest_json jsonb)');
+  await client.query('CREATE TABLE cv_versions(job_id uuid,profile_version text,manifest_json jsonb,template_version text,qa_json jsonb)');
   await client.query('CREATE TABLE applications(job_id uuid,candidate_profile_id text,status text)');
   await client.query("INSERT INTO jobs SELECT gen_random_uuid(),'old','OPEN',now()-interval '1 day',NULL,NULL,NULL FROM generate_series(1,1001)");
   await client.query("INSERT INTO job_analysis SELECT gen_random_uuid(),job_id,'{\"decision\":\"REJECT\"}'::jsonb,now() FROM jobs");

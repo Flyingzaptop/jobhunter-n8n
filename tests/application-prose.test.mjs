@@ -34,6 +34,7 @@ test('actual PostgreSQL: durable exact binding, busy inference stays pending, mo
  const busy=await drain({repo,profile,policy,mutex:async()=>({blocked_reason:'INFERENCE_BATCH_BUSY',processed:0}),llm:{provider:'local',json:()=>{throw new Error('Busy must not infer');}}});assert.ok(busy.blocked_reason);
  let calls=0;const result=await drain({repo,profile,policy,mutex:async(_,operation)=>operation(),llm:{provider:'local',model:'isolated-gemma',json:async()=>++calls===1?document:{checks:[{segment_id:'s0',verdict:'SUPPORTED'},{segment_id:'s1',verdict:'SUPPORTED'}]}}});assert.equal(result.results[0].status,'READY');
  const ready=await getReady(args);assert.equal(ready.provenance,'MODEL_GROUNDED');assert.ok(ready.text_answer.includes('personal project'));assert.equal(await getReady({...args,view:{fingerprint:'changed-form'}}),null);assert.equal(await getReady({...args,policy:{remote_only:false}}),null);
+ assert.equal(await getReady({...args,field:{...field,description:'Review correction: remove unsupported metrics'}}),null);
  const newField={...field,selector:'#new-random-id'};
  assert.equal((await getReady({...args,field:newField,view:{...view,fields:[newField]}})).draft_id,ready.draft_id);
  assert.equal(await getReady({...args,field:newField,view:{...view,fields:[newField,{...newField,selector:'#other'}]}}),null);

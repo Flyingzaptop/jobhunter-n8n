@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createControlledPreparation} from '../services/core/controlled-preparation.mjs';
+import {createControlledPreparation,refreshedDraftState} from '../services/core/controlled-preparation.mjs';
+test('a changed profile starts a fresh draft and invalidates old answers, documents and approval',()=>{
+ const current={last_state:{browser_session_id:'old',confirmed_fields:{old:'answer'},form_answers:['old'],model_review:{status:'APPROVED'},application_documents:{cover_letter:'old'},pending_question:{question:'old'},ready_stop:true}};
+ const state=refreshedDraftState(current,{profileHash:'new',cv:{sha256:'new-cv'},job:{content_hash:'current'},freshForm:true});
+ assert.equal(state.browser_session_id,null);assert.deepEqual(state.confirmed_fields,{});assert.deepEqual(state.form_answers,[]);assert.deepEqual(state.application_documents,{});assert.equal(state.model_review,null);assert.equal(state.ready_stop,false);
+ assert.equal(current.last_state.browser_session_id,'old');
+});
 test('controlled rehearsal cannot use rejected, incomplete or policy-blocked CVs and never changes submit configuration',async()=>{
  const before={dry:process.env.DRY_RUN,real:process.env.ALLOW_REAL_SUBMIT};process.env.DRY_RUN='true';process.env.ALLOW_REAL_SUBMIT='false';
  const jobId='7458d4e9-da2e-47bd-98cb-adfda43d42b2',cvId='7458d4e9-da2e-47bd-98cb-adfda43d42b3';

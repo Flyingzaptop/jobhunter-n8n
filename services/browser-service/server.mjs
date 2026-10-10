@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { validateDestination, controlledSubmitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
+import {SessionBudget} from './session-budget.mjs';
 import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl,finalSubmitLabel} from './ats-adapters.mjs';
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
@@ -29,6 +30,7 @@ export function browserConfig(env = process.env) {
     allowMockNetwork: env.ALLOW_MOCK_NETWORK === 'true', mockHosts: (env.MOCK_ALLOWED_HOSTS || '127.0.0.1,localhost,mock-job-board').split(','),
     allowDomains: (env.APPLICATION_DOMAIN_ALLOWLIST || '').split(',').filter(Boolean), denyDomains: (env.APPLICATION_DOMAIN_DENYLIST || '').split(',').filter(Boolean),
     artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/cv'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
+    maxSessions:Number(env.BROWSER_MAX_SESSIONS||4),sessionIdleMs:Number(env.BROWSER_SESSION_IDLE_MS||120000),
     sessionRetentionHours:Number(env.BROWSER_SESSION_RETENTION_HOURS||48),screenshotRetentionHours:Number(env.SCREENSHOT_RETENTION_HOURS||168),executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined };
 }
 
@@ -58,14 +60,19 @@ function authorized(req, token) { const expected = Buffer.from(`Bearer ${token}`
 
 export async function createBrowserService(config = browserConfig()) {
   if (!config.token) throw new Error('BROWSER_SERVICE_TOKEN_REQUIRED');
-  const sessions = new Map(); let browser;
+  const sessions = new Map(); let browser,browserLaunching;
+  async function closeSession(session){try{await checkpoint(session);}catch(error){console.error(JSON.stringify({event:'SESSION_CHECKPOINT_FAILED',session_id:session.id,error:error.message}));}finally{await session.context.close();sessions.delete(session.id);}}
+  const budget=new SessionBudget({sessions,max:config.maxSessions??4,idleMs:config.sessionIdleMs??120000,close:closeSession});
+  const idleTimer=setInterval(()=>budget.sweep().catch(()=>{}),15000);idleTimer.unref();
   await fs.mkdir(config.stateRoot, { recursive: true }); await fs.mkdir(config.artifactRoot, { recursive: true });
   await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
   const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
   async function newSession(applicationId, saved,board) {
-    browser ||= await chromium.launch({ headless: true, executablePath: config.executablePath, args: ['--disable-gpu','--disable-webrtc', '--disable-quic'] });
-    const context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state??await exportedBoardState(board) });
-    const session = { id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
+    const release=await budget.reserve();let context;
+    try {
+    if(!browser){browserLaunching??=chromium.launch({headless:true,executablePath:config.executablePath,args:['--disable-gpu','--disable-webrtc','--disable-quic']}).finally(()=>{browserLaunching=null;});browser=await browserLaunching;}
+    context = await browser.newContext({ serviceWorkers: 'block', acceptDownloads: false, storageState: saved?.storage_state??await exportedBoardState(board) });
+    const session = { lastUsedAt:Date.now(),activeCalls:0,leaseUntil:0,id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {
       try {
         const request = route.request(), destination = await validateDestination(request.url(), config);let uploadInit=false;
@@ -115,6 +122,7 @@ export async function createBrowserService(config = browserConfig()) {
       }catch{await page.close().catch(()=>{});}
     });
     session.page = await context.newPage(); session.page.setDefaultTimeout(7000); sessions.set(session.id, session); return session;
+    }catch(error){await context?.close().catch(()=>{});throw error;}finally{release();}
   }
   async function snapshot(session) {
     const result = await session.page.evaluate(() => {
@@ -248,7 +256,7 @@ export async function createBrowserService(config = browserConfig()) {
       if (!authorized(req, config.token)) return send(401, { error: 'UNAUTHORIZED' });
       const url = new URL(req.url, 'http://service'), payload = ['POST', 'PUT'].includes(req.method) ? await bodyJSON(req) : {};
       if(url.pathname==='/sessions'&&req.method==='GET')return send(200,{sessions:[...sessions.values()].map(session=>({browser_session_id:session.id,application_id:session.application_id,adapter:atsAdapterFor(session.page.url()),url:observerUrl(session.page.url())}))});
-      if (url.pathname === '/sessions' && req.method === 'POST') { if (typeof payload.application_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(payload.application_id)) throw new Error('INVALID_APPLICATION_ID'); const session = await newSession(payload.application_id,undefined,boardForUrl(payload.url)); if (payload.url) await action(session, 'navigate', payload); return send(201, { session_id: session.id, snapshot: await snapshot(session) }); }
+      if (url.pathname === '/sessions' && req.method === 'POST') { if (typeof payload.application_id!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(payload.application_id)) throw new Error('INVALID_APPLICATION_ID'); const session = await newSession(payload.application_id,undefined,boardForUrl(payload.url)); session.activeCalls++;try{if (payload.url) await action(session, 'navigate', payload); return send(201, { session_id: session.id, snapshot: await snapshot(session) });}catch(error){await closeSession(session);throw error;}finally{session.activeCalls--;session.lastUsedAt=Date.now();} }
       const [, id, operation] = /^\/sessions\/([^/]+)(?:\/([^/]+))?$/.exec(url.pathname) || [];
       if(id&&!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id))throw new Error('INVALID_SESSION_ID');
       if (operation === 'recover' && req.method === 'POST') {
@@ -258,18 +266,23 @@ export async function createBrowserService(config = browserConfig()) {
         if (saved.submit_attempted) return send(200, { status: 'SUBMISSION_UNKNOWN', reason: 'CHECK_CONFIRMATION_BEFORE_RECOVERY' });
         if (saved.recovery_attempts >= config.maxRecovery) return send(200, { status: 'MANUAL_TAKEOVER', reason: 'RECOVERY_LIMIT' });
         saved.recovery_attempts++; await fs.writeFile(path.join(config.stateRoot, `${id}.json`), JSON.stringify(saved), { mode: 0o600 });
-        const fresh = await newSession(saved.application_id, saved); await action(fresh, 'navigate', { url: saved.current_url });
-        const view = await snapshot(fresh); return send(200, { session_id: fresh.id, snapshot: view, status: view.captcha ? 'CAPTCHA_WAIT' : /login|two.factor|webauthn/i.test(view.title + view.text) ? 'MANUAL_TAKEOVER' : 'FILLING', replay_required: true, known_fields: saved.filled_fields });
+        const fresh = await newSession(saved.application_id, saved);fresh.activeCalls++;try{await action(fresh, 'navigate', { url: saved.current_url });
+        const view = await snapshot(fresh); return send(200, { session_id: fresh.id, snapshot: view, status: view.captcha ? 'CAPTCHA_WAIT' : /login|two.factor|webauthn/i.test(view.title + view.text) ? 'MANUAL_TAKEOVER' : 'FILLING', replay_required: true, known_fields: saved.filled_fields });}catch(error){await closeSession(fresh);throw error;}finally{fresh.activeCalls--;fresh.lastUsedAt=Date.now();}
       }
       const session = sessions.get(id); if (!session) return send(404, { error: 'SESSION_NOT_FOUND' });
-      if (req.method === 'DELETE') { await checkpoint(session); await session.context.close(); sessions.delete(id); return send(200, { closed: true }); }
+      if(session.closing)return send(409,{error:'SESSION_CLOSING_RETRY'});
+      session.activeCalls++;session.lastUsedAt=Date.now();
+      try{
+      if(req.method==='POST'&&operation==='lease'){session.leaseUntil=payload.release?0:Date.now()+120000;return send(200,{leased:!payload.release});}
+      if (req.method === 'DELETE') { await closeSession(session);return send(200, { closed: true }); }
       if (req.method === 'GET' && ['snapshot', 'forms', 'form-state'].includes(operation)) return send(200, await snapshot(session));
       if (req.method === 'POST' && operation === 'action-batch') { if (!Array.isArray(payload.actions) || payload.actions.length > 30) throw new Error('INVALID_ACTION_BATCH'); let result; for (const item of payload.actions) { if (!['fill', 'select', 'check', 'upload'].includes(item.operation)) throw new Error('BATCH_REVERSIBLE_ONLY'); result = await action(session, item.operation, item); } return send(200, result || await snapshot(session)); }
       if (req.method === 'POST') return send(200, await action(session, operation, payload));
       send(404, { error: 'NOT_FOUND' });
+      }finally{session.activeCalls--;session.lastUsedAt=Date.now();}
     } catch (error) { send(400, { error: error.message }); }
   });
-  return { server, sessions, config, listen: () => new Promise(resolve => server.listen(config.port, config.host, resolve)), close: async () => { clearInterval(retentionTimer);for (const s of sessions.values()) await s.context.close(); await browser?.close(); await new Promise(resolve => server.close(resolve)); } };
+  return { server, sessions, config, sweepIdle:()=>budget.sweep(), listen: () => new Promise(resolve => server.listen(config.port, config.host, resolve)), close: async () => { clearInterval(retentionTimer);clearInterval(idleTimer);for (const s of sessions.values()) await s.context.close(); await browser?.close(); await new Promise(resolve => server.close(resolve)); } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) { const service = await createBrowserService(); await service.listen(); console.log(JSON.stringify({ event: 'browser_started', port: service.config.port })); for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, async () => { await service.close(); process.exit(0); }); }

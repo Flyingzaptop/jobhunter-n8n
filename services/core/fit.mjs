@@ -728,6 +728,10 @@ export function workFormatAnalysis({job, profile, policy = {}, workFormat}) {
   const reasons = []; let classification = 'UNKNOWN', feasible = false, blocker = false;
   const regularOnsite = (f.onsite_days_per_week ?? 0) > 0 || (f.onsite_days_per_month ?? 0) > 1;
   const declaredMode=explicitWorkMode(job).mode;
+  const verifiedRegions=job.metadata?.validated_applicant_locations??[];
+  if(declaredMode==='REMOTE'&&verifiedRegions.some(r=>/^(?:poland|polska|pl|europe|european union|eu|eea|emea|worldwide|global|anywhere)$/i.test(String(r).trim()))){
+    f.remote_allowed??=true;f.hybrid_required??=false;f.work_from_poland_allowed??=true;
+  }
   if(noRelocation&&declaredMode==='HYBRID')f.hybrid_required=true;
   if(noRelocation&&declaredMode==='ONSITE'){f.remote_allowed=false;f.hybrid_required=false;}
   const physicalRequired=f.hybrid_required===true||f.remote_allowed===false||regularOnsite||['HYBRID','ONSITE'].includes(declaredMode);

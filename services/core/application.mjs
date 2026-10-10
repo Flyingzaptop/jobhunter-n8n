@@ -20,6 +20,7 @@ import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from '../browser-service/required-fields.mjs';
 import {standingRecruitmentConsent} from './consent-policy.mjs';
 import {siteControlReason} from '../browser-service/field-purpose.mjs';
+import {transientApplicationError} from './application-retry.mjs';
 export {missingRequiredFields} from '../browser-service/required-fields.mjs';
 
 export class BrowserClient {
@@ -280,6 +281,8 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       const fieldsToFill=view.fields.filter(f=>!f.disabled&&!f.readOnly&&(f.visible||(f.type==='file'&&/resume|\bcv\b|curriculum/i.test(f.name+' '+f.label+' '+f.selector)))&&!['hidden','submit','button','search'].includes(f.type)&&f.role!=='searchbox');
       fieldsToFill.sort((a,b)=>Number(a.type==='file')-Number(b.type==='file')||Number(a.type==='textarea'&&!a.required)-Number(b.type==='textarea'&&!b.required));
       for(const field of fieldsToFill){
+        const correction=application.last_state?.model_review?.changes?.find(c=>c.field_selector===field.selector&&c.field_label===field.label);
+        if(correction&&isModelAnswerable(field))field.description=`${field.description??''} Review correction: ${correction.reason}`;
         if(field.type==='file'&&!field.required&&!String(field.label??'').trim()&&!/resume|\bcv\b|letter|document|attachment|certificate|portfolio/i.test((field.name??'')+' '+(field.selector??'')))continue;
         if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
         const knownOptional=resolveField(field,{profile,job,view,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
@@ -364,6 +367,16 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       if(view.current_step===previous){const invalid=view.fields.find(f=>f.visible&&f.validation_message&&!siteControlReason(f));if(invalid)return ask({repository,telegram,application,browser,sessionId,field:{...invalid,label:invalid.label+' — '+invalid.validation_message},snapshot:view,type:'VALIDATION'});await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'STEP_DID_NOT_ADVANCE',validation_errors:view.validation_errors});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};}
     }
     await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'MAX_FORM_STEPS'});return {application_id:application.application_id,status:'MANUAL_TAKEOVER'};
-  } catch(error) {await repository.event('application',application.application_id,'APPLICATION_RUN_FAILED',{error:error.name,reason:error.message.slice(0,200)});const current=(await repository.pool.query('SELECT status FROM applications WHERE application_id=$1',[application.application_id])).rows[0]?.status;if(['OPENING','FILLING'].includes(current)){await transition(repository,application.application_id,'FAILED',{failure_reason:error.message.slice(0,200)});return {application_id:application.application_id,status:'FAILED',reason:error.message};}if(current==='SUBMITTING'){await transition(repository,application.application_id,'SUBMISSION_UNKNOWN');return {application_id:application.application_id,status:'SUBMISSION_UNKNOWN'};}return {application_id:application.application_id,status:current||'FAILED',reason:error.message};}
-  finally { if(quotaLock)await mutex.query("SELECT pg_advisory_unlock(hashtextextended('jobhunter-submission-quota',0))");await mutex.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[application.application_id]);mutex.release(); }
+  } catch(error) {await repository.event('application',application.application_id,'APPLICATION_RUN_FAILED',{error:error.name,reason:error.message.slice(0,200)});const current=(await repository.pool.query('SELECT status FROM applications WHERE application_id=$1',[application.application_id])).rows[0]?.status;if(['OPENING','FILLING'].includes(current)){
+      const state=(await repository.pool.query('SELECT last_state FROM applications WHERE application_id=$1',[application.application_id])).rows[0]?.last_state??{};
+      if(transientApplicationError(error,state.transient_failures??0)){
+        await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb,updated_at=now() WHERE application_id=$1',[application.application_id,{transient_failures:(state.transient_failures??0)+1,last_retry_error:error.message.slice(0,240)}]);
+        return {application_id:application.application_id,status:current,blocked_reason:'FORM_TRANSIENT_RETRY',reason:error.message};
+      }
+      await transition(repository,application.application_id,'FAILED',{failure_reason:error.message.slice(0,200)});return {application_id:application.application_id,status:'FAILED',reason:error.message};}if(current==='SUBMITTING'){await transition(repository,application.application_id,'SUBMISSION_UNKNOWN');return {application_id:application.application_id,status:'SUBMISSION_UNKNOWN'};}return {application_id:application.application_id,status:current||'FAILED',reason:error.message};}
+  finally {
+    try{const parked=(await repository.pool.query('SELECT status,last_state FROM applications WHERE application_id=$1',[application.application_id])).rows[0];
+      if(parked?.last_state?.browser_session_id&&(['FAILED','SKIPPED','SUBMITTED','ALREADY_APPLIED'].includes(parked.status)||parked.status==='MANUAL_TAKEOVER'&&!/CAPTCHA|AUTHENTICATION/.test(parked.last_state.reason??'')))await browser.call(`/sessions/${parked.last_state.browser_session_id}`,undefined,'DELETE');
+    }catch{/* Idle session budget also releases pages after a failed checkpoint. */}
+    if(quotaLock)await mutex.query("SELECT pg_advisory_unlock(hashtextextended('jobhunter-submission-quota',0))");await mutex.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[application.application_id]);mutex.release(); }
 }

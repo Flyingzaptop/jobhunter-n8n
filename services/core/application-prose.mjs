@@ -48,7 +48,7 @@ export function validateProseClaims(document,facts){
 function binding({appId,field,view,profile,job,policy={}}){
  const selector=field.selector,label=labelOf(field),type=field.type??field.field_type;
  if(!appId||!selector||!label||!view.fingerprint||!job.job_id)throw new Error('EXACT_PROSE_BINDING_REQUIRED');
- const data={application_id:appId,job_id:job.job_id,profile_hash:hash(profile),job_hash:job.content_hash??hash(job.description_text??''),policy_hash:hash(policy),form_fingerprint:view.fingerprint,field_selector:selector,field_label:label,field_type:type};return {...data,binding_hash:hash(data)};
+ const data={application_id:appId,job_id:job.job_id,profile_hash:hash(profile),job_hash:job.content_hash??hash(job.description_text??''),policy_hash:hash(policy),form_fingerprint:view.fingerprint,field_selector:selector,field_label:label,field_type:type,field_description:field.description??''};return {...data,binding_hash:hash(data)};
 }
 function stableQuestionScope({field,view}){
  if(!view.url||!Array.isArray(view.fields)||view.fields.filter(f=>f.label===labelOf(field)&&f.type===(field.type??field.field_type)).length!==1)return null;
@@ -73,6 +73,7 @@ export async function getReady(input){const b=binding(input);const exact=(await 
  // question in the same form structure, vacancy, profile and policy.
  if(input.view.fields?.filter(f=>f.label===b.field_label&&f.type===b.field_type).length!==1)return null;
  const scope=stableQuestionScope(input);
+ if(input.field.description?.trim())return null;
  const scoped=(await input.repo.pool.query("SELECT * FROM application_prose_drafts WHERE application_id=$1 AND job_id=$2 AND profile_hash=$3 AND job_hash=$4 AND policy_hash=$5 AND (form_fingerprint=$6 OR ($9::text IS NOT NULL AND input_json->>'question_scope'=$9)) AND field_label=$7 AND field_type=$8 AND status IN ('READY','CONSUMED') AND qa_json->>'pass'='true' ORDER BY updated_at DESC LIMIT 1",[input.appId,b.job_id,b.profile_hash,b.job_hash,b.policy_hash,b.form_fingerprint,b.field_label,b.field_type,scope])).rows[0];if(scoped)return scoped;
  // Other fields' required flags do not change this unique, unchanged prose question.
  // New field descriptions can change its meaning and require fresh verification.

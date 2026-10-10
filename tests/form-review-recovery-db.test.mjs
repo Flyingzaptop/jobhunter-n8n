@@ -1,0 +1,27 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID} from 'node:crypto';import pg from 'pg';
+import {mkdtemp,writeFile} from 'node:fs/promises';import os from 'node:os';import path from 'node:path';
+import {Repository} from '../services/core/repository.mjs';import {drainFormModelReviews} from '../services/core/form-model-review.mjs';
+import {recoverStrandedApplications} from '../services/core/application-recovery.mjs';
+test('PostgreSQL: failed model correction requeues preparation and releases its browser lease', {skip:!process.env.DATABASE_URL},async t=>{
+ const repo=new Repository(),admin=repo.pool,schema='review_recovery_'+randomUUID().replaceAll('-','');
+ await admin.query(`CREATE SCHEMA ${schema}`);repo.pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:`-c search_path=${schema},public`,max:5});
+ t.after(async()=>{await repo.pool.end();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();});await repo.migrate();
+ const dir=await mkdtemp(path.join(os.tmpdir(),'jh-review-')),documentPath=path.join(dir,'document.json');await writeFile(documentPath,'{}');
+ const job=randomUUID(),cv=randomUUID(),app=randomUUID(),session=randomUUID();
+ await repo.pool.query("INSERT INTO jobs(job_id,canonical_url,title,company,description_text) VALUES($1,'https://example.invalid','Fixture role','Fixture','Isolated regression')",[job]);
+ await repo.pool.query("INSERT INTO cv_versions(cv_id,job_id,profile_version,template_version,model,pdf_path,html_path,sha256,qa_json,manifest_json)VALUES($1,$2,'fixture','fixture','fixture','fixture','fixture','fixture','{}',$3)",[cv,job,{document_path:documentPath}]);
+ await repo.pool.query("INSERT INTO applications(application_id,candidate_profile_id,job_id,cv_id,status,last_state)VALUES($1,'fixture',$2,$3,'READY_TO_SUBMIT',$4)",[app,job,cv,{browser_session_id:session,model_review:{status:'PENDING'}}]);
+ await repo.pool.query("INSERT INTO continuous_work(work_key,lane,entity_id,status)VALUES('prepare-fixture','preparation',$1,'WAITING_USER')",[job]);
+ const view={url:'https://example.invalid/form',fingerprint:'f',current_step:0,fields:[{selector:'#city',name:'location',label:'Location',type:'text',visible:true,value:'Wrong city'}],buttons:[],forms:[]},calls=[];
+ const browser={call:async(endpoint,body)=>{calls.push({endpoint,body});if(endpoint.endsWith('/fill'))throw Error('SIMULATED_COMBOBOX_FAILURE');return view;}};
+ const result=await drainFormModelReviews({repository:repo,profile:{profile_id:'fixture',candidate:{base_location:{city:'Wroclaw',country:'Poland'}}},policy:{},llm:{provider:'local',json:async()=>({s:'-',changes:[{field:0,reason:'Use confirmed city'}]})},browser});
+ assert.equal(result.status,'CORRECTION_PENDING');
+ const stored=(await repo.pool.query('SELECT status,last_state FROM applications WHERE application_id=$1',[app])).rows[0];assert.equal(stored.status,'FILLING');assert.equal(stored.last_state.model_review.error,'SIMULATED_COMBOBOX_FAILURE');
+ assert.equal((await repo.pool.query("SELECT status FROM continuous_work WHERE work_key='prepare-fixture'")).rows[0].status,'RETRY');
+ assert.ok(calls.some(c=>c.endpoint.endsWith('/lease')&&c.body.release));
+ await repo.pool.query("UPDATE applications SET status='FAILED',last_state=last_state||$2::jsonb WHERE application_id=$1",[app,{failure_reason:'page.evaluate: Execution context was destroyed'}]);
+ assert.equal((await recoverStrandedApplications(repo)).recovered,1);
+ assert.equal((await repo.pool.query('SELECT status FROM applications WHERE application_id=$1',[app])).rows[0].status,'OPENING');
+ await repo.pool.query("UPDATE applications SET status='FAILED',submitted_at=now() WHERE application_id=$1",[app]);
+ assert.equal((await recoverStrandedApplications(repo)).recovered,0);
+});

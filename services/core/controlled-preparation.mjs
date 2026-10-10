@@ -9,21 +9,28 @@ import YAML from 'yaml';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
+export function refreshedDraftState(current,{profileHash,cv,job,freshForm}){
+ const state={...current.last_state,profile_hash:profileHash,cv_sha256:cv.sha256,job_content_hash:job.content_hash,final_review:null,model_review:null,full_fields_checked:false,ready_stop:false};
+ if(freshForm)Object.assign(state,{browser_session_id:null,confirmed_fields:{},form_answers:[],pending_question:null,prose_pending_question:null,application_documents:{},fresh_form_reason:'PROFILE_CHANGED'});
+ return state;
+}
 export async function refreshPreparationCv({repository,applicationId,cvId,profile,policy}){
  const app=(await repository.pool.query('SELECT * FROM applications WHERE application_id=$1 AND candidate_profile_id=$2',[applicationId,profile.profile_id])).rows[0];
- if(!app)throw Error('APPLICATION_NOT_FOUND');if(app.cv_id===cvId)return app;
+ if(!app)throw Error('APPLICATION_NOT_FOUND');const profileHash=digest(JSON.stringify(profile));const freshForm=Boolean(app.last_state?.profile_hash&&app.last_state.profile_hash!==profileHash);if(app.cv_id===cvId&&!freshForm)return app;
  if(!app.dry_run||!['QUEUED','OPENING','FILLING'].includes(app.status)||app.submitted_at||app.confirmation_id)throw Error('APPLICATION_CV_REFRESH_NOT_ALLOWED');
  const job=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[app.job_id])).rows[0],cv=(await repository.pool.query('SELECT * FROM cv_versions WHERE cv_id=$1 AND job_id=$2',[cvId,app.job_id])).rows[0];
  const analysis=(await repository.pool.query('SELECT analysis_json FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1',[app.job_id])).rows[0]?.analysis_json;
- const profileHash=digest(JSON.stringify(profile));
  if(analysis?.policy_hash!==digest(JSON.stringify(policy))||!currentPreparationPolicy({job,profile,policy,analysis,cv}).pass||!(await verifyCurrentCvEvidence({cv,job,profile,analysis})).pass)throw Error('CURRENT_CV_REFRESH_EVIDENCE_REQUIRED');
- if(app.last_state?.profile_hash&&app.last_state.profile_hash!==profileHash)throw Error('PROFILE_CHANGED_REQUIRES_FRESH_FORM');
+
  const client=await repository.pool.connect();try{await client.query('BEGIN');
   if(!(await client.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1,0)) locked',[applicationId])).rows[0].locked){await client.query('ROLLBACK');return {blocked_reason:'APPLICATION_BUSY'};}
   const current=(await client.query('SELECT * FROM applications WHERE application_id=$1 FOR UPDATE',[applicationId])).rows[0];
   if(current.cv_id!==app.cv_id||!['QUEUED','OPENING','FILLING'].includes(current.status)||current.submitted_at||current.confirmation_id)throw Error('APPLICATION_CHANGED_DURING_CV_REFRESH');
+  if((await client.query('SELECT 1 FROM confirmed_submit_commands WHERE application_id=$1 LIMIT 1',[applicationId])).rowCount)throw Error('PRIOR_SUBMIT_COMMAND_REQUIRES_RECONCILIATION');
   await client.query("UPDATE application_review_gates SET status='REVOKED',revoked_at=now() WHERE application_id=$1 AND status IN('PREPARED','APPROVED')",[applicationId]);
-  const row=(await client.query('UPDATE applications SET cv_id=$2,last_state=last_state||$3::jsonb,updated_at=now() WHERE application_id=$1 RETURNING *',[applicationId,cvId,{profile_hash:profileHash,cv_sha256:cv.sha256,job_content_hash:job.content_hash,final_review:null}])).rows[0];
+  const state=refreshedDraftState(current,{profileHash,cv,job,freshForm});
+  const row=(await client.query('UPDATE applications SET cv_id=$2,last_state=$3::jsonb,status=$4,updated_at=now() WHERE application_id=$1 RETURNING *',[applicationId,cvId,state,freshForm?'OPENING':current.status])).rows[0];
+  if(freshForm)await client.query("UPDATE application_questions SET closed_at=now(),closed_reason='PROFILE_CHANGED_FRESH_FORM' WHERE application_id=$1 AND closed_at IS NULL",[applicationId]);
   await client.query("INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json)VALUES($1,'application',$2,'PREPARATION_CV_REFRESHED',$3)",[randomUUID(),applicationId,{previous_cv_id:app.cv_id,cv_id:cvId,source:'CURRENT_EVALUATED_TAILORED_CV',requires_new_submit_confirmation:true}]);
   await client.query('COMMIT');return row;
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
