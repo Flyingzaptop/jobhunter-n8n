@@ -808,7 +808,10 @@ export function routeAnalysis({job, profile, policy = {}, analysis, score}) {
   if (result.mandatory_unknown) {if (decision === 'AUTO_APPLY') decision = 'REVIEW'; reasons.push('MANDATORY_UNKNOWN');}
   if (job.availability_status !== 'OPEN' && decision === 'AUTO_APPLY') {decision = 'REVIEW'; reasons.push('VACANCY_NOT_VERIFIED_OPEN');}
   if (job.material_fact_unknown && decision === 'AUTO_APPLY') {decision = 'REVIEW'; reasons.push('MATERIAL_APPLICATION_FACT_UNKNOWN');}
-  const blocked = analysis.hard_blockers?.length > 0 || work.employment_eligibility.blocker
+  const restrictedRegions=job.metadata?.validated_applicant_locations??[];
+  const countryExcluded=restrictedRegions.length>0&&!restrictedRegions.some(r=>/^(?:poland|polska|pl|europe|european union|eu|eea|emea|worldwide|global|anywhere)$/i.test(String(r).trim()));
+  if(countryExcluded)reasons.push('APPLICANT_LOCATION_EXCLUDES_REQUIRED_BASE');
+  const blocked = countryExcluded || analysis.hard_blockers?.length > 0 || work.employment_eligibility.blocker
     || analysis.requirements.some(qualificationBlocker)
     || (policy.excluded_companies || []).some(company => normalize(company) === normalize(job.company))
     || (policy.excluded_countries || []).some(country => normalize(country) === normalize(job.country))
@@ -817,7 +820,11 @@ export function routeAnalysis({job, profile, policy = {}, analysis, score}) {
   if (job.availability_status === 'CLOSED') {decision = 'REJECT'; reasons.push('JOB_CLOSED');}
   if (job.already_applied || job.duplicate_application) {decision = 'REJECT'; reasons.push('DUPLICATE_APPLICATION');}
   if (job.company_spam_guard && decision === 'AUTO_APPLY') {decision = 'REVIEW'; reasons.push('COMPANY_SPAM_GUARD');}
-  return {...analysis, ...result, ...work, decision, reasons: [...new Set(reasons)],
+  const locationPending=decision!=='REJECT'&&work.location_policy_status==='UNVERIFIED';
+  if(locationPending){decision='REVIEW';reasons.push('FIT_INCOMPLETE_WORK_LOCATION');}
+  return {...analysis, ...result, ...work, decision,fit_complete:!locationPending,
+    fit_status:locationPending?'NEEDS_LOCATION_EVIDENCE':decision==='REJECT'?'REJECTED':'COMPLETE',
+    cv_eligible:!locationPending&&decision!=='REJECT'&&work.location_policy_status==='COMPATIBLE',reasons: [...new Set(reasons)],
     application_priority: result.overall_fit === null ? 0 : Math.round(result.overall_fit * (work.eligible_for_auto_apply ? 1 : 0.85)),
     prompt_version: PROMPT_VERSION};
 }

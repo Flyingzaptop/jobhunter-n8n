@@ -366,6 +366,7 @@ async function renderPdf(html, target) {
 }
 
 export async function buildTailoredCv({job,profile,analysis,llm=new OllamaClient(),repository,outputRoot='data/cv-v2',writerMode=process.env.CV_WRITER_MODE??'auto',allowUnverifiedSource=false}) {
+  if(analysis?.fit_complete===false||analysis?.cv_eligible===false||analysis?.location_policy_status==='UNVERIFIED')throw new Error('FIT_LOCATION_NOT_RESOLVED_CV_FORBIDDEN');
   const totalStarted=performance.now();
   llm=resolveCvLlm(llm);
   if (job.availability_status==='CLOSED'||job.availability_status!=='OPEN'&&!allowUnverifiedSource) throw new Error('Vacancy not verified OPEN');

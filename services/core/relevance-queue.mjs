@@ -196,8 +196,10 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
           if(hydratedHard){results.push({job_id:row.job_id,status:'DETERMINISTIC_REJECTED',reasons:hydratedHard.analysis.reasons,model:null,inference_performed:false});continue;}
           if(verification.status==='OPEN')job.availability_status='OPEN';key=fitInputHash({job,profile,policy,model:llm.model});
           await repository.pool.query('UPDATE relevance_queue SET active_fit_hash=$2 WHERE job_id=$1',[row.job_id,key]);
-          if((await repository.pool.query('SELECT 1 FROM fit_batch_receipts WHERE job_id=$1 AND fit_input_hash=$2',[row.job_id,key])).rowCount){
-            await repository.pool.query("UPDATE relevance_queue SET status='ANALYZED',claimed_by=NULL,last_completed_hash=$2,error_code=NULL,next_retry_at=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,key]);
+          const cachedFit=(await repository.pool.query('SELECT a.analysis_json FROM fit_batch_receipts r JOIN job_analysis a ON a.analysis_id=r.analysis_id WHERE r.job_id=$1 AND r.fit_input_hash=$2',[row.job_id,key])).rows[0]?.analysis_json;
+          if(cachedFit){
+            const cachedIncomplete=cachedFit.fit_complete===false||cachedFit.decision!=='REJECT'&&cachedFit.location_policy_status==='UNVERIFIED';
+            await repository.pool.query("UPDATE relevance_queue SET status=$3,claimed_by=NULL,last_completed_hash=$2,error_code=$4,next_retry_at=CASE WHEN $3='OPEN_UNVERIFIED' THEN now()+interval '6 hours' ELSE NULL END,updated_at=now() WHERE job_id=$1",[row.job_id,key,cachedIncomplete?'OPEN_UNVERIFIED':'ANALYZED',cachedIncomplete?'FIT_LOCATION_EVIDENCE_REQUIRED':null]);
             results.push({job_id:row.job_id,status:'AVAILABILITY_REVERIFIED_UNCHANGED_FIT',fit_input_hash:key});continue;
           }
           inferenceAttempts++;const analysis=await analyzer({job,profile,policy,llm});
@@ -210,7 +212,7 @@ export async function runRelevanceFitBatch({repository,profile,policy,llm,maxJob
               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[analysisId,row.job_id,analysis.model,PROMPT_VERSION,analysis.profile_version??'UNKNOWN',analysis.overall_fit,analysis.application_priority,analysis.decision,analysis]);
             await client.query(`INSERT INTO fit_batch_receipts(job_id,fit_input_hash,analysis_id,run_id,model,profile_hash,policy_hash,prompt_version)
               VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[row.job_id,key,analysisId,runId,llm.model,hash(profile),hash(policy),PROMPT_VERSION]);
-            await client.query("UPDATE relevance_queue SET status='ANALYZED',input_hash=$2,last_completed_hash=$3,error_code=NULL,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,relevanceInputHash(job),key]);
+            await client.query("UPDATE relevance_queue SET status=$4,input_hash=$2,last_completed_hash=$3,error_code=$5,next_retry_at=CASE WHEN $4='OPEN_UNVERIFIED' THEN now()+interval '6 hours' ELSE NULL END,claimed_by=NULL,updated_at=now() WHERE job_id=$1",[row.job_id,relevanceInputHash(job),key,analysis.fit_complete===false?'OPEN_UNVERIFIED':'ANALYZED',analysis.fit_complete===false?'FIT_LOCATION_EVIDENCE_REQUIRED':null]);
             await client.query("UPDATE jobs SET status='ANALYZED',last_analysis_error=NULL,next_analysis_retry_at=NULL,analysis_failure_kind=NULL WHERE job_id=$1",[row.job_id]);
             await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json) VALUES($1,$2,$3,$4,$5)',
               [randomUUID(),'job',row.job_id,'QUEUED_FIT_ANALYZED',{run_id:runId,stage:3,decision:analysis.decision,overall_fit:analysis.overall_fit,fit_input_hash:key,model:llm.model,prompt_version:PROMPT_VERSION}]);

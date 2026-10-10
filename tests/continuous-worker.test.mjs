@@ -17,13 +17,13 @@ test('previous fit prompt receipts cannot authorize fresh CV or preparation',()=
  assert.equal(eligibleAnalysis(job,analysis,profile,policy),true);
  assert.equal(eligibleAnalysis(job,{...analysis,prompt_version:'fit-analysis-v3.2-polish-boundaries'},profile,policy),false);
 });
-test('CV may be drafted while work format remains unresolved, but form preparation still requires compatible location',()=>{
+test('unresolved work location blocks both CV generation and form preparation',()=>{
  const uncertainJob={...job,work_mode:'UNKNOWN'};
  const uncertainAnalysis={...analysis,work_format:{remote_allowed:false},employment_eligibility:{work_from_poland_allowed:true}};
- assert.equal(eligibleCvAnalysis(uncertainJob,uncertainAnalysis,profile,policy),true);
+ assert.equal(eligibleCvAnalysis(uncertainJob,uncertainAnalysis,profile,policy),false);
  assert.equal(eligibleAnalysis(uncertainJob,uncertainAnalysis,profile,policy),false);
- assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,employment_eligibility:{work_from_poland_allowed:null}},profile,policy),true);
- assert.equal(eligibleCvAnalysis({...uncertainJob,availability_status:'UNKNOWN'},uncertainAnalysis,profile,policy),true);
+ assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,employment_eligibility:{work_from_poland_allowed:null}},profile,policy),false);
+ assert.equal(eligibleCvAnalysis({...uncertainJob,availability_status:'UNKNOWN'},uncertainAnalysis,profile,policy),false);
  assert.equal(eligibleAnalysis({...uncertainJob,availability_status:'UNKNOWN'},uncertainAnalysis,profile,policy),false);
  assert.equal(eligibleCvAnalysis({...uncertainJob,availability_status:'CLOSED'},uncertainAnalysis,profile,policy),false);
  assert.equal(eligibleCvAnalysis(uncertainJob,{...uncertainAnalysis,hard_blockers:['NONLOCAL_PRESENCE']},profile,policy),false);
