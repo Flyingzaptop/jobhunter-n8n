@@ -13,6 +13,11 @@ export async function resumeVerifiedHumanCaptcha({repository,browser,application
   const completion=await browser.call(`/sessions/${sessionId}/human-captcha-completion`,{});
   const view=await browser.call(`/sessions/${sessionId}/snapshot`);
   if(completion.verified!==true||view.browser_session_id!==sessionId||view.captcha!==false)throw new Error('FRESH_HUMAN_CAPTCHA_COMPLETION_REQUIRED');
+  const command=(await client.query('SELECT * FROM confirmed_submit_commands WHERE application_id=$1 AND superseded_at IS NULL FOR UPDATE',[applicationId])).rows[0];
+  if(command){
+   if(command.status!=='BLOCKED'||command.result_json?.reason!=='INTERACTIVE_CAPTCHA'||command.result_json?.transport_evidence?.state!=='NOT_DISPATCHED'||command.result_json?.transport_evidence?.browser_session_id!==sessionId||view.submit_transport?.state!=='NOT_DISPATCHED')throw new Error('UNCERTAIN_TRANSPORT_PREVENTS_CAPTCHA_RETRY');
+   await client.query("UPDATE confirmed_submit_commands SET superseded_at=now(),superseded_reason='HUMAN_CAPTCHA_VERIFIED_ZERO_DISPATCH',updated_at=now() WHERE command_id=$1",[command.command_id]);
+  }
   await client.query("UPDATE applications SET status='FILLING',last_state=last_state||$2::jsonb,updated_at=now() WHERE application_id=$1",[applicationId,{reason:'HUMAN_CAPTCHA_VERIFIED',pending_question:null,page_fingerprint:view.fingerprint,current_url:view.url,captcha_handoff:{...handoff,resolved_at:completion.observed_at,resolution_source:source,human_interaction_required:false}}]);
   await client.query("UPDATE captcha_handoffs SET resolved_at=now(),resolution_source=$4,resolved_snapshot_fingerprint=$2,resolved_browser_session_id=$3 WHERE handoff_id=$1",[record.handoff_id,view.fingerprint,sessionId,source]);
   await client.query('UPDATE captcha_access_grants SET revoked_at=now() WHERE handoff_id=$1 AND revoked_at IS NULL',[record.handoff_id]);

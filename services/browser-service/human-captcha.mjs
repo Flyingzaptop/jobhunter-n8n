@@ -62,7 +62,10 @@ async function unobstructedFrameChain(frame,point){
 }
 export async function humanCaptchaView(session,config,{now=Date.now(),ttlMs=30000}={}){
  const selected=await region(session.page,config);if(!selected)throw new Error('VISIBLE_TRUSTED_CAPTCHA_UNAVAILABLE');
- const masks=session.page.frames().map(f=>f.locator('input,textarea,select'));
+ // Mask controls inside the challenge only. Background form rectangles are
+ // occluded by the opaque provider iframe; masking them overlays the challenge.
+ const challengeFrames=session.page.frames().filter(frame=>{for(let f=frame;f;f=f.parentFrame())if(f===selected.frame)return true;return false;});
+ const masks=challengeFrames.map(f=>f.locator('input,textarea,select'));
  const png=await selected.element.screenshot({mask:masks,maskColor:'#18212a',timeout:5000});
  if(png.length>2*1024*1024)throw new Error('CAPTCHA_CAPTURE_TOO_LARGE');
  // Element screenshot may scroll the page. Bind the post-capture rectangle.

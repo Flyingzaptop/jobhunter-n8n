@@ -35,7 +35,8 @@ export function reviewedUploadRequest({url,method,body,contentType,window,now=Da
  const target=new URL(url),origin=new URL(window.url);
  const pracaUpload=origin.hostname==='www.praca.pl'&&/^\/apply\/internal\/\d+\.html$/.test(origin.pathname)
   &&target.pathname==='/applying/upload-file'&&!target.search;
- if(target.origin!==origin.origin||!pracaUpload&&!/\/(?:upload|uploads|attachment|attachments|files|documents)\/?$/i.test(target.pathname))return false;
+ const leverParse=origin.hostname==='jobs.lever.co'&&/^\/[\w-]+\/[a-f0-9-]{36}\/apply\/?$/i.test(origin.pathname)&&target.pathname==='/parseResume'&&!target.search;
+ if(target.origin!==origin.origin||!pracaUpload&&!leverParse&&!/\/(?:upload|uploads|attachment|attachments|files|documents)\/?$/i.test(target.pathname))return false;
  if(pracaUpload&&/^application\/json(?:;|$)/i.test(contentType??'')){
   try{
    const data=JSON.parse(body.toString('utf8'));

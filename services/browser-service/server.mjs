@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { validateDestination, controlledSubmitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
+import {recordSubmitTransport,undispatchedCaptcha} from './submit-transport.mjs';
 import {SessionBudget} from './session-budget.mjs';
+import {reviewedCaptchaConfigRead} from './captcha-config-read.mjs';
 import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl,finalSubmitLabel} from './ats-adapters.mjs';
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
@@ -20,7 +22,7 @@ import {boardForUrl,exportedBoardState} from '../core/board-profiles.mjs';
 import {reviewedAshbyGeoRead,reviewedAshbyUploadInit,reviewedAshbyFileAttach,reviewedAshbyFieldSave,bindAshbyStorageUpload,reviewedAshbyStoragePost,restoreOmittedMultipartPdf,chooseCombobox} from './ashby-preparation.mjs';
 import {gunzipSync,brotliDecompressSync,inflateSync} from 'node:zlib';
 import {ashbyFormFields,ashbyFieldSaved} from './ashby-form-evidence.mjs';
-import {explicitSubmissionReceipt,submissionPageSucceeded,ashbySuccessPage} from './submission-proof.mjs';
+import {explicitSubmissionReceipt,submissionPageSucceeded,ashbySuccessPage,leverSuccessPage} from './submission-proof.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from './required-fields.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -63,7 +65,7 @@ export async function createBrowserService(config = browserConfig()) {
   const sessions = new Map(); let browser,browserLaunching;
   async function closeSession(session){try{await checkpoint(session);}catch(error){console.error(JSON.stringify({event:'SESSION_CHECKPOINT_FAILED',session_id:session.id,error:error.message}));}finally{await session.context.close();sessions.delete(session.id);}}
   const budget=new SessionBudget({sessions,max:config.maxSessions??4,idleMs:config.sessionIdleMs??120000,close:closeSession});
-  const idleTimer=setInterval(()=>budget.sweep().catch(()=>{}),15000);idleTimer.unref();
+  const idleTimer=setInterval(()=>budget.sweep().then(async()=>{if(!sessions.size&&!budget.reserved&&browser){const idleBrowser=browser;browser=null;await idleBrowser.close();}}).catch(()=>{}),15000);idleTimer.unref();
   await fs.mkdir(config.stateRoot, { recursive: true }); await fs.mkdir(config.artifactRoot, { recursive: true });
   await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
   const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
@@ -75,12 +77,14 @@ export async function createBrowserService(config = browserConfig()) {
     const session = { lastUsedAt:Date.now(),activeCalls:0,leaseUntil:0,id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {
       try {
-        const request = route.request(), destination = await validateDestination(request.url(), config);let uploadInit=false;
+        const request = route.request(), destination = await validateDestination(request.url(), config);let uploadInit=false,submitWrite=false;
         const requestBody=session.uploadWindow?.expires_at>Date.now()||session.submitActive?restoreOmittedMultipartPdf(request.postDataBuffer(),request.headers()['content-type'],session.uploadWindow):request.postDataBuffer();
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
           const safeMockWrite = destination.mock && /^\/(draft|step|captcha)(\/|$)/.test(destination.url.pathname);
           const adapter=atsAdapterFor(session.page?.url()??request.url());
           const reviewed=request.method()==='POST'&&(reviewedReadPost({url:request.url(),body:request.postData(),adapter}).allowed||adapter==='ashby'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()}));
+          const captchaRead=reviewedCaptchaConfigRead({url:request.url(),method:request.method(),body:request.postDataBuffer()??Buffer.alloc(0),pageUrl:session.page?.url(),siteKeys:session.captchaSiteKeys??new Set()});
+          if(captchaRead&&destination.url.pathname==='/checksiteconfig'){const parameters=new URLSearchParams(request.postData()??'');const siteKey=destination.url.searchParams.get('sitekey')??parameters.get('sitekey');if(siteKey){session.captchaSiteKeys??=new Set();session.captchaSiteKeys.add(siteKey);}}
           const humanVerification=request.method()==='POST'&&reviewedHumanCaptchaPost(request.url(),session.humanCaptchaWindow,config);
           const upload=reviewedUploadRequest({url:request.url(),method:request.method(),body:requestBody,contentType:request.headers()['content-type'],window:session.uploadWindow});
           uploadInit=request.method()==='POST'&&reviewedAshbyUploadInit({url:request.url(),body:request.postData(),window:session.uploadWindow});
@@ -88,10 +92,13 @@ export async function createBrowserService(config = browserConfig()) {
           const attach=request.method()==='POST'&&reviewedAshbyFileAttach({url:request.url(),body:request.postData(),window:session.uploadWindow,definitions:session.ashbyDefinitions});
           const fieldSave=request.method()==='POST'&&reviewedAshbyFieldSave({url:request.url(),body:request.postData(),windows:session.ashbyFieldWindows,definitions:session.ashbyDefinitions,suggestions:session.ashbySuggestions});
           const draft=reviewedDraftRequest({url:request.url(),method:request.method(),body:request.postDataBuffer(),contentType:request.headers()['content-type'],window:session.draftWindow});
-          if (!safeMockWrite && !reviewed && !humanVerification && !upload && !uploadInit && !storage && !attach && !fieldSave && !draft && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
-          if (session.submitActive && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
+          if (!safeMockWrite && !reviewed && !captchaRead && !humanVerification && !upload && !uploadInit && !storage && !attach && !fieldSave && !draft && !session.submitActive) throw new Error('WRITE_REQUIRES_SUBMIT_GATE');
+          if (session.submitActive && !reviewed && !captchaRead && !humanVerification && new URL(session.page.url()).origin !== destination.url.origin) throw new Error('CROSS_ORIGIN_WRITE_BLOCKED');
+          submitWrite=session.submitActive&&!safeMockWrite&&!reviewed&&!captchaRead&&!humanVerification&&!upload&&!uploadInit&&!storage&&!attach&&!fieldSave&&!draft;
+          if(submitWrite)await recordSubmitTransport(session,config.stateRoot,'DISPATCH_STARTED',{url:observerUrl(request.url()),method:request.method()});
         }
         const reply=await pinnedRequest(request,destination,requestBody);
+        if(submitWrite)await recordSubmitTransport(session,config.stateRoot,'RESPONSE_RECEIVED',{url:observerUrl(request.url()),method:request.method(),http_status:reply.status});
         if(request.method()==='POST'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()})&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);session.ashbySuggestions=JSON.parse(bytes.toString('utf8')).data?.result?.suggestions??[];}catch{session.ashbySuggestions=[];}}
         if(request.url().includes('op=ApiJobPosting')&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);const job=JSON.parse(bytes.toString('utf8')).data?.jobPosting;
           session.ashbyDefinitions??=new Set();for(const form of [job?.applicationForm,...(job?.surveyForms??[])])if(typeof form?.sourceFormDefinitionId==='string')session.ashbyDefinitions.add(form.sourceFormDefinitionId);
@@ -137,10 +144,10 @@ export async function createBrowserService(config = browserConfig()) {
       result.validation_errors=[...new Set([...result.validation_errors,...(session.ashbyFormErrors??[])])];
     }
     const humanCompletion=session.humanCaptchaAction?await inspectHumanCaptchaCompletion(session,config):{verified:false},captchaObservation=await observePendingCaptcha(session.page,config);
-    return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename,evidence,receipt_id})=>({sha256,filename,evidence,...(receipt_id?{receipt_id}:{} )})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
+    return { ...result,captcha:captchaObservation.pending&&!humanCompletion.verified,captcha_observation:captchaObservation, url:observerUrl(result.url),forms:result.forms.map(f=>({...f,action:observerUrl(f.action)})),fields:result.fields.map(f=>({...f,form_action:f.form_action?observerUrl(f.form_action):null})), buttons:result.buttons.map(b=>({...b,href:b.href?observerUrl(b.href):null,form_action:b.form_action?observerUrl(b.form_action):null})), browser_session_id: session.id, submit_transport:session.submitTransport??null, adapter: atsAdapterFor(result.url), current_action: session.current_action, action_history: session.history, uploaded_file_hashes: session.uploads.map(({sha256,filename,evidence,receipt_id})=>({sha256,filename,evidence,...(receipt_id?{receipt_id}:{} )})), fingerprint: hash(JSON.stringify({ url: result.url, fields: result.fields.map(f => [f.name,f.label,f.type,f.required,f.visible,f.disabled,f.readOnly,f.form,f.form_id,f.form_action,f.form_method,f.options?.map(o=>[o.value,o.label])]), forms:result.forms, buttons:result.buttons.map(b=>[b.text,b.type,b.href,b.form_action,b.form_method]),step: result.current_step })), blocked_requests: session.blocked_requests.slice(-10) };
   }
   async function checkpoint(session) {
-    const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
+    const view = await snapshot(session); const state = { application_id: session.application_id, browser_session_id: session.id, current_url: view.url, page_fingerprint: view.fingerprint, current_step: view.current_step, filled_fields: session.filled_fields, uploaded_file_hashes: session.uploads, action_history: session.history, pending_question: session.pending_question, last_safe_checkpoint: new Date().toISOString(), submit_attempted: session.submit_attempted, submit_transport:session.submitTransport??null, submission_confirmation: session.submission_confirmation, recovery_attempts: session.recovery_attempts, storage_state: await session.context.storageState() };
     await fs.writeFile(path.join(config.stateRoot, `${session.id}.json`), JSON.stringify(state), { mode: 0o600 }); return { ...view, checkpoint_saved: true };
   }
   async function action(session, operation, payload) {
@@ -232,9 +239,10 @@ export async function createBrowserService(config = browserConfig()) {
         if (!button || (!button.final_submit && !finalSubmitLabel(button.text))) throw new Error('FINAL_BUTTON_REQUIRED');
         if (before.captcha || before.validation_errors?.length || missingRequiredFields(before.fields).length || unsavedRequiredFields(before.fields).length) throw new Error('FORM_NOT_READY');
         session.submit_attempted = true; session.history.push({ operation: 'submit_intent', timestamp: new Date().toISOString() }); await checkpoint(session);
+        await recordSubmitTransport(session,config.stateRoot,'NOT_DISPATCHED');
         session.submitActive = true;
-        let networkConfirmation;
-        const responseListener = async response => { try { if (new URL(response.url()).origin === new URL(before.url).origin && response.request().method() === 'POST' && response.ok()) { const result = await response.json(),receipt=explicitSubmissionReceipt(response.url(),result);if(receipt)networkConfirmation={confirmation_id:receipt}; } } catch { /* Only structured explicit confirmation counts. */ } };
+        let networkConfirmation,submissionObserved=false;
+        const responseListener = async response => { try { if (new URL(response.url()).origin === new URL(before.url).origin && response.request().method() === 'POST' && response.status()>=200&&response.status()<400) {if(atsAdapterFor(before.url)==='lever'&&/^\/[\w-]+\/apply$/.test(new URL(response.url()).pathname))submissionObserved=true; const result = await response.json(),receipt=explicitSubmissionReceipt(response.url(),result);if(receipt)networkConfirmation={confirmation_id:receipt}; } } catch { /* Only structured explicit confirmation counts. */ } };
         session.page.on('response', responseListener);
         try { await locator.click(); await session.page.waitForFunction(()=>Boolean(document.querySelector('[data-confirmation-id]'))||/thank you for (?:your |applying|submitting)|application (?:has been |was )?(?:successfully )?(?:submitted|received)/i.test(document.body?.innerText??''),{},{timeout:15000}); }
         catch { /* Ambiguous outcomes are deliberately never retried. */ }
@@ -243,7 +251,10 @@ export async function createBrowserService(config = browserConfig()) {
         if (networkConfirmation && (afterView.confirmation_id === networkConfirmation.confirmation_id||submissionPageSucceeded(afterView))) session.submission_confirmation = { confirmation_id: networkConfirmation.confirmation_id, timestamp: new Date().toISOString(), evidence: 'NETWORK_AND_PAGE' };
         const screenshotPath=path.join(config.stateRoot,`${session.id}-submit-${Date.now()}.png`);await session.page.screenshot({path:screenshotPath,fullPage:true});session.history.push({operation:'submit_result',timestamp:new Date().toISOString(),screenshot_path:screenshotPath,validation_errors:afterView.validation_errors,email:before.fields.filter(f=>f.visible&&(/email|e-mail/i.test(f.label)||f.type==='email')).map(f=>f.value)});
         if(!session.submission_confirmation&&ashbySuccessPage(afterView,before.url))session.submission_confirmation={confirmation_id:'ashby-success:'+hash(await fs.readFile(screenshotPath)),timestamp:new Date().toISOString(),evidence:'ATS_SUCCESS_PAGE_AND_SCREENSHOT'};
-        const after = await checkpoint(session); return { ...after, status: session.submission_confirmation ? 'SUBMITTED' : 'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null,screenshot_path:screenshotPath,validation_errors:afterView.validation_errors };
+        if(!session.submission_confirmation&&leverSuccessPage(afterView,before.url,{submissionObserved}))session.submission_confirmation={confirmation_id:'lever-success:'+hash(await fs.readFile(screenshotPath)),timestamp:new Date().toISOString(),evidence:'ATS_SUCCESS_PAGE_AND_SCREENSHOT'};
+        const waitingHuman=undispatchedCaptcha(session,afterView);
+        if(waitingHuman){session.submit_attempted=false;session.leaseUntil=Date.now()+30*60*1000;}
+        const after = await checkpoint(session); return { ...after, ...(waitingHuman?{reason:'INTERACTIVE_CAPTCHA',transport_evidence:session.submitTransport}:{}), status: session.submission_confirmation ? 'SUBMITTED' : waitingHuman?'MANUAL_TAKEOVER':'SUBMISSION_UNKNOWN', confirmation_evidence: session.submission_confirmation?.evidence || null,screenshot_path:screenshotPath,validation_errors:afterView.validation_errors };
       } else throw new Error('UNKNOWN_OPERATION');
     }
     if(['fill','select','check','upload'].includes(operation))session.recovery_attempts=0;

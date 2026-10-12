@@ -1,5 +1,5 @@
 import {formModelBinding} from './form-model-review.mjs';
-import {autonomousAuthorization} from './autonomous-authorization.mjs';
+import {autonomousAuthorization,assertAutonomousTarget} from './autonomous-authorization.mjs';
 import {randomUUID} from 'node:crypto';
 import {consumeApplicationReview,digest,formBinding} from '../dashboard/review-gates.mjs';
 import {issueSubmitCapability} from '../browser-service/submit-capability.mjs';
@@ -12,7 +12,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
  if(!['USER_DASHBOARD','USER_TELEGRAM','USER_AUTONOMOUS'].includes(confirmationSource))throw hitlError('INVALID_CONFIRMATION_SOURCE');
  for(const id of [applicationId,approvalId,idempotencyKey])if(!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id??''))throw hitlError('INVALID_SUBMIT_COMMAND',400);
  if(!/^[a-f0-9]{64}$/i.test(bindingDigest??''))throw hitlError('INVALID_SUBMIT_BINDING',400);
- if(confirmationSource==='USER_AUTONOMOUS')await autonomousAuthorization(profile);
+ if(confirmationSource==='USER_AUTONOMOUS')assertAutonomousTarget(await autonomousAuthorization(profile),applicationId);
  const client=await repository.pool.connect();let locked=false,command;
  try{
   locked=(await client.query('SELECT pg_try_advisory_lock(hashtextextended($1,0)) AS locked',[applicationId])).rows[0].locked;
@@ -45,7 +45,7 @@ export async function executeConfirmedSubmit({repository,applicationId,approvalI
   const evidence=confirmedSubmissionResult(result),status=evidence.status;
   await transition(repository,applicationId,status,evidence);
   if(status==='SUBMITTED')await repository.pool.query('UPDATE applications SET confirmation_id=$2,submitted_at=now() WHERE application_id=$1',[applicationId,evidence.confirmation_id]);
-  await repository.pool.query('UPDATE confirmed_submit_commands SET status=$2,result_json=$3,updated_at=now() WHERE command_id=$1',[command.command_id,status,evidence]);
+  await repository.pool.query('UPDATE confirmed_submit_commands SET status=$2,result_json=$3,updated_at=now() WHERE command_id=$1',[command.command_id,['SKIPPED','MANUAL_TAKEOVER'].includes(status)?'BLOCKED':status,evidence]);
   return {command_id:command.command_id,...evidence};
  }catch(error){
   if(command){await repository.pool.query("UPDATE confirmed_submit_commands SET status=CASE WHEN status='SUBMITTING' THEN 'SUBMISSION_UNKNOWN' ELSE 'BLOCKED' END,result_json=$2,updated_at=now() WHERE command_id=$1",[command.command_id,{error_code:/^[A-Z_]+$/.test(error.code??error.message)?error.code??error.message:'SUBMIT_COMMAND_FAILED'}]);

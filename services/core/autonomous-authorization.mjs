@@ -5,3 +5,6 @@ export async function autonomousAuthorization(profile,{enabled=process.env.AUTON
  if(grant.enabled!==true||grant.candidate_profile_id!==profile?.profile_id||grant.source!=='USER_CHAT'||!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(grant.authorization_id??'')||grant.submit_without_per_application_confirmation!==true)throw Error('AUTONOMOUS_USER_AUTHORIZATION_REQUIRED');
  return grant;
 }
+export function assertAutonomousTarget(grant,applicationId){
+ if(grant.mode==='CONTROLLED_VALIDATION'&&(!Array.isArray(grant.allowed_application_ids)||!grant.allowed_application_ids.includes(applicationId)))throw Error('MASS_SEND_DISABLED_VALIDATION_TARGET_REQUIRED');
+}

@@ -20,3 +20,9 @@ export function ashbySuccessPage(view,expectedUrl){
   && submissionPageSucceeded(view)&&wording
   && !(view.buttons??[]).some(b=>b.visible!==false&&/submit application/i.test(b.text??''));
 }
+export function leverSuccessPage(view,expectedUrl,{submissionObserved=false}={}){
+ if(!submissionObserved||!submissionPageSucceeded(view))return false;
+ let after,before;try{after=new URL(view.url);before=new URL(expectedUrl);}catch{return false;}
+ const match=before.pathname.match(/^\/([\w-]+)\/([a-f0-9-]{36})\/apply\/?$/i);
+ return Boolean(match&&before.origin==='https://jobs.lever.co'&&after.origin===before.origin&&after.pathname===`/${match[1]}/${match[2]}/thanks`&&!(view.buttons??[]).some(b=>/submit application/i.test(b.text??'')));
+}

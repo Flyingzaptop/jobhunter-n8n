@@ -37,7 +37,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
     email:(view.fields??[]).filter(f=>f.visible&&(f.type==='email'||/^(?:email|e-mail)(?: address)?$/i.test(f.label??''))).every(f=>String(f.value).trim().toLowerCase()===String(identity.email??'').trim().toLowerCase()),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
-    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').includes(f.filename))),
+    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').toLowerCase().includes(f.filename.toLowerCase()))),
     questions:outstanding===0,required_fields:missingRequiredFields(view.fields).length===0,
     saved_fields:unsavedRequiredFields(view.fields).length===0,
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
@@ -56,6 +56,10 @@ export function professionalYears(profile) {
 export function resolveField(field, { profile, job, view, answerMemory = {} }) {
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const primaryEducation=profile.education?.find(e=>e.primary_for_forms)??profile.education?.[0];
+  if(field.required===false&&field.name==='org'&&/^current company/i.test(field.label??'')){
+    const current=identity.current_employer??profile.experience?.find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.employer;
+    return {value:known(current)?current:'Not disclosed',source:known(current)?'PROFILE':'OPTIONAL_NONDISCLOSURE'};
+  }
   if(field.required===false&&/^if other.*specify/i.test(label)&&view?.fields?.filter(f=>/^if other.*specify/i.test(f.label??'')).length===1){const selected=view.fields.find(f=>f.type==='radio'&&f.checked&&/how did you hear|where did you (?:hear|find)/i.test(f.group_label??''));if(selected&&!/^other/i.test(selected.label??''))return {value:`Not applicable — selected ${selected.label}.`,source:'OBSERVED_DISCOVERY_CHOICE'};}
   if(/gender|pronoun|ethnic|race|disabilit|veteran/i.test((field.group_label??'')+' '+label)){if(field.type==='radio')return /prefer not|decline|do not wish|nie chce|nie chcę/i.test(label)?{value:true,source:'PRIVACY_NONDISCLOSURE'}:{skip:true};const option=field.options?.find(o=>/prefer not|decline|do not wish|nie chce|nie chcę/i.test(o.label??''));if(option)return {value:option.value,source:'PRIVACY_NONDISCLOSURE'};}
   if(field.required===false&&/^(?:x|twitter)(?: profile| account| url| link)?$/i.test(label))return {skip:true,source:'USER_DECLARED_NO_X_PROFILE'};
