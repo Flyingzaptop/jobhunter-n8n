@@ -1,4 +1,5 @@
 import {performance} from 'node:perf_hooks';
+import {explicitWorkMode} from './work-format-evidence.mjs';
 import {FIT_SCHEMA,sourceFragmentCatalog,factIndex,validateFactIntegrity,routeAnalysis,
  enforceProfessionalYears,enforceEducation,enforceLanguageLevels,enforceSkillQualifiers,groundedWorkNumbers,explicitHybridQuote,sourceCategoryHint} from './fit.mjs';
 
@@ -42,7 +43,7 @@ export function fastWorkFormat(job){
  const f=Object.fromEntries(Object.entries(FIT_SCHEMA.properties.work_format.properties).map(([key,schema])=>[key,schema.type==='array'?[]:schema.type==='boolean'?false:null]));
  f.employment_route='UNKNOWN';f.authorization_known_impossible=false;
  const lines=String(job.description_text??'').split(/\n|(?<=[.!?])\s+/).map(s=>s.trim()).filter(Boolean);
- const mode=String(job.work_mode??'').toUpperCase(),location=fold(job.location);
+ const mode=explicitWorkMode(job).mode,location=fold(job.location);
  f.office_location=job.location||null;f.office_country=job.country||null;
  const hybrid=explicitHybridQuote(job);
  if(mode==='HYBRID'||hybrid){f.hybrid_required=true;f.remote_allowed=true;if(hybrid)f.evidence.push(hybrid);}
@@ -55,8 +56,8 @@ export function fastWorkFormat(job){
   if(mode!=='HYBRID'&&mode!=='ONSITE'&&!hybrid){f.remote_allowed=true;f.hybrid_required=false;}
   f.remote_region=/worldwide|anywhere|globally/i.test(remoteLine)?'worldwide':/Europe|EU|EEA|EMEA/.test(remoteLine)?'Europe':'Poland';
   f.work_from_poland_allowed=true;f.evidence.push(remoteLine);
- }else if(mode==='REMOTE'&&/\b(?:poland|polska|worldwide|anywhere|europe|eu|eea|emea)\b/.test(location)){
-  f.remote_region=job.location;f.work_from_poland_allowed=true;f.evidence.push(job.location);
+ }else if(mode==='REMOTE'&&(/^(?:PL|Poland|Polska)$/i.test(job.country??'')||/\b(?:poland|polska|pl|worldwide|anywhere|europe|eu|eea|emea)\b/.test(location))){
+  f.remote_region=job.location||job.country;f.work_from_poland_allowed=true;f.evidence.push(job.location||job.country);
  }
  const locked=lines.find(s=>/\b(?:must (?:be |reside|live)|(?:remote|remotely).*(?:only|restricted))\b/i.test(s)&&/\b(?:USA|United States|Canada|UK|United Kingdom|Australia)\b/i.test(s));
  if(locked){f.employee_residency_requirement=locked;f.work_from_poland_allowed=false;f.evidence.push(locked);}

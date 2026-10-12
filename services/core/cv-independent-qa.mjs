@@ -1,5 +1,5 @@
 import {readFile,writeFile,mkdir,realpath} from 'node:fs/promises';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import path from 'node:path';
@@ -121,7 +121,7 @@ export async function registerIndependentCv({repository,manifest,profile,artifac
    [approved.cv_id,approved.job_id,approved.profile_version,approved.template_version,approved.model,approved.pdf_path,approved.html_path,approved.sha256,approved.qa,approved]);
   await client.query('UPDATE cv_drafts SET status=$2,manifest_json=$3 WHERE cv_id=$1',[approved.cv_id,approved.status,approved]);
   await client.query('COMMIT');await writeFile(approved.manifest_path,JSON.stringify(approved,null,2));
-  await repository.event('cv',approved.cv_id,'CV_AUTOMATED_RENDER_QA_PASSED',{reviewer:REVIEWER,pages:proof.pages_reviewed,pdf_sha256:proof.pdf_sha256});
+  await client.query('INSERT INTO events(event_id,entity_type,entity_id,event_type,payload_json)VALUES($1,$2,$3,$4,$5)',[randomUUID(),'cv',approved.cv_id,'CV_AUTOMATED_RENDER_QA_PASSED',{reviewer:REVIEWER,pages:proof.pages_reviewed,pdf_sha256:proof.pdf_sha256}]);
   return {status:'REGISTERED',cv_id:approved.cv_id};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }

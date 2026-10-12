@@ -20,7 +20,7 @@ export async function validationCandidates(repository,profile,policy){
  let cache=caches.get(repository);if(!cache){cache=new SharedSnapshot(60000);caches.set(repository,cache);}
  const rows=await cache.get(activeProfileDigest({profile,policy}),async()=>{
   const result=await repository.pool.query(`SELECT j.*,a.analysis_json,c.cv_id,c.manifest_json cv_manifest FROM jobs j JOIN LATERAL(SELECT analysis_json FROM job_analysis WHERE job_id=j.job_id ORDER BY created_at DESC LIMIT 1)a ON true LEFT JOIN LATERAL(SELECT cv_id,manifest_json FROM cv_versions WHERE job_id=j.job_id AND profile_version=$1 AND template_version='cv-factory-v2.5-extractive-fast' AND qa_json->>'pass'='true' AND manifest_json->>'job_content_hash'=j.content_hash ORDER BY created_at DESC LIMIT 1)c ON true WHERE j.availability_status<>'CLOSED' AND (c.cv_id IS NOT NULL OR a.analysis_json->>'location_policy_status'='UNVERIFIED' OR a.analysis_json->>'fit_complete'='false')`,[activeProfileDigest(profile)]);
-  return result.rows.filter(row=>needsSourceVerification(row,profile,policy)).sort((a,b)=>Number(b.analysis_json.overall_fit)-Number(a.analysis_json.overall_fit));
+  return result.rows.map(row=>row.cv_id&&row.cv_manifest.analysis_hash!==canonicalAnalysisHash(row.analysis_json)?{...row,cv_id:null,cv_manifest:null}:row).filter(row=>needsSourceVerification(row,profile,policy)).sort((a,b)=>Number(b.analysis_json.overall_fit)-Number(a.analysis_json.overall_fit));
  });
  if(!rows.length)return rows;
  const keys=rows.map(row=>`source:v2:${row.job_id}:${row.content_hash}`);

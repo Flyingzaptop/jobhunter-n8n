@@ -374,7 +374,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
     try {
       await emit(source, { event: 'source_started', status: 'RUNNING', cursor: results.length + 1,
         message: source.source_class === 'employer_ats' ? `${source.platform} board scan — ${source.company} — source ${results.length + 1}/${sources.length}` : `Searching ${source.platform}` });
-      if (source.enabled === false) {
+      if (source.enabled === false || source.validation_only === true) {
         metrics.status = source.discovery_capability ?? 'DISABLED'; metrics.error_code = 'SOURCE_DISABLED'; metrics.reason = source.reason;
       } else if(Date.now()<dueAt){
         metrics.status='RATE_LIMIT_WAIT';metrics.next_request_at=new Date(dueAt).toISOString();
@@ -676,6 +676,7 @@ async function performMarketDiscovery({ repository, observer = async () => {}, r
 export async function reverifyMarketJob({ job, repository, registryPath = MARKET_REGISTRY, fetchOptions = {} }) {
   const sources = await loadMarketSources(registryPath);
   const mappings = repository.pool ? (await repository.pool.query('SELECT * FROM job_sources WHERE job_id=$1', [job.job_id])).rows : [];
+  mappings.sort((a,b)=>Number(!['greenhouse','lever','ashby','smartrecruiters'].includes(sources.find(s=>s.name===a.source_name)?.adapter))-Number(!['greenhouse','lever','ashby','smartrecruiters'].includes(sources.find(s=>s.name===b.source_name)?.adapter)));
   for (const mapping of mappings) {
     const source = sources.find(item => item.name === mapping.source_name);
     if (!source?.enabled || !source.permitted_access) continue;

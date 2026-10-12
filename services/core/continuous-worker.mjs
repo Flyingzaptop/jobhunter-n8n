@@ -208,7 +208,7 @@ export async function createProductionContinuousWorker({repository,configDir='co
    const {registerIndependentCv}=await import('./cv-independent-qa.mjs');
    return registerIndependentCv({repository,manifest,profile:context.profile});},
   prepare:async(jobId,cvId,context)=>{await ensureCurrent(context);return createControlledPreparation({repository,jobId,cvId,profile:context.profile,policy:context.policy});},
-  apply:async(jobId,applicationId,context,cvId)=>{await ensureCurrent(context);if(cvId){const {refreshPreparationCv}=await import('./controlled-preparation.mjs');const refreshed=await refreshPreparationCv({repository,applicationId,cvId,profile:context.profile,policy:context.policy});if(refreshed.blocked_reason)return refreshed;}return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
+  apply:async(jobId,applicationId,context,cvId)=>{await ensureCurrent(context);const routeJob=(await repository.pool.query('SELECT * FROM jobs WHERE job_id=$1',[jobId])).rows[0];await (await import('./employer-route.mjs')).resolveEmployerRoute({repository,job:routeJob});if(cvId){const {refreshPreparationCv}=await import('./controlled-preparation.mjs');const refreshed=await refreshPreparationCv({repository,applicationId,cvId,profile:context.profile,policy:context.policy});if(refreshed.blocked_reason)return refreshed;}return runApplication({repository,jobId,applicationId,profile:context.profile,policy:context.policy,browser,telegram,
    config:{...config,dryRun:true,allowRealSubmit:false,fillAllFields:process.env.APPLICATION_FILL_ALL_FIELDS==='true'}});},
   notify:async({profile})=>{
    const {sendReadyApplications}=await import('./telegram-applications.mjs');
