@@ -35,7 +35,10 @@ try{
   if(app.status==='MANUAL_TAKEOVER'&&app.last_state.reason==='INTERACTIVE_CAPTCHA'){
    await browser.call(`/sessions/${sessionId}/lease`,{});
    const completion=await browser.call(`/sessions/${sessionId}/human-captcha-completion`,{});
-   if(completion.verified===true)await resumeVerifiedHumanCaptcha({repository:repo,browser,applicationId,profileId:profile.profile_id,source:'USER_DASHBOARD'});
+   if(completion.verified===true){
+    try{await resumeVerifiedHumanCaptcha({repository:repo,browser,applicationId,profileId:profile.profile_id,source:'USER_DASHBOARD'});}
+    catch(error){const current=(await repo.pool.query('SELECT status,last_state FROM applications WHERE application_id=$1',[applicationId])).rows[0];if(current?.status!=='FILLING'||current.last_state?.reason!=='HUMAN_CAPTCHA_VERIFIED'||current.last_state.browser_session_id!==sessionId)throw error;}
+   }
    else{await new Promise(resolve=>setTimeout(resolve,3000));continue;}
   }else if(app.status!=='FILLING')throw Error('UNEXPECTED_APPLICATION_STATE_'+app.status);
   // Recheck the same filled form; unknown outcomes never enter this branch.
