@@ -1,10 +1,13 @@
 import {spawn} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-const executable=path.resolve(process.env.OBSCURA_EXECUTABLE??'data/tools/obscura-v0.2.4/obscura.exe');
+import {createHash} from 'node:crypto';
+const executable=path.resolve(process.env.OBSCURA_EXECUTABLE??'data/tools/obscura-v0.2.4-jobhunter/obscura.exe');
 if(!fs.existsSync(executable))throw Error('PINNED_OBSCURA_RELEASE_NOT_INSTALLED');
+const manifest=JSON.parse(fs.readFileSync(path.join(path.dirname(executable),'build-manifest.json'),'utf8'));
+if(!manifest.network_contract?.pass||createHash('sha256').update(fs.readFileSync(executable)).digest('hex')!==manifest.sha256)throw Error('VERIFIED_NATIVE_BUILD_REQUIRED');
 const log=fs.createWriteStream('data/runtime/obscura-engine.log',{flags:'a'});
-const child=spawn(executable,['serve','--host','127.0.0.1','--port','9422','--workers','1','--max-connections','4','--allow-file-access','--font-dir','data/tools/obscura-fonts','--ready-file','data/runtime/obscura-ready.json'],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+const child=spawn(executable,['serve','--host','127.0.0.1','--port','9422','--workers','1','--max-connections','4','--font-dir','data/tools/obscura-fonts','--ready-file','data/runtime/obscura-ready.json'],{windowsHide:true,env:{...process.env,OBSCURA_UPLOAD_ROOT:path.resolve('data/cv-v2')},stdio:['ignore','pipe','pipe']});
 child.stdout.pipe(log,{end:false});child.stderr.pipe(log,{end:false});
 child.on('error',e=>{log.write(e.message);process.exitCode=1;});
 child.on('exit',code=>{log.end();process.exitCode=code??1;});

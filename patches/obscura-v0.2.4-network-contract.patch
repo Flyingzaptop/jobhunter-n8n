@@ -1,0 +1,447 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 24bc347..2ade1b5 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1986,6 +1986,7 @@ name = "obscura-browser"
+ version = "0.1.0"
+ dependencies = [
+  "anyhow",
++ "async-trait",
+  "base64",
+  "futures",
+  "image",
+diff --git a/crates/obscura-browser/Cargo.toml b/crates/obscura-browser/Cargo.toml
+index 20d4828..54f5afc 100644
+--- a/crates/obscura-browser/Cargo.toml
++++ b/crates/obscura-browser/Cargo.toml
+@@ -11,6 +11,7 @@ stealth = ["obscura-net/stealth", "obscura-js/stealth"]
+ render = ["obscura-js/render", "dep:image"]
+ 
+ [dependencies]
++async-trait = "0.1"
+ obscura-dom = { workspace = true }
+ obscura-net = { workspace = true }
+ obscura-js = { workspace = true }
+diff --git a/crates/obscura-browser/src/lib.rs b/crates/obscura-browser/src/lib.rs
+index f504bff..538d483 100644
+--- a/crates/obscura-browser/src/lib.rs
++++ b/crates/obscura-browser/src/lib.rs
+@@ -21,3 +21,5 @@ pub use pdf::{RasterPdfError, RasterPdfOptions, RasterPdfPageRange};
+ // Re-exported so the embeddable `obscura` crate (which depends on obscura-browser,
+ // not obscura-js) can surface the interception channel types.
+ pub use obscura_js::ops::{InterceptResolution, InterceptedRequest};
++
++pub mod network_interception;
+diff --git a/crates/obscura-browser/src/network_interception.rs b/crates/obscura-browser/src/network_interception.rs
+new file mode 100644
+index 0000000..cf2f0af
+--- /dev/null
++++ b/crates/obscura-browser/src/network_interception.rs
+@@ -0,0 +1,23 @@
++use std::collections::HashMap;
++use base64::{Engine as _,engine::general_purpose::STANDARD};
++use obscura_net::{RequestInfo,Response};
++use obscura_net::interceptor::{RequestInterceptor,InterceptAction};
++use obscura_js::ops::{InterceptedRequest,InterceptResolution};
++pub struct NativeNetworkInterceptor {pub page_id:String,pub tx:tokio::sync::mpsc::UnboundedSender<InterceptedRequest>}
++#[async_trait::async_trait]
++impl RequestInterceptor for NativeNetworkInterceptor {
++ async fn intercept(&self,request:&RequestInfo)->InterceptAction {
++  let (resolver,receiver)=tokio::sync::oneshot::channel();
++  let message=InterceptedRequest{request_id:format!("native-{}",uuidless_id()),page_id:self.page_id.clone(),url:request.url.to_string(),method:request.method.clone(),headers:request.headers.clone(),body:request.body.clone(),resource_type:format!("{:?}",request.resource_type),resolver};
++  if self.tx.send(message).is_err(){return InterceptAction::Block;}
++  match receiver.await {
++   Ok(InterceptResolution::Fulfill{status,headers,body,body_base64})=>{
++    let bytes=if body_base64.is_empty(){body.into_bytes()}else{match STANDARD.decode(body_base64){Ok(bytes)=>bytes,Err(_)=>return InterceptAction::Block}};
++    InterceptAction::Fulfill(Response{url:request.url.clone(),status,headers,body:bytes,redirected_from:Vec::new()})
++   },
++   Ok(InterceptResolution::Continue{url:None,method:None,headers,body:None})=>headers.map(InterceptAction::ModifyHeaders).unwrap_or(InterceptAction::Continue),
++   _=>InterceptAction::Block,
++  }
++ }
++}
++fn uuidless_id()->u64{use std::sync::atomic::{AtomicU64,Ordering};static ID:AtomicU64=AtomicU64::new(0);ID.fetch_add(1,Ordering::Relaxed)}
+diff --git a/crates/obscura-cdp/src/dispatch.rs b/crates/obscura-cdp/src/dispatch.rs
+index 71dfceb..faaf8fb 100644
+--- a/crates/obscura-cdp/src/dispatch.rs
++++ b/crates/obscura-cdp/src/dispatch.rs
+@@ -110,6 +110,7 @@ pub struct CdpContext {
+     page_contexts: HashMap<String, Vec<i64>>,
+     page_isolated_worlds: HashMap<String, Vec<String>>,
+     pub fetch_intercept: FetchInterceptState,
++    pub fetch_owners: HashMap<String,String>,
+     pub intercept_tx: Option<tokio::sync::mpsc::UnboundedSender<InterceptedRequest>>,
+     // Open IO streams for Fetch.takeResponseBodyAsStream. Each holds a response
+     // body taken out of the page cache so a large download is streamed
+@@ -193,6 +194,7 @@ impl CdpContext {
+             lifecycle_enabled_sessions: HashSet::new(),
+             preload_counter: 0,
+             fetch_intercept: FetchInterceptState::new(),
++            fetch_owners: HashMap::new(),
+             intercept_tx: None,
+             isolated_worlds: Vec::new(),
+             valid_context_ids,
+diff --git a/crates/obscura-cdp/src/domains/dom.rs b/crates/obscura-cdp/src/domains/dom.rs
+index 138f777..ae3c50e 100644
+--- a/crates/obscura-cdp/src/domains/dom.rs
++++ b/crates/obscura-cdp/src/domains/dom.rs
+@@ -262,7 +262,8 @@ pub async fn handle(
+             // Docker images bind 0.0.0.0) could otherwise read any file the
+             // process can read — the same threat as Page.navigate to file://, so
+             // it honours the same opt-in and is off by default.
+-            if !page.context.allow_file_access {
++            let upload_root=std::env::var_os("OBSCURA_UPLOAD_ROOT").map(std::path::PathBuf::from).map(std::fs::canonicalize).transpose().map_err(|error|format!("Invalid upload root: {}",error))?;
++            if !page.context.allow_file_access && upload_root.is_none() {
+                 return Err("DOM.setFileInputFiles is disabled. Restart with `obscura serve --allow-file-access` to enable local file uploads.".to_string());
+             }
+             let node_id = resolve_node_id(page, params)?;
+@@ -274,7 +275,9 @@ pub async fn handle(
+ 
+             let mut specs = Vec::with_capacity(paths.len());
+             for p in &paths {
+-                let bytes = std::fs::read(p)
++                let canonical=std::fs::canonicalize(p).map_err(|error|format!("Invalid upload file: {}",error))?;
++                if let Some(root)=&upload_root{if !canonical.starts_with(root){return Err("Upload path outside permitted artifact root".into());}}
++                let bytes = std::fs::read(&canonical)
+                     .map_err(|e| format!("setFileInputFiles: cannot read '{}': {}", p, e))?;
+                 let name = std::path::Path::new(p)
+                     .file_name()
+diff --git a/crates/obscura-cdp/src/domains/fetch.rs b/crates/obscura-cdp/src/domains/fetch.rs
+index 7b09890..922f948 100644
+--- a/crates/obscura-cdp/src/domains/fetch.rs
++++ b/crates/obscura-cdp/src/domains/fetch.rs
+@@ -78,14 +78,21 @@ pub async fn handle(
+             ctx.fetch_intercept.enabled = true;
+             ctx.fetch_intercept.patterns = patterns.clone();
+             let tx_clone = ctx.intercept_tx.clone();
++            let ctx_intercept_tx=tx_clone.clone();
++            let mut owner_page=None;
+             if let Some(page) = ctx.get_session_page_mut(session_id) {
++                owner_page=Some(page.id.clone());
+                 page.intercept_block_patterns = patterns.clone();
+                 if let Some(tx) = tx_clone {
+                     page.set_intercept_tx(tx);
+                 }
+                 page.enable_intercept(true);
++                if let Some(tx)=ctx_intercept_tx {
++                    *page.http_client.interceptor.write().await=Some(Box::new(obscura_browser::network_interception::NativeNetworkInterceptor{page_id:page.id.clone(),tx}));
++                }
+             }
+ 
++            if let (Some(page),Some(session))=(owner_page,session_id){ctx.fetch_owners.insert(page,session.clone());}
+             tracing::info!("Fetch interception enabled");
+             Ok(json!({}))
+         }
+@@ -95,6 +102,7 @@ pub async fn handle(
+             if let Some(page) = ctx.get_session_page_mut(session_id) {
+                 page.intercept_block_patterns.clear();
+                 page.enable_intercept(false);
++                *page.http_client.interceptor.write().await=None;
+             }
+             let paused: Vec<_> = ctx.fetch_intercept.paused.drain().collect();
+             for (_, req) in paused {
+diff --git a/crates/obscura-cdp/src/domains/page.rs b/crates/obscura-cdp/src/domains/page.rs
+index eec221a..c92f861 100644
+--- a/crates/obscura-cdp/src/domains/page.rs
++++ b/crates/obscura-cdp/src/domains/page.rs
+@@ -934,7 +934,7 @@ pub fn emit_navigation_events(
+             params: json!({"requestId": rid, "loaderId": loader_id, "documentURL": page_url, "request": {"url": net_event.url, "method": net_event.method, "headers": net_event.headers}, "timestamp": net_event.timestamp, "wallTime": net_event.timestamp, "initiator": {"type": "other"}, "type": net_event.resource_type, "frameId": frame_id}),
+             session_id: es.clone(),
+         });
+-        if ctx.fetch_intercept.enabled {
++        if false {
+             ctx.pending_events.push(CdpEvent {
+                 method: "Fetch.requestPaused".into(),
+                 params: json!({
+@@ -983,7 +983,7 @@ pub fn emit_navigation_events(
+     phase1.push(CdpEvent { method: "Page.lifecycleEvent".into(), params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "commit", "timestamp": ts}), session_id: es.clone() });
+     ctx.pending_events.extend(phase1);
+ 
+-    if ctx.fetch_intercept.enabled {
++    if false {
+         for (i, net_event) in network_events.iter().enumerate() {
+             if Some(i) == nav_idx || net_event.intercepted {
+                 continue;
+diff --git a/crates/obscura-cdp/src/server.rs b/crates/obscura-cdp/src/server.rs
+index b3fc7df..fb2141a 100644
+--- a/crates/obscura-cdp/src/server.rs
++++ b/crates/obscura-cdp/src/server.rs
+@@ -1418,7 +1418,8 @@ fn emit_intercepted_request(
+         .map(|(_, frame_id, session_id)| (frame_id, session_id))
+         .or_else(|| {
+             let page = ctx.pages.iter().find(|page| page.id == intercepted.page_id)?;
+-            let (session_id, _) = ctx.sessions.iter().find(|(_, page_id)| **page_id == page.id)?;
++            let session_id=ctx.fetch_owners.get(&page.id).filter(|session|ctx.sessions.get(*session)==Some(&page.id))
++                .or_else(||ctx.sessions.iter().find(|(_,id)|**id==page.id).map(|(session,_)|session))?;
+             Some((page.frame_id.as_str(), Some(session_id.clone())))
+         });
+     let observers = route.as_ref().map_or_else(Vec::new, |(_, session_id)| {
+@@ -1427,6 +1428,12 @@ fn emit_intercepted_request(
+     emit_routed_intercepted_request(intercepted, route, &observers, reply_tx, intercepted_paused);
+ }
+ 
++
++fn native_response_metadata()->&'static std::sync::Mutex<HashMap<String,(String,String,Option<String>)>>{
++    static METADATA:std::sync::OnceLock<std::sync::Mutex<HashMap<String,(String,String,Option<String>)>>>=std::sync::OnceLock::new();
++    METADATA.get_or_init(||std::sync::Mutex::new(HashMap::new()))
++}
++
+ fn emit_routed_intercepted_request(
+     intercepted: obscura_js::ops::InterceptedRequest,
+     route: Option<(&str, Option<String>)>,
+@@ -1449,13 +1456,19 @@ fn emit_routed_intercepted_request(
+         .duration_since(std::time::UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_secs_f64();
+-    let request = json!({
++    let mut request = json!({
+         "url": intercepted.url,
+         "method": intercepted.method,
+         "headers": intercepted.headers,
+         "initialPriority": "High",
+         "referrerPolicy": "strict-origin-when-cross-origin",
+     });
++    if let Some(body)=&intercepted.body {
++        use base64::Engine as _;
++        request["hasPostData"]=json!(true);
++        request["postDataEntries"]=json!([{"bytes":base64::engine::general_purpose::STANDARD.encode(body)}]);
++        if let Ok(text)=std::str::from_utf8(body){request["postData"]=json!(text);}
++    }
+     let request_will_be_sent = json!({
+         "method": "Network.requestWillBeSent",
+         "params": {
+@@ -1478,6 +1491,7 @@ fn emit_routed_intercepted_request(
+         let _ = reply_tx.send(event.to_string());
+     }
+ 
++    if intercepted.request_id.starts_with("native-"){native_response_metadata().lock().unwrap().insert(intercepted.request_id.clone(),(intercepted.url.clone(),intercepted.resource_type.clone(),session_id.clone()));}
+     let request_paused = json!({
+         "method": "Fetch.requestPaused",
+         "params": {
+@@ -1735,6 +1749,17 @@ fn handle_fetch_resolution(
+                 }
+                 _ => return false,
+             };
++            if let Some((url,kind,session))=native_response_metadata().lock().unwrap().remove(request_id){
++                if method=="Fetch.fulfillRequest"{
++                    let raw=req.params.get("body").and_then(|v|v.as_str()).unwrap_or("");
++                    let length=base64::Engine::decode(&base64::engine::general_purpose::STANDARD,raw).map(|bytes|bytes.len()).unwrap_or(0);
++                    let headers:HashMap<String,String>=req.params.get("responseHeaders").and_then(|v|v.as_array()).map(|array|array.iter().filter_map(|header|Some((header.get("name")?.as_str()?.to_string(),header.get("value")?.as_str()?.to_string()))).collect()).unwrap_or_default();
++                    let mime=headers.iter().find(|(key,_)|key.eq_ignore_ascii_case("content-type")).map(|(_,value)|value.split(';').next().unwrap_or("text/html")).unwrap_or("text/html");
++                    let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
++                    let _=reply_tx.send(json!({"method":"Network.responseReceived","sessionId":session,"params":{"requestId":request_id,"loaderId":"","timestamp":now,"type":kind,"response":{"url":url,"status":req.params.get("responseCode").and_then(|v|v.as_u64()).unwrap_or(200),"statusText":"OK","headers":headers,"mimeType":mime,"encodedDataLength":length,"securityState":"secure","fromDiskCache":false,"fromServiceWorker":false}}}).to_string());
++                    let _=reply_tx.send(json!({"method":"Network.loadingFinished","sessionId":session,"params":{"requestId":request_id,"timestamp":now,"encodedDataLength":length}}).to_string());
++                }
++            }
+             if resolver.send(resolution).is_ok() && method == "Fetch.failRequest" {
+                 let reason = req.params.get("errorReason").and_then(|v| v.as_str()).unwrap_or("Failed");
+                 let mut error_text = String::from("net::ERR_");
+@@ -2035,8 +2060,8 @@ async fn process_awaited_with_interception(
+     let requesting_session = serde_json::from_str::<CdpRequest>(text).ok()
+         .and_then(|request| request.session_id);
+     let routes: HashMap<_, _> = ctx.pages.iter().filter_map(|page| {
+-        let session_id = requesting_session.as_ref()
+-            .filter(|session| ctx.sessions.get(*session) == Some(&page.id))
++        let session_id = ctx.fetch_owners.get(&page.id).filter(|session|ctx.sessions.get(*session)==Some(&page.id))
++            .or_else(||requesting_session.as_ref().filter(|session| ctx.sessions.get(*session) == Some(&page.id)))
+             .or_else(|| ctx.sessions.iter().find(|(_, page_id)| **page_id == page.id)
+                 .map(|(session, _)| session))?;
+         let observers = crate::domains::page::network_observer_sessions(
+@@ -2288,6 +2313,7 @@ mod tests {
+         ctx.sessions.insert("unrelated".into(), other);
+         let (resolver, _resolution) = tokio::sync::oneshot::channel();
+         let intercepted = obscura_js::ops::InterceptedRequest {
++            body: None,
+             request_id: "fetch-1".into(), page_id: page.clone(), url: "https://example.test/data".into(),
+             method: "GET".into(), headers: Default::default(), resource_type: "Fetch".into(), resolver,
+         };
+diff --git a/crates/obscura-js/src/ops.rs b/crates/obscura-js/src/ops.rs
+index d186368..02ef910 100644
+--- a/crates/obscura-js/src/ops.rs
++++ b/crates/obscura-js/src/ops.rs
+@@ -60,6 +60,7 @@ pub enum InterceptResolution {
+ }
+ 
+ pub struct InterceptedRequest {
++    pub body: Option<Vec<u8>>,
+     pub request_id: String,
+     pub page_id: String,
+     pub url: String,
+@@ -3647,10 +3648,22 @@ async fn fetch_url_inner(
+ 
+     let mut was_intercepted = false;
+     if let Some(tx) = intercept_tx {
+-        let custom_headers: HashMap<String, String> =
++        let mut custom_headers: HashMap<String, String> =
+             serde_json::from_str(&headers_json).unwrap_or_default();
++        if credentials.allows(&origin,&url){
++            if let (Some(jar),Ok(target),Ok(source))=(&cookie_jar,url::Url::parse(&url),url::Url::parse(&origin)){
++                let context=if same_site(&source,&target){SameSiteContext::SameSite}else{SameSiteContext::CrossSite};
++                let cookie=jar.get_cookie_header_in_context(&target,context);
++                if !cookie.is_empty(){custom_headers.insert("cookie".into(),cookie);}
++            }
++        }
++
++        if !custom_headers.keys().any(|key|key.eq_ignore_ascii_case("user-agent")){
++            if let Some(client)=&http_client{custom_headers.insert("user-agent".into(),client.user_agent.read().await.clone());}
++        }
+         let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel();
+         let intercepted = InterceptedRequest {
++            body: if body.is_empty(){None}else{Some(body.clone())},
+             request_id: request_id.clone(),
+             page_id,
+             url: url.clone(),
+@@ -3683,6 +3696,11 @@ async fn fetch_url_inner(
+                         timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                             .unwrap_or_default().as_secs_f64(),
+                     }, if encoded { &bb } else { &b }, encoded);
++                    if credentials.allows(&origin,&url){
++                        if let (Some(jar),Ok(target))=(&cookie_jar,url::Url::parse(&url)){
++                            for (key,value) in &h {if key.eq_ignore_ascii_case("set-cookie"){for cookie in value.lines(){jar.set_cookie(cookie,&target);}}}
++                        }
++                    }
+                     let mut response = intercept_fulfill_response(
+                         status,
+                         h,
+@@ -3800,6 +3818,7 @@ async fn fetch_url_inner(
+         if cbs.has_request_callbacks().await {
+             if let Ok(parsed) = url::Url::parse(&url) {
+                 let info = RequestInfo {
++                    body: None,
+                     url: parsed,
+                     method: method.clone(),
+                     headers: custom_headers.clone(),
+@@ -4180,6 +4199,7 @@ async fn fetch_url_inner(
+                     resp_bytes.to_vec(), redirected_from,
+                 );
+                 let info = RequestInfo {
++                    body: None,
+                     url: resp.url.clone(), method: current_method.as_str().to_string(),
+                     headers: resp_headers.clone(), resource_type,
+                 };
+@@ -4434,6 +4454,7 @@ async fn stealth_fetch_all(
+                     resp_bytes.clone(), redirected_from,
+                 );
+                 let info = RequestInfo {
++                    body: None,
+                     url: resp.url.clone(), method: current_method.clone(),
+                     headers: resp_headers.clone(), resource_type,
+                 };
+diff --git a/crates/obscura-net/src/client.rs b/crates/obscura-net/src/client.rs
+index 86295e3..9c5c6ae 100644
+--- a/crates/obscura-net/src/client.rs
++++ b/crates/obscura-net/src/client.rs
+@@ -140,6 +140,7 @@ pub(crate) fn merge_response_header(map: &mut HashMap<String, String>, name: Str
+ 
+ #[derive(Debug, Clone)]
+ pub struct RequestInfo {
++    pub body: Option<Vec<u8>>,
+     pub url: Url,
+     pub method: String,
+     pub headers: HashMap<String, String>,
+@@ -1184,7 +1185,7 @@ impl ObscuraHttpClient {
+             || body.is_some()
+             || request.resource_type == ResourceType::Document
+             || !matches!(url.scheme(), "http" | "https")
+-            || self.interceptor.read().await.is_some()
++            || (self.interceptor.read().await.is_some() && !matches!(request.resource_type,ResourceType::Image|ResourceType::Font|ResourceType::Stylesheet|ResourceType::Script))
+         {
+             return None;
+         }
+@@ -1361,6 +1362,7 @@ impl ObscuraHttpClient {
+             return;
+         };
+         let request_info = RequestInfo {
++            body: None,
+             url: url.clone(),
+             method: Method::GET.to_string(),
+             headers: self.extra_headers.read().await.clone(),
+@@ -1415,28 +1417,14 @@ impl ObscuraHttpClient {
+ 
+         for _redirect_count in 0..=max_redirects {
+             validate_request_mode(&request, &current_url)?;
+-            let request_info = RequestInfo {
++            let mut request_info = RequestInfo {
++                body: body.clone(),
+                 url: current_url.clone(),
+                 method: method.to_string(),
+                 headers: self.extra_headers.read().await.clone(),
+                 resource_type: request.resource_type.clone(),
+             };
+ 
+-            if let Some(interceptor) = self.interceptor.read().await.as_ref() {
+-                match interceptor.intercept(&request_info).await {
+-                    InterceptAction::Continue => {}
+-                    InterceptAction::Block => {
+-                        return Err(ObscuraNetError::Blocked(current_url.to_string()));
+-                    }
+-                    InterceptAction::Fulfill(response) => {
+-                        return Ok(response);
+-                    }
+-                    InterceptAction::ModifyHeaders(headers) => {
+-                        let mut extra = self.extra_headers.write().await;
+-                        extra.extend(headers);
+-                    }
+-                }
+-            }
+ 
+             if !request_callback_fired {
+                 if let Some(cbs) = callbacks {
+@@ -1560,6 +1548,45 @@ impl ObscuraHttpClient {
+                 headers.remove(reqwest::header::ORIGIN);
+             }
+ 
++            if let Some(ref bytes) = body {
++                if method == Method::POST {
++                    headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded"));
++                }
++                headers.insert(reqwest::header::CONTENT_LENGTH, HeaderValue::from_str(&bytes.len().to_string()).unwrap());
++            }
++            request_info.headers = headers.iter().filter_map(|(k,v)| v.to_str().ok().map(|value|(k.as_str().to_string(),value.to_string()))).collect();
++            if let Some(interceptor) = self.interceptor.read().await.as_ref() {
++                match interceptor.intercept(&request_info).await {
++                    InterceptAction::Continue => {},
++                    InterceptAction::Block => return Err(ObscuraNetError::Blocked(current_url.to_string())),
++                    InterceptAction::Fulfill(mut response) => {
++                        let mut response_headers=HeaderMap::new();
++                        for (key,value) in &response.headers {
++                            if let (Ok(key),Ok(value))=(HeaderName::from_bytes(key.as_bytes()),HeaderValue::from_str(value)){response_headers.insert(key,value);}
++                        }
++                        validate_reqwest_cors_response(&request,&current_url,&request_origin,&response_headers)?;
++                        if request.sends_credentials_to(&current_url) {
++                            for (key,value) in &response.headers {if key.eq_ignore_ascii_case("set-cookie"){for cookie in value.lines(){self.cookie_jar.set_cookie(cookie,&current_url);}}}
++                        }
++                        if matches!(response.status,301|302|303|307|308){
++                            if let Some(location)=response.headers.iter().find(|(key,_)|key.eq_ignore_ascii_case("location")).map(|(_,value)|value){
++                                let next_url=current_url.join(location).map_err(|error|ObscuraNetError::Network(format!("Invalid fulfilled redirect: {}",error)))?;
++                                validate_url(&next_url,self.allow_private_network)?;
++                                validate_request_mode(&request,&next_url)?;
++                                redirect_tainted|=redirect_taints_origin(&request,&current_url,&next_url);
++                                redirects.push(current_url.clone());current_url=next_url;
++                                if matches!(response.status,301|302|303){method=Method::GET;body=None;}
++                                continue;
++                            }
++                        }
++                        response.redirected_from=redirects.clone();
++                        return Ok(response);
++                    },
++                    InterceptAction::ModifyHeaders(overrides) => {
++                        for (key,value) in overrides {if let (Ok(key),Ok(value))=(HeaderName::from_bytes(key.as_bytes()),HeaderValue::from_str(&value)){headers.insert(key,value);}}
++                    },
++                }
++            }
+             let mut req_builder = self.get_client().await.request(method.clone(), current_url.as_str())
+                 .headers(headers);
+ 
+diff --git a/crates/obscura-net/src/wreq_client.rs b/crates/obscura-net/src/wreq_client.rs
+index b0ab86f..93db443 100644
+--- a/crates/obscura-net/src/wreq_client.rs
++++ b/crates/obscura-net/src/wreq_client.rs
+@@ -388,6 +388,7 @@ impl StealthHttpClient {
+             }
+ 
+             let request_info = RequestInfo {
++                body: None,
+                 url: current_url.clone(),
+                 method: "GET".to_string(),
+                 headers: self.extra_headers.read().await.clone(),

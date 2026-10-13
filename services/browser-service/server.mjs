@@ -1,3 +1,5 @@
+import {decodedNetworkResponse} from './decoded-network-response.mjs';
+import {chooseLeverLocation} from './lever-location.mjs';
 import http from 'node:http';
 import https from 'node:https';
 import path from 'node:path';
@@ -5,7 +7,6 @@ import fs from 'node:fs/promises';
 import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import {connectApplicationBrowser,setApplicationInputFiles,newApplicationContext} from './browser-engine.mjs';
-import {chooseLeverLocation} from './lever-location.mjs';
 import { validateDestination, controlledSubmitPermission, classifyConsent } from './policy.mjs';
 import { pruneBrowserState } from './retention.mjs';
 import {recordSubmitTransport,undispatchedCaptcha} from './submit-transport.mjs';
@@ -14,6 +15,8 @@ import {reviewedCaptchaConfigRead} from './captcha-config-read.mjs';
 import {atsAdapterFor,reviewedReadPost,safeNavigationButton,observerUrl,finalSubmitLabel} from './ats-adapters.mjs';
 import {captureCaptchaImage} from './captcha-image.mjs';
 import {humanCaptchaView,humanCaptchaClick,inspectHumanCaptchaCompletion,reviewedHumanCaptchaPost,captchaObserverUrl,observePendingCaptcha} from './human-captcha.mjs';
+import {autoSolveCaptcha} from './auto-captcha.mjs';
+import {createCaptchaVision} from './captcha-vision.mjs';
 import {verifySubmitCapability} from './submit-capability.mjs';
 import {reviewedUploadRequest,draftNavigationWindow,reviewedDraftRequest,verifiedUploadReceipt} from './preparation-network.mjs';
 import {selectedCookieButton} from '../core/form-settling.mjs';
@@ -34,7 +37,8 @@ export function browserConfig(env = process.env) {
     allowDomains: (env.APPLICATION_DOMAIN_ALLOWLIST || '').split(',').filter(Boolean), denyDomains: (env.APPLICATION_DOMAIN_DENYLIST || '').split(',').filter(Boolean),
     artifactRoot: path.resolve(env.ARTIFACT_DIR || 'data/cv'), stateRoot: path.resolve(env.BROWSER_STATE_DIR || 'data/browser'), maxRecovery: Number(env.MAX_BROWSER_RECOVERY_ATTEMPTS || 2),
     maxSessions:Number(env.BROWSER_MAX_SESSIONS||4),sessionIdleMs:Number(env.BROWSER_SESSION_IDLE_MS||120000),
-    sessionRetentionHours:Number(env.BROWSER_SESSION_RETENTION_HOURS||48),screenshotRetentionHours:Number(env.SCREENSHOT_RETENTION_HOURS||168),executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined };
+    sessionRetentionHours:Number(env.BROWSER_SESSION_RETENTION_HOURS||48),screenshotRetentionHours:Number(env.SCREENSHOT_RETENTION_HOURS||168),executablePath: env.PLAYWRIGHT_EXECUTABLE_PATH || undefined,
+  };
 }
 
 // Every request is resolved once, checked, then connected to the checked address.
@@ -51,7 +55,7 @@ async function pinnedRequest(request, destination, bodyOverride) {
       incoming.on('data', chunk => { size += chunk.length; if (size > 20 * 1024 * 1024) incoming.destroy(new Error('RESPONSE_TOO_LARGE')); else chunks.push(chunk); });
       incoming.on('error', reject); incoming.on('end', () => {
         const replyHeaders = {}; for (const [key, value] of Object.entries(incoming.headers)) if (value !== undefined && !['transfer-encoding', 'connection'].includes(key)) replyHeaders[key] = Array.isArray(value) ? value.join('\n') : String(value);
-        resolve({ status: incoming.statusCode, headers: replyHeaders, body: Buffer.concat(chunks) });
+        try{const decoded=decodedNetworkResponse(replyHeaders,Buffer.concat(chunks));resolve({status:incoming.statusCode,...decoded});}catch(error){reject(error);}
       });
     });
     outgoing.on('timeout', () => outgoing.destroy(new Error('NETWORK_TIMEOUT'))); outgoing.on('error', reject); if (body) outgoing.write(body); outgoing.end();
@@ -70,6 +74,13 @@ export async function createBrowserService(config = browserConfig()) {
   await fs.mkdir(config.stateRoot, { recursive: true }); await fs.mkdir(config.artifactRoot, { recursive: true });
   await pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168});
   const retentionTimer=setInterval(()=>pruneBrowserState({root:config.stateRoot,sessionHours:config.sessionRetentionHours??48,screenshotHours:config.screenshotRetentionHours??168,activeSessionIds:new Set(sessions.keys())}).catch(()=>{}),3600000);retentionTimer.unref();
+  let visionClient;
+  function captchaVision(){
+    if (typeof config.vision === 'function') return config.vision;
+    if (!config.autoCaptchaModel) throw new Error('CAPTCHA_VISION_MODEL_REQUIRED');
+    visionClient ??= createCaptchaVision({baseUrl: config.autoCaptchaVisionBaseUrl, model: config.autoCaptchaModel, timeoutMs: config.autoCaptchaVisionTimeoutMs});
+    return visionClient;
+  }
   async function newSession(applicationId, saved,board) {
     const release=await budget.reserve();let context;
     try {
@@ -78,7 +89,10 @@ export async function createBrowserService(config = browserConfig()) {
     const session = { lastUsedAt:Date.now(),activeCalls:0,leaseUntil:0,id: randomUUID(), application_id: applicationId, context, history: saved?.action_history || [], uploads: saved?.uploaded_file_hashes || [], pending_question: saved?.pending_question || null, submit_attempted: saved?.submit_attempted || false, submission_confirmation: saved?.submission_confirmation || null, recovery_attempts: saved?.recovery_attempts || 0, submitActive: false, blocked_requests: [], filled_fields: saved?.filled_fields || {} };
     await context.route('**/*', async route => {
       try {
-        const request = route.request(), destination = await validateDestination(request.url(), config);let uploadInit=false,submitWrite=false;
+        const request = route.request();session.traffic??=new Map();const trafficKey=request.method()+' '+new URL(request.url()).origin+new URL(request.url()).pathname;session.traffic.set(trafficKey,(session.traffic.get(trafficKey)??0)+1);session.requestCount=(session.requestCount??0)+1;
+        if(session.requestCount%100===0)await fs.writeFile('data/runtime/obscura-traffic.json',JSON.stringify({count:session.requestCount,top:[...session.traffic.entries()].sort((a,b)=>b[1]-a[1]).slice(0,12)}));
+        if(session.requestCount>300){session.requestBudgetExceeded=true;await session.page?.close().catch(()=>{});throw Error('APPLICATION_REQUEST_BUDGET_EXCEEDED');}
+        const destination = await validateDestination(request.url(), config);let uploadInit=false,submitWrite=false;
         const requestBody=session.uploadWindow?.expires_at>Date.now()||session.submitActive?restoreOmittedMultipartPdf(request.postDataBuffer(),request.headers()['content-type'],session.uploadWindow):request.postDataBuffer();
         if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
           const safeMockWrite = destination.mock && /^\/(draft|step|captcha)(\/|$)/.test(destination.url.pathname);
@@ -99,6 +113,7 @@ export async function createBrowserService(config = browserConfig()) {
           if(submitWrite)await recordSubmitTransport(session,config.stateRoot,'DISPATCH_STARTED',{url:observerUrl(request.url()),method:request.method()});
         }
         const reply=await pinnedRequest(request,destination,requestBody);
+        if(session.navigationTarget&&new URL(request.url()).href===session.navigationTarget){session.navigationStatus=reply.status;const location=reply.headers.location;if([301,302,303,307,308].includes(reply.status)&&location)session.navigationTarget=new URL(location,request.url()).href;}
         if(submitWrite)await recordSubmitTransport(session,config.stateRoot,'RESPONSE_RECEIVED',{url:observerUrl(request.url()),method:request.method(),http_status:reply.status});
         if(request.method()==='POST'&&reviewedAshbyGeoRead({url:request.url(),body:request.postData()})&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);session.ashbySuggestions=JSON.parse(bytes.toString('utf8')).data?.result?.suggestions??[];}catch{session.ashbySuggestions=[];}}
         if(request.url().includes('op=ApiJobPosting')&&reply.status===200){try{let bytes=reply.body;const encoding=reply.headers['content-encoding'];if(encoding==='gzip')bytes=gunzipSync(bytes);else if(encoding==='br')bytes=brotliDecompressSync(bytes);else if(encoding==='deflate')bytes=inflateSync(bytes);const job=JSON.parse(bytes.toString('utf8')).data?.jobPosting;
@@ -117,6 +132,7 @@ export async function createBrowserService(config = browserConfig()) {
         const rejected=route.request();let operationName;
         try{const json=JSON.parse(rejected.postData()??'');if(typeof json.operationName==='string'&&/^[A-Za-z0-9_]{1,100}$/.test(json.operationName))operationName=json.operationName;}catch{}
         session.blocked_requests.push({reason:error.message,url:captchaObserverUrl(rejected.url())??observerUrl(rejected.url()),method:rejected.method(),...(operationName?{operation_name:operationName}:{}),timestamp:new Date().toISOString()});
+        if(session.blocked_requests.length>100)session.blocked_requests.splice(0,session.blocked_requests.length-100);
         await route.abort('blockedbyclient').catch(()=>{});
       }
     });
@@ -134,9 +150,9 @@ export async function createBrowserService(config = browserConfig()) {
   }
   async function snapshot(session) {
     const result = await session.page.evaluate(() => {
-      const visible = e => Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
+      const visible = e => e.getAttribute('aria-hidden')!=='true' && Boolean(e.getClientRects().length) && getComputedStyle(e).visibility !== 'hidden';
       const selector = e => {const base=e.id?'#'+CSS.escape(e.id):e.name?`${e.tagName.toLowerCase()}[name=${JSON.stringify(e.name)}]`:null;const option=base&&['radio','checkbox'].includes(e.type)?base+`[value=${JSON.stringify(e.value)}]`:base;return option&&document.querySelectorAll(option).length===1?option:`[data-jh-index="${e.dataset.jhIndex}"]`;};
-      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), field_path:e.closest('[data-field-path]')?.dataset.fieldPath??null, form_render_id:e.closest('[data-field-entry-id]')?.dataset.fieldEntryId?.slice(0,36)??null, role:e.getAttribute('role'), description:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-description')?.textContent?.trim()??'', group_label:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim()??'', label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || (e.getAttribute('aria-labelledby')??'').split(/\s+/).map(id=>document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(' ') || e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim() || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true' || [...(e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.classList??[])].some(c=>/^_required_[a-z0-9]+_\d+$/i.test(c)), max_length:e.maxLength>0?e.maxLength:null, pattern:e.pattern||null,autocomplete:e.autocomplete||null, disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /password|otp|totp|authentication|csrf|secret/i.test(e.type+' '+e.name)||e.autocomplete==='one-time-code'?'':/^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.tagName.toLowerCase()==='select' && e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
+      const fields = [...document.querySelectorAll('input,select,textarea')].map((e, index) => { e.dataset.jhIndex = String(index); return { selector: selector(e), name: e.name, type: e.type || e.tagName.toLowerCase(), field_path:e.closest('[data-field-path]')?.dataset.fieldPath??null, form_render_id:e.closest('[data-field-entry-id]')?.dataset.fieldEntryId?.slice(0,36)??null, role:e.getAttribute('role'), description:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-description')?.textContent?.trim()??'', group_label:e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim()??'', label: [...(e.labels || [])].map(l => l.textContent.trim()).join(' ') || e.getAttribute('aria-label') || (e.getAttribute('aria-labelledby')??'').split(/\s+/).map(id=>document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(' ') || e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.textContent?.trim() || e.placeholder || '', required: e.required || e.getAttribute('aria-required') === 'true' || [...(e.closest('[data-field-entry-id]')?.querySelector('.ashby-application-form-question-title')?.classList??[])].some(c=>/^_required_[a-z0-9]+_\d+$/i.test(c)), max_length:e.maxLength>0?e.maxLength:null, pattern:e.pattern||null,autocomplete:e.autocomplete||null, disabled:Boolean(e.disabled),readOnly:Boolean(e.readOnly),form:e.form?[...document.forms].indexOf(e.form):null,form_id:e.form?.id??null, form_action:e.form?.action??null, form_method:e.form?.method??null, visible: visible(e), value: /password|otp|totp|authentication|csrf|secret/i.test(e.type+' '+e.name)||e.autocomplete==='one-time-code'?'':/^(?:g-recaptcha-response|h-captcha-response|cf-turnstile-response|frc-captcha-solution|captcha[_-]?(?:token|response)|(?:re|h)captchaToken)$/i.test(e.name)?'':e.type === 'file' ? [...e.files].map(f => f.name).join(',') : e.getAttribute('role')==='combobox'&&!e.value?(e.closest('[class*="__control"]')?.querySelector('[class*="__single-value"]')?.textContent?.trim()??''):e.value, checked: e.checked, multiple: Boolean(e.multiple), options: e.tagName.toLowerCase()==='select' && e.options ? [...e.options].map(o => ({ value: o.value, label: o.textContent, selected: o.selected })) : undefined, validation_message: e.validationMessage || '' }; });
       const buttons = [...document.querySelectorAll('button,input[type=submit],a')].filter(visible).map((e, index) => { if (!e.id) e.dataset.jhIndex = `b${index}`; return { selector: selector(e), text: e.textContent.trim() || e.value || '', type: e.type || 'link',name:e.name??null,value:e.value??null,formAction:e.formAction??null,form_id:e.form?.id??null, final_submit: e.dataset.finalSubmit === 'true', href: e.href || null,disabled:Boolean(e.disabled),form_action:e.getAttribute('formaction')||e.form?.action||null,form_method:e.getAttribute('formmethod')||e.form?.method||null }; });
       return { url: location.href, title: document.title, forms:[...document.forms].map(f=>({id:f.id||null,name:f.name||null,action:f.action,method:f.method,enctype:f.enctype})), current_step: Number(document.querySelector('[data-step]')?.dataset.step || 0), draft_id: document.querySelector('[data-draft]')?.dataset.draft || null, fields, buttons, text: (document.body?.innerText || '').slice(0, 16000), captcha: Boolean(document.querySelector('[data-captcha],iframe[src*="captcha"],.g-recaptcha,.h-captcha')), confirmation_id: document.querySelector('[data-confirmation-id]')?.dataset.confirmationId || null, validation_errors: [...document.querySelectorAll('[role=alert],.error')].map(e => e.textContent.trim()).filter(Boolean) };
     });
@@ -154,15 +170,17 @@ export async function createBrowserService(config = browserConfig()) {
   }
   async function action(session, operation, payload) {
     session.current_action={operation,selector:payload.selector??null,started_at:new Date().toISOString()};
-    if (operation === 'navigate') {session.humanCaptchaViews?.clear();session.humanCaptchaWindow=null;session.humanCaptchaAction=null; await validateDestination(payload.url, config); const response=await session.page.goto(payload.url, { waitUntil: 'domcontentloaded',timeout:25000 });session.navigationStatus=response?.status()??null; }
+    if (operation === 'navigate') {session.humanCaptchaViews?.clear();session.humanCaptchaWindow=null;session.humanCaptchaAction=null; await validateDestination(payload.url, config); session.navigationTarget=new URL(payload.url).href;const response=await session.page.goto(payload.url, { waitUntil: 'domcontentloaded',timeout:25000 });session.navigationStatus=response?.status()??session.navigationStatus??null; }
     else if (operation === 'dismiss-cookies') {const result=await dismissPracaCookies(session.page);return {...await checkpoint(session),cookie_dismissal:result};}
     else if (operation === 'checkpoint') { session.pending_question = payload.pending_question ?? session.pending_question; return checkpoint(session); }
+    else if(operation==='inspect-form-controls'){return session.page.evaluate(()=>({active:document.activeElement?.id,comboboxes:[...document.querySelectorAll('[role=combobox]')].map(e=>({id:e.id,expanded:e.getAttribute('aria-expanded'),controls:e.getAttribute('aria-controls'),parent:e.parentElement?.className})),options:[...document.querySelectorAll('[role=option]')].map(e=>({text:e.textContent,visible:!!e.getClientRects().length})).slice(0,20)}));}
     else if (operation === 'screenshot') { const name = `${session.id}-${Date.now()}.png`, output = path.join(config.stateRoot, name); await session.page.screenshot({ path: output, fullPage: true }); return { path: output }; }
     else if(operation==='captcha-image')return captureCaptchaImage(session.page);
     else if(operation==='human-captcha-view')return humanCaptchaView(session,config);
     else if(operation==='human-captcha-click')return humanCaptchaClick(session,config,payload);
     else if(operation==='human-captcha-completion')return inspectHumanCaptchaCompletion(session,config);
     else if(operation==='captcha-observation')return observePendingCaptcha(session.page,config);
+    else if(operation==='auto-captcha')return autoSolveCaptcha(session,config,payload,{vision:captchaVision()});
     else if(operation==='observe-image'){const mask=session.page.frames().map(frame=>frame.locator('input[type=password],input[autocomplete=one-time-code],input[name*=token i],input[name*=otp i],input[name*=totp i],input[name*=authentication_code i]'));const png=await session.page.screenshot({fullPage:false,mask,maskColor:'#18212a'});return {png_base64:png.toString('base64'),captured_at:new Date().toISOString(),persisted:false};}
     else if(operation==='reconcile-submit'){
       const view=await snapshot(session);if(!session.submit_attempted||!session.history.some(a=>a.operation==='submit_intent')||!ashbySuccessPage(view,payload.expected_url))return {...view,status:'SUBMISSION_UNKNOWN'};

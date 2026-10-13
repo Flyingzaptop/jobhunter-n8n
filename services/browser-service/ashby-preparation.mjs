@@ -71,9 +71,12 @@ export function restoreOmittedMultipartPdf(body,contentType,window){
 }
 export async function chooseCombobox(page,locator,value,getSuggestions=()=>[]){
  if(typeof value!=='string'||!value.trim()||value.length>200)throw Error('INVALID_COMBOBOX_CHOICE');
- await locator.fill(value);await page.getByRole('option').first().waitFor({state:'visible',timeout:7000});
+ await locator.click();await locator.fill(value);await page.getByRole('option').filter({visible:true}).first().waitFor({state:'visible',timeout:7000});
  const suggestions=matchingLocationSuggestions(getSuggestions(),value);if(value.includes(',')&&suggestions.length!==1)throw Error('AMBIGUOUS_COMBOBOX_CHOICE');
- const selected=value.includes(',')?suggestions[0].name:value;const options=page.getByRole('option',{name:selected,exact:true});await options.first().waitFor({state:'visible',timeout:7000});
+ let selected=value.includes(',')?suggestions[0].name:value;
+ if(await locator.getAttribute('id')==='country'){const visibleLabels=await page.getByRole('option').filter({visible:true}).allTextContents();const matching=visibleLabels.filter(label=>label.replace(/\s+\+\d+$/,'').trim().toLowerCase()===value.trim().toLowerCase());if(matching.length===1)selected=matching[0];}
+ const options=page.getByRole('option',{name:selected,exact:true}).filter({visible:true});await options.first().waitFor({state:'visible',timeout:7000});
  if(await options.count()!==1)throw Error('AMBIGUOUS_COMBOBOX_CHOICE');await options.click();
- if((await locator.inputValue()).trim().toLowerCase()!==selected.trim().toLowerCase())throw Error('COMBOBOX_CHOICE_NOT_CONFIRMED');
+ const input=(await locator.inputValue()).trim();const displayed=await locator.evaluate(e=>e.closest('[class*="__control"]')?.querySelector('[class*="__single-value"]')?.textContent?.trim()??'');
+ if((input||displayed).toLowerCase()!==selected.trim().toLowerCase())throw Error('COMBOBOX_CHOICE_NOT_CONFIRMED '+JSON.stringify({input,displayed,selected}));
 }

@@ -1,3 +1,4 @@
+import {operatorConfirmedAnswer} from './operator-confirmed-answer.mjs';
 import {approvedOptionalOmission} from './optional-field-omission.mjs';
 import {retireSupersededManualHandoffs} from './stale-manual-handoff.mjs';
 import { randomUUID, createHash } from 'node:crypto';
@@ -55,7 +56,8 @@ export function professionalYears(profile) {
   return Math.floor(merged.reduce((n,[a,b])=>n+b-a,0)/86400000/365.25+0.01);
 }
 
-export function resolveField(field, { profile, job, view, answerMemory = {} }) {
+export function resolveField(field, { profile, job, view, answerMemory = {}, application }) {
+  const confirmed=operatorConfirmedAnswer(field,application,job);if(confirmed)return confirmed;
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
   const primaryEducation=profile.education?.find(e=>e.primary_for_forms)??profile.education?.[0];
   if(field.required===false&&field.name==='org'&&/^current company/i.test(field.label??'')){
@@ -72,6 +74,11 @@ export function resolveField(field, { profile, job, view, answerMemory = {} }) {
   if(/github.*(?:profile|link)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
   if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
   if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*(?:and\s*)?country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
+  if(/^(?:what is your )?current country of residence$/.test(label)&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
+  if(/^are you currently locat(?:ed|ion) in either canada uk or poland$/.test(label)&&country(candidate.base_location?.country)==='PL')return {value:'Yes',source:'PROFILE_CURRENT_BASE'};
+  if(/^will you now or in the future require sponsorship for a visa to remain in your current location$/.test(label)&&country(candidate.base_location?.country)==='PL'&&(candidate.citizenship??[]).some(value=>country(value)==='PL'))return {value:'No',source:'PROFILE_CITIZENSHIP_AND_CURRENT_BASE'};
+  if(field.required===false&&/name you d prefer us to use throughout the interview process/.test(label)&&known(legal))return {value:legal,source:'PROFILE_LEGAL_NAME_DEFAULT'};
+  if(field.required===false&&/adjustments.*hiring and interview process/.test(label))return {value:'I prefer not to provide additional information in this optional field.',source:'OPTIONAL_NONDISCLOSURE'};
   if(/date of birth|birth date|\bdob\b|data urodzen/.test(label)&&known(identity.date_of_birth)&&['date','text'].includes(field.type))return {value:identity.date_of_birth,source:'PROFILE'};
   if(/birth|born|urodze/.test(label)&&!['first_name','last_name','email','phone'].includes(field.name))return null;
   const nameParts=known(legal)?String(legal).trim().split(/\s+/):[];
@@ -292,7 +299,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
         if(field.type==='file'&&!field.required&&!String(field.label??'').trim()&&!/resume|\bcv\b|letter|document|attachment|certificate|portfolio/i.test((field.name??'')+' '+(field.selector??'')))continue;
         if(approvedOptionalOmission(field,application,job))continue;
         if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
-        const knownOptional=resolveField(field,{profile,job,view,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
+        const knownOptional=resolveField(field,{profile,job,view,answerMemory,application})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
         if(!config.fillAllFields&&!field.required&&field.type!=='file'&&!knownOptional)continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
         if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
