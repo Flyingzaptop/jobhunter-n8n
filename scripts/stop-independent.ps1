@@ -14,7 +14,7 @@ catch{console.log('Database unavailable; persistent stop markers are saved.');}
 finally{await r.close();}
 '@ | node --env-file=.env --input-type=module
 $inventory = @(Get-CimInstance Win32_Process)
-$roots = @($inventory | Where-Object {$_.Name -eq 'node.exe' -and $_.CommandLine -match '\s--env-file=\.env\s+(?:scripts/(?:continuous-worker|resident-lmstudio|local-n8n|telegram-poll)|services/(?:core|browser-service|dashboard)/server)\.mjs(?:\s|$)'})
+$roots = @($inventory | Where-Object {$_.Name -eq 'node.exe' -and $_.CommandLine -match '\s--env-file=\.env\s+(?:scripts/(?:continuous-worker|resident-lmstudio|local-n8n|telegram-poll|obscura-service|browser-controlled-validation|captcha-tunnel|continue-single-captcha|captcha-handoff-worker)|services/(?:core|browser-service|dashboard)/server|services/dashboard/captcha-gateway)\.mjs(?:\s|$)'})
 $ownedIds = [Collections.Generic.HashSet[int]]::new()
 $roots | ForEach-Object {[void]$ownedIds.Add([int]$_.ProcessId)}
 do {$added=$false;foreach($proc in $inventory){if($ownedIds.Contains([int]$proc.ParentProcessId) -and $ownedIds.Add([int]$proc.ProcessId)){$added=$true}}} while($added)

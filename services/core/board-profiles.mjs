@@ -1,4 +1,4 @@
-import {chromium} from 'playwright';
+import {connectApplicationBrowser,newApplicationContext} from '../browser-service/browser-engine.mjs';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 
@@ -30,9 +30,10 @@ export async function boardProfileStatus(board,{root}={}){
 }
 export async function openBoardProfile(board,{root,headless=true,channel='chrome',manual=false}={}){
  const directory=boardProfilePath(board,root);await mkdir(directory,{recursive:true});
- const context=await chromium.launchPersistentContext(path.join(directory,'chromium'),{
-  headless,channel,acceptDownloads:false,args:['--disable-gpu'],
- });
+ const browser=await connectApplicationBrowser();
+ const context=await newApplicationContext(browser,{acceptDownloads:false,storageState:await exportedBoardState(board)});
+ const originalClose=context.close.bind(context);
+ context.close=async()=>{try{await exportBoardState(context,board);await originalClose();}finally{await browser.close();}};
  if(manual){
   const earlier=await boardProfileStatus(board,{root});
   await writeFile(path.join(directory,'profile.json'),JSON.stringify({...earlier,manual_login_active:true,owner_pid:process.pid,updated_at:new Date().toISOString()}),{encoding:'utf8',mode:0o600});

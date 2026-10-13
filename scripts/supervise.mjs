@@ -8,6 +8,7 @@ const services=[
  ...(process.env.OLLAMA_PROVIDER==='lmstudio'?[{name:'lmstudio',entry:'scripts/resident-lmstudio.mjs'}]:[]),
  {name:'postgres',entry:'scripts/local-postgres.mjs',url:'tcp:55432'},
  {name:'core',entry:'services/core/server.mjs',url:'http://127.0.0.1:3000/health'},
+ {name:'obscura',entry:'scripts/obscura-service.mjs',url:'http://127.0.0.1:9422/json/version'},
  {name:'browser',entry:'services/browser-service/server.mjs',url:'http://127.0.0.1:3001/health'},
  {name:'dashboard',entry:'services/dashboard/server.mjs',url:'http://127.0.0.1:3020/health'},
  {name:'n8n',entry:'scripts/local-n8n.mjs',url:'http://127.0.0.1:5678/healthz'},
@@ -38,7 +39,7 @@ let stopped=false;process.on('SIGINT',()=>stopped=true);process.on('SIGTERM',()=
 const attempts=new Map();
 try{while(!stopped){const states=[];let databaseReady=false;
  for(const service of services){
-  try{const pause=JSON.parse(await readFile(path.join(directory,'hardware-pause.json'),'utf8'));if(pause.paused&&['lmstudio','worker','browser','n8n','telegram'].includes(service.name)){states.push({name:service.name,state:pause.state??'PAUSED'});continue;}}catch{}
+  try{const pause=JSON.parse(await readFile(path.join(directory,'hardware-pause.json'),'utf8'));if(pause.paused&&['lmstudio','obscura','worker','browser','n8n','telegram'].includes(service.name)){states.push({name:service.name,state:pause.state??'PAUSED'});continue;}}catch{}
   try{const maintenance=JSON.parse(await readFile(path.join(directory,'maintenance.json'),'utf8'));if(maintenance.services?.includes(service.name)){states.push({name:service.name,state:'UPDATING'});continue;}}catch{}
   if(['core','dashboard','n8n','worker','telegram'].includes(service.name)&&!databaseReady){states.push({name:service.name,state:'WAITING_FOR_POSTGRES'});continue;}
   try{const ids=await pids(service.entry);const ok=await healthy(service,ids);if(service.name==='postgres')databaseReady=ok;

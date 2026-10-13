@@ -1,3 +1,5 @@
+import {approvedOptionalOmission} from './optional-field-omission.mjs';
+import {retireSupersededManualHandoffs} from './stale-manual-handoff.mjs';
 import { randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -37,7 +39,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
     email:(view.fields??[]).filter(f=>f.visible&&(f.type==='email'||/^(?:email|e-mail)(?: address)?$/i.test(f.label??''))).every(f=>String(f.value).trim().toLowerCase()===String(identity.email??'').trim().toLowerCase()),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
-    upload:(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').toLowerCase().includes(f.filename.toLowerCase()))),
+    upload:!(/Analyzing resume(?:\.{3}|…)?/i.test(view.text??'')&&atsAdapterFor(view.url)==='lever')&&(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').toLowerCase().includes(f.filename.toLowerCase()))),
     questions:outstanding===0,required_fields:missingRequiredFields(view.fields).length===0,
     saved_fields:unsavedRequiredFields(view.fields).length===0,
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
@@ -288,6 +290,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
         const correction=application.last_state?.model_review?.changes?.find(c=>c.field_selector===field.selector&&c.field_label===field.label);
         if(correction&&isModelAnswerable(field))field.description=`${field.description??''} Review correction: ${correction.reason}`;
         if(field.type==='file'&&!field.required&&!String(field.label??'').trim()&&!/resume|\bcv\b|letter|document|attachment|certificate|portfolio/i.test((field.name??'')+' '+(field.selector??'')))continue;
+        if(approvedOptionalOmission(field,application,job))continue;
         if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
         const knownOptional=resolveField(field,{profile,job,view,answerMemory})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
         if(!config.fillAllFields&&!field.required&&field.type!=='file'&&!knownOptional)continue;
@@ -348,6 +351,8 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       if(final){
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
+        const retired=await retireSupersededManualHandoffs(repository,application.application_id,sessionId);
+        if(retired)await repository.event('application',application.application_id,'STALE_MANUAL_HANDOFF_RETIRED',{count:retired,browser_session_id:sessionId,human_captcha_solved:false});
         const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL AND closed_at IS NULL',[application.application_id])).rows[0].n;
         const review=finalReviewEvidence({view,profile,job,cv,outstanding});
         if(!review.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:'FINAL_REVIEW_NOT_VERIFIED',final_review:review});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:'FINAL_REVIEW_NOT_VERIFIED'};}

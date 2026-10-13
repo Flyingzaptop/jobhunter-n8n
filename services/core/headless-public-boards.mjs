@@ -1,4 +1,4 @@
-import {chromium} from 'playwright';
+import {connectApplicationBrowser,newApplicationContext} from '../browser-service/browser-engine.mjs';
 import {extractJobPostings} from './discovery.mjs';
 import {publishedNextPage} from './discovery-cursors.mjs';
 import {extractVisibleBoardJob} from './board-document.mjs';
@@ -41,8 +41,8 @@ async function inspectPage(page,response){
 }
 export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,detailOffset=0,listingUrl,snapshotLinks,exactJobUrl,navigationTimeoutMs=20000,allowUrl=()=>true}={}){
   if(names.some(name=>!BOARD_TARGETS[name])||!Number.isInteger(maxDetails)||maxDetails<0||maxDetails>5)throw new Error('INVALID_HEADLESS_PROBE_OPTIONS');
-  const browser=await chromium.launch({headless:true,args:['--disable-gpu']});
-  const report={started_at:new Date().toISOString(),browser:'Playwright Chromium',headless:true,isolated_context:true,gpu_disabled:true,
+  const browser=await connectApplicationBrowser();
+  const report={started_at:new Date().toISOString(),browser:'Obscura v0.2.4 / Playwright CDP',headless:true,isolated_context:true,gpu_disabled:true,
     cookies_imported:false,user_agent_overridden:false,stealth:false,challenge_solving:false,inference_requests:0,submissions:0,sources:[]};
   try{for(const name of names){
     const target=BOARD_TARGETS[name];const currentUrl=listingUrl??target.url;
@@ -52,7 +52,7 @@ export async function probeHeadlessBoards({names=['pracuj','olx'],maxDetails=2,d
     if(parsedListing.origin!==new URL(target.url).origin||!validPath)throw new Error('INVALID_PUBLIC_LISTING_PAGE');
     const profile=await boardProfileStatus(name);
     if(profile.manual_login_active){report.sources.push({source:name,url:currentUrl,status:'USER_AUTHENTICATION_IN_PROGRESS',job_links:[],details:[]});continue;}
-    const context=await browser.newContext({storageState:profile.prepared?await exportedBoardState(name):undefined});
+    const context=await newApplicationContext(browser,{storageState:profile.prepared?await exportedBoardState(name):undefined});
     // Discovery only: never transmit application forms or interact with authentication.
     const blockedRequests=[];
     await context.route('**/*',route=>{const request=route.request();if(publicBrowserRequestAllowed(request.url(),request.method()))return route.continue();const target=new URL(request.url());blockedRequests.push({host:target.hostname,path:target.pathname,method:request.method()});return route.abort();});

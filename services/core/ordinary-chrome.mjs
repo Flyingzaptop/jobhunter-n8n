@@ -1,26 +1,17 @@
-import {spawn} from 'node:child_process';import {mkdir} from 'node:fs/promises';import path from 'node:path';
-import {chromium} from 'playwright';
+// Compatibility entry point for existing callers; all application browsing is Obscura.
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import {connectApplicationBrowser,newApplicationContext} from '../browser-service/browser-engine.mjs';
 import {acquireProfileLock} from './profile-lock.mjs';
-export async function ordinaryChromeContext({directory,port,minimized=true}){
+export async function ordinaryChromeContext({directory}){
  await mkdir(directory,{recursive:true});
  const release=await acquireProfileLock(path.join(directory,'browser-owner.lock'));
- for(let i=0;i<40;i++){let busy=false;try{busy=(await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(250)})).ok;}catch{}if(!busy)break;if(i===39){await release();throw new Error('ORDINARY_CHROME_PROFILE_BUSY');}await new Promise(resolve=>setTimeout(resolve,250));}
- const executable=path.join(process.env.ProgramFiles??'C:/Program Files','Google/Chrome/Application/chrome.exe');
- const child=spawn(executable,['--user-data-dir='+path.resolve(directory),'--remote-debugging-port='+port,'--remote-debugging-address=127.0.0.1','--no-first-run','--no-default-browser-check',...(minimized?['--start-minimized']:[]),'about:blank'],{windowsHide:true,stdio:'ignore'});let launchError;
- child.on('error',error=>launchError=error);
+ let browser;
  try{
-  for(let i=0;i<80;i++){
-   if(launchError)throw new Error('ORDINARY_CHROME_START_FAILED');
-   try{const r=await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(500)});if(r.ok)break;}catch{}
-   await new Promise(resolve=>setTimeout(resolve,250));
-  }
-  const browser=await chromium.connectOverCDP(`http://127.0.0.1:${port}`,{timeout:10000});
-  const context=browser.contexts()[0];
-  const close=context.close.bind(context);
-  context.close=async()=>{try{const session=await browser.newBrowserCDPSession();await session.send('Browser.close');}catch{await close().catch(()=>{});}finally{await browser.close().catch(()=>{});
-    for(let i=0;i<20;i++){try{await fetch(`http://127.0.0.1:${port}/json/version`,{signal:AbortSignal.timeout(200)});}catch{break;}await new Promise(resolve=>setTimeout(resolve,100));}
-    await release();
-  }};
+  browser=await connectApplicationBrowser();
+  let storageState;try{storageState=JSON.parse(await readFile(path.join(directory,'obscura-state.json'),'utf8'));}catch{}
+  const context=await newApplicationContext(browser,{storageState});const close=context.close.bind(context);
+  context.close=async()=>{try{await writeFile(path.join(directory,'obscura-state.json'),JSON.stringify(await context.storageState()),{mode:0o600});await close();}finally{await browser.close();await release();}};
   return context;
- }catch(error){child.kill();await release();throw error;}
+ }catch(error){await browser?.close().catch(()=>{});await release();throw error;}
 }

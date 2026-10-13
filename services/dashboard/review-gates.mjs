@@ -65,7 +65,7 @@ export async function prepareApplicationReview(repository, applicationId, profil
   const binding = await buildBinding(repository, applicationId, profile, browser), client = await repository.pool.connect();
   try {
     await client.query('BEGIN'); await lockApplication(client, binding);
-    if((await client.query("SELECT approval_id FROM application_review_gates WHERE application_id=$1 AND status='CONSUMED' LIMIT 1",[applicationId])).rows.length)throw hitlError('APPLICATION_REVIEW_ALREADY_CONSUMED');
+    if((await client.query("SELECT g.approval_id FROM application_review_gates g WHERE g.application_id=$1 AND g.status='CONSUMED' AND NOT EXISTS (SELECT 1 FROM confirmed_submit_commands c WHERE c.application_id=g.application_id AND c.approval_id=g.approval_id AND c.status='BLOCKED' AND c.superseded_at IS NOT NULL AND c.result_json->>'reason' IN ('INTERACTIVE_CAPTCHA','BROWSER_COMPATIBILITY_ZERO_DISPATCH') AND c.result_json->'transport_evidence'->>'state'='NOT_DISPATCHED' AND c.result_json->'transport_evidence'->>'browser_session_id'=c.result_json->>'browser_session_id') LIMIT 1",[applicationId])).rows.length)throw hitlError('APPLICATION_REVIEW_ALREADY_CONSUMED');
     await client.query("UPDATE application_review_gates SET status='REVOKED',revoked_at=now() WHERE application_id=$1 AND status IN ('PREPARED','APPROVED')", [applicationId]);
     const gate = (await client.query(`INSERT INTO application_review_gates(approval_id,application_id,candidate_profile_id,campaign_id,digests,binding_digest,expires_at)
       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`, [randomUUID(), applicationId, profile.profile_id, campaignId, binding.digests, binding.binding_digest, new Date(Date.now() + ttlMs)])).rows[0];
