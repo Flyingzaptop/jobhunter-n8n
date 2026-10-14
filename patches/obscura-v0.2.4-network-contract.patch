@@ -61,6 +61,50 @@ index 0000000..cf2f0af
 + }
 +}
 +fn uuidless_id()->u64{use std::sync::atomic::{AtomicU64,Ordering};static ID:AtomicU64=AtomicU64::new(0);ID.fetch_add(1,Ordering::Relaxed)}
+diff --git a/crates/obscura-browser/src/page.rs b/crates/obscura-browser/src/page.rs
+index fbdc129..cc36512 100644
+--- a/crates/obscura-browser/src/page.rs
++++ b/crates/obscura-browser/src/page.rs
+@@ -303,6 +303,7 @@ pub struct Page {
+     /// pending navigation that loads it. Committing that load moves the cursor
+     /// to the entry instead of appending a new one.
+     pending_history_traversal: std::sync::Mutex<Option<usize>>,
++    pending_form_submission: std::sync::Mutex<Option<obscura_js::ops::PendingFormSubmission>>,
+     pub network_events: Vec<NetworkEvent>,
+     response_bodies: std::collections::HashMap<String, StoredResponseBody>,
+     response_body_order: std::collections::VecDeque<String>,
+@@ -1121,6 +1122,7 @@ impl Page {
+             history_index: 0,
+             document_history_start: 0,
+             pending_history_traversal: std::sync::Mutex::new(None),
++            pending_form_submission: std::sync::Mutex::new(None),
+             network_events: Vec::new(),
+             response_bodies: std::collections::HashMap::new(),
+             response_body_order: std::collections::VecDeque::new(),
+@@ -3461,9 +3463,12 @@ impl Page {
+                 redirected_from: Vec::new(),
+             })
+         } else if method == "POST" {
+-            self.http_client
+-                .post_form_with_callbacks(&url, body, Some(&self.callbacks))
+-                .await
++            let form = self.pending_form_submission.lock().ok().and_then(|mut slot| slot.take());
++            if let Some(form) = form.filter(|form| form.url == url_str) {
++                self.http_client.post_multipart_with_callbacks(&url, form.body, &form.content_type, &form.initiator, Some(&self.callbacks)).await
++            } else {
++                self.http_client.post_form_with_callbacks(&url, body, Some(&self.callbacks)).await
++            }
+         } else {
+             self.do_fetch(&url).await
+         }
+@@ -4744,6 +4749,7 @@ impl Page {
+     pub fn take_pending_navigation(&self) -> Option<(String, String, String)> {
+         let js = self.js.as_ref()?;
+         let navigation = js.take_pending_navigation()?;
++        if let Ok(mut form) = self.pending_form_submission.lock() { *form = js.take_pending_form_submission(); }
+         if let Ok(mut traversal) = self.pending_history_traversal.lock() {
+             *traversal = js.take_pending_history_traversal();
+         }
 diff --git a/crates/obscura-cdp/src/dispatch.rs b/crates/obscura-cdp/src/dispatch.rs
 index 71dfceb..faaf8fb 100644
 --- a/crates/obscura-cdp/src/dispatch.rs
@@ -255,8 +299,49 @@ index b3fc7df..fb2141a 100644
              request_id: "fetch-1".into(), page_id: page.clone(), url: "https://example.test/data".into(),
              method: "GET".into(), headers: Default::default(), resource_type: "Fetch".into(), resolver,
          };
+diff --git a/crates/obscura-js/js/bootstrap.js b/crates/obscura-js/js/bootstrap.js
+index be457da..4cc028b 100644
+--- a/crates/obscura-js/js/bootstrap.js
++++ b/crates/obscura-js/js/bootstrap.js
+@@ -4882,6 +4882,17 @@ class Element extends Node {
+     this._navigateSubmit(submitter);
+   }
+   _navigateSubmit(submitter) {
++    const formMethod = (submitter?.getAttribute('formmethod') || this.getAttribute('method') || 'GET').toUpperCase();
++    const formEncoding = (submitter?.getAttribute('formenctype') || this.getAttribute('enctype') || '').toLowerCase();
++    if (formMethod === 'POST' && formEncoding === 'multipart/form-data') {
++      const fd = new FormData(this);
++      if (submitter?.form === this && submitter.name && !submitter.disabled) fd.append(submitter.name, submitter.value || '');
++      const multipart = _formDataToMultipart(fd);
++      const action = submitter?.getAttribute('formaction') || this.getAttribute('action') || '';
++      const target = new URL(action, globalThis.location?.href || 'about:blank').href;
++      __obscuraCore.ops.op_navigate_multipart(target, multipart.body, 'multipart/form-data; boundary=' + multipart.boundary);
++      return;
++    }
+     const pairs = [];
+     const fields = this.querySelectorAll('input, select, textarea');
+     for (let i = 0; i < fields.length; i++) {
+@@ -11267,7 +11278,17 @@ if (typeof FormData === "undefined") globalThis.FormData = class FormData {
+           if (el.checked) this._d.push([name, el.value != null ? String(el.value) : "on"]);
+           continue;
+         }
+-        if (type === "submit" || type === "reset" || type === "button" || type === "image" || type === "file") continue;
++        if (type === "file") {
++          const files = el.files || [];
++          if (files.length) for (const file of files) this._d.push([name, file]);
++          else this._d.push([name, new File([], '', {type:'application/octet-stream'})]);
++          continue;
++        }
++        if (tag === "select") {
++          for (const option of el.options || []) if (option.selected && !option.disabled) this._d.push([name, option.value]);
++          continue;
++        }
++        if (type === "submit" || type === "reset" || type === "button" || type === "image") continue;
+         this._d.push([name, el.value != null ? String(el.value) : ""]);
+       }
+     }
 diff --git a/crates/obscura-js/src/ops.rs b/crates/obscura-js/src/ops.rs
-index d186368..02ef910 100644
+index d186368..777be3b 100644
 --- a/crates/obscura-js/src/ops.rs
 +++ b/crates/obscura-js/src/ops.rs
 @@ -60,6 +60,7 @@ pub enum InterceptResolution {
@@ -267,13 +352,37 @@ index d186368..02ef910 100644
      pub request_id: String,
      pub page_id: String,
      pub url: String,
-@@ -3647,10 +3648,22 @@ async fn fetch_url_inner(
+@@ -178,6 +179,7 @@ pub struct ObscuraState {
+     #[cfg(feature = "stealth")]
+     pub stealth_client: Option<Arc<StealthHttpClient>>,
+     pub pending_navigation: Option<(String, String, String)>,
++    pub pending_form_submission: Option<PendingFormSubmission>,
+     /// The tab's session history as the owning page sees it: entry URLs, the
+     /// index of this document's first entry, and the current index. Empty
+     /// for frames and for runtimes outside a page, where `history` only
+@@ -433,6 +435,7 @@ impl ObscuraState {
+             #[cfg(feature = "stealth")]
+             stealth_client: None,
+             pending_navigation: None,
++            pending_form_submission: None,
+             session_history: SessionHistory::default(),
+             pending_history_traversal: None,
+             intercept_tx: None,
+@@ -3647,10 +3650,30 @@ async fn fetch_url_inner(
  
      let mut was_intercepted = false;
      if let Some(tx) = intercept_tx {
 -        let custom_headers: HashMap<String, String> =
 +        let mut custom_headers: HashMap<String, String> =
              serde_json::from_str(&headers_json).unwrap_or_default();
++        // Paused requests must expose the same browser-derived Origin header
++        // as the ordinary transport below. Never trust a script-supplied value.
++        let target_origin = request_origin(&url).unwrap_or_default();
++        let initiator_origin = if origin.is_empty() { target_origin.clone() } else { origin.clone() };
++        custom_headers.retain(|key, _| !key.eq_ignore_ascii_case("origin"));
++        if sends_origin_header(&method, target_origin != initiator_origin) {
++            custom_headers.insert("origin".into(), initiator_origin);
++        }
 +        if credentials.allows(&origin,&url){
 +            if let (Some(jar),Ok(target),Ok(source))=(&cookie_jar,url::Url::parse(&url),url::Url::parse(&origin)){
 +                let context=if same_site(&source,&target){SameSiteContext::SameSite}else{SameSiteContext::CrossSite};
@@ -291,7 +400,7 @@ index d186368..02ef910 100644
              request_id: request_id.clone(),
              page_id,
              url: url.clone(),
-@@ -3683,6 +3696,11 @@ async fn fetch_url_inner(
+@@ -3683,6 +3706,11 @@ async fn fetch_url_inner(
                          timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                              .unwrap_or_default().as_secs_f64(),
                      }, if encoded { &bb } else { &b }, encoded);
@@ -303,7 +412,7 @@ index d186368..02ef910 100644
                      let mut response = intercept_fulfill_response(
                          status,
                          h,
-@@ -3800,6 +3818,7 @@ async fn fetch_url_inner(
+@@ -3800,6 +3828,7 @@ async fn fetch_url_inner(
          if cbs.has_request_callbacks().await {
              if let Ok(parsed) = url::Url::parse(&url) {
                  let info = RequestInfo {
@@ -311,7 +420,7 @@ index d186368..02ef910 100644
                      url: parsed,
                      method: method.clone(),
                      headers: custom_headers.clone(),
-@@ -4180,6 +4199,7 @@ async fn fetch_url_inner(
+@@ -4180,6 +4209,7 @@ async fn fetch_url_inner(
                      resp_bytes.to_vec(), redirected_from,
                  );
                  let info = RequestInfo {
@@ -319,7 +428,7 @@ index d186368..02ef910 100644
                      url: resp.url.clone(), method: current_method.as_str().to_string(),
                      headers: resp_headers.clone(), resource_type,
                  };
-@@ -4434,6 +4454,7 @@ async fn stealth_fetch_all(
+@@ -4434,6 +4464,7 @@ async fn stealth_fetch_all(
                      resp_bytes.clone(), redirected_from,
                  );
                  let info = RequestInfo {
@@ -327,10 +436,79 @@ index d186368..02ef910 100644
                      url: resp.url.clone(), method: current_method.clone(),
                      headers: resp_headers.clone(), resource_type,
                  };
+@@ -5687,6 +5718,28 @@ fn op_history_traverse(scope: &mut v8::PinScope, state: &OpState, index: u32) ->
+ 
+ // A frame that navigates itself must not move the top document. Recording the
+ // navigation against the calling realm keeps it inside that frame.
++#[derive(Clone)]
++pub struct PendingFormSubmission {
++    pub url: String,
++    pub body: Vec<u8>,
++    pub content_type: String,
++    pub initiator: String,
++}
++
++#[op2(fast)]
++fn op_navigate_multipart(
++    scope: &mut v8::PinScope, state: &OpState,
++    #[string] url: &str, #[buffer] body: &[u8], #[string] content_type: &str,
++) {
++    if body.len() > 20 * 1024 * 1024 || !content_type.starts_with("multipart/form-data; boundary=")
++        || content_type.contains(['\r','\n']) { return; }
++    let gs = realm_state(scope, state); let mut gs = gs.borrow_mut();
++    gs.pending_form_submission = Some(PendingFormSubmission {
++        url: url.to_string(), body: body.to_vec(), content_type: content_type.to_string(), initiator: gs.url.clone(),
++    });
++    gs.pending_navigation = Some((url.to_string(), "POST".into(), String::new()));
++}
++
+ #[op2(fast)]
+ fn op_navigate(
+     scope: &mut v8::PinScope,
+@@ -5702,6 +5755,7 @@ fn op_navigate(
+     // Moving it early let synchronous JS run between two navigations read and
+     // write another origin's cookies through document.cookie, whose ops derive
+     // the cookie domain from this URL (SOP bypass, #940).
++    gs.pending_form_submission = None;
+     gs.pending_navigation = Some((url.to_string(), method.to_string(), body.to_string()));
+ }
+ 
+@@ -6882,6 +6936,7 @@ pub fn build_extension() -> Extension {
+         op_get_cookies(),
+         op_set_cookie(),
+         op_navigate(),
++        op_navigate_multipart(),
+         op_session_history(),
+         op_history_traverse(),
+         op_frame_document_ready(),
+diff --git a/crates/obscura-js/src/runtime.rs b/crates/obscura-js/src/runtime.rs
+index 462153a..2e6358b 100644
+--- a/crates/obscura-js/src/runtime.rs
++++ b/crates/obscura-js/src/runtime.rs
+@@ -1276,6 +1276,10 @@ impl ObscuraJsRuntime {
+         self.state.borrow_mut().blocked_urls = patterns;
+     }
+ 
++    pub fn take_pending_form_submission(&self) -> Option<crate::ops::PendingFormSubmission> {
++        self.state.borrow_mut().pending_form_submission.take()
++    }
++
+     pub fn take_pending_navigation(&self) -> Option<(String, String, String)> {
+         self.state.borrow_mut().pending_navigation.take()
+     }
 diff --git a/crates/obscura-net/src/client.rs b/crates/obscura-net/src/client.rs
-index 86295e3..9c5c6ae 100644
+index 86295e3..7344e4f 100644
 --- a/crates/obscura-net/src/client.rs
 +++ b/crates/obscura-net/src/client.rs
+@@ -120,7 +120,7 @@ impl Response {
+ ///
+ /// A plain `HashMap` insert keeps only the *last* value when a response repeats
+ /// a header name (`Link`, `Via`, `WWW-Authenticate`, ...), silently dropping the
+-/// earlier lines. Per RFC 9110 §5.3 duplicate field lines of the same name may
++/// earlier lines. Per RFC 9110 В§5.3 duplicate field lines of the same name may
+ /// be combined into one comma-separated value without changing semantics.
+ /// `Set-Cookie` is the exception (RFC 6265 forbids folding it): it is captured
+ /// individually by the cookie jar via `get_all`, so the map keeps it only as a
 @@ -140,6 +140,7 @@ pub(crate) fn merge_response_header(map: &mut HashMap<String, String>, name: Str
  
  #[derive(Debug, Clone)]
@@ -339,6 +517,17 @@ index 86295e3..9c5c6ae 100644
      pub url: Url,
      pub method: String,
      pub headers: HashMap<String, String>,
+@@ -1105,8 +1106,8 @@ impl ObscuraHttpClient {
+     }
+ 
+     /// Read-only accessor for the proxy URL the client was configured with
+-    /// (if any). Exposed so callers outside the `obscura-net` crate — notably
+-    /// `op_fetch_url` in `obscura-js` (#139) — can route their own reqwest
++    /// (if any). Exposed so callers outside the `obscura-net` crate вЂ” notably
++    /// `op_fetch_url` in `obscura-js` (#139) вЂ” can route their own reqwest
+     /// requests through the same upstream proxy.
+     pub fn proxy_url(&self) -> Option<&str> {
+         self.proxy_url.as_deref()
 @@ -1184,7 +1185,7 @@ impl ObscuraHttpClient {
              || body.is_some()
              || request.resource_type == ResourceType::Document
@@ -356,7 +545,38 @@ index 86295e3..9c5c6ae 100644
              url: url.clone(),
              method: Method::GET.to_string(),
              headers: self.extra_headers.read().await.clone(),
-@@ -1415,28 +1417,14 @@ impl ObscuraHttpClient {
+@@ -1370,13 +1372,30 @@ impl ObscuraHttpClient {
+         callbacks.fire_response(&request_info, response).await;
+     }
+ 
++    pub async fn post_multipart_with_callbacks(
++        &self, url: &Url, body: Vec<u8>, content_type: &str, initiator: &str, callbacks: Option<&CallbackRegistry>,
++    ) -> Result<Response, ObscuraNetError> {
++        let mut profile = ResourceRequest::navigation();
++        profile.initiator = Url::parse(initiator).ok();
++        profile.referrer = profile.initiator.clone();
++        self.fetch_with_profile_uncached_encoded(Method::POST, url, Some(body), callbacks, profile, Some(content_type)).await
++    }
++
+     async fn fetch_with_profile_uncached(
++        &self, initial_method: Method, url: &Url, initial_body: Option<Vec<u8>>,
++        callbacks: Option<&CallbackRegistry>, request: ResourceRequest,
++    ) -> Result<Response, ObscuraNetError> {
++        self.fetch_with_profile_uncached_encoded(initial_method, url, initial_body, callbacks, request, None).await
++    }
++
++    async fn fetch_with_profile_uncached_encoded(
+         &self,
+         initial_method: Method,
+         url: &Url,
+         initial_body: Option<Vec<u8>>,
+         callbacks: Option<&CallbackRegistry>,
+         request: ResourceRequest,
++        body_content_type: Option<&str>,
+     ) -> Result<Response, ObscuraNetError> {
+         validate_url(url, self.allow_private_network)?;
+         validate_request_mode(&request, url)?;
+@@ -1415,28 +1434,14 @@ impl ObscuraHttpClient {
  
          for _redirect_count in 0..=max_redirects {
              validate_request_mode(&request, &current_url)?;
@@ -387,13 +607,22 @@ index 86295e3..9c5c6ae 100644
  
              if !request_callback_fired {
                  if let Some(cbs) = callbacks {
-@@ -1560,6 +1548,45 @@ impl ObscuraHttpClient {
+@@ -1552,7 +1557,7 @@ impl ObscuraHttpClient {
+             }
+             // Origin is a forbidden browser request header. Keep it derived
+             // from the initiator even when callers supplied extra headers.
+-            if cors_required(&request, &current_url) {
++            if cors_required(&request, &current_url) || (method != Method::GET && method != Method::HEAD && request.initiator.is_some()) {
+                 if let Ok(value) = HeaderValue::from_str(&request_origin) {
+                     headers.insert(reqwest::header::ORIGIN, value);
+                 }
+@@ -1560,6 +1565,45 @@ impl ObscuraHttpClient {
                  headers.remove(reqwest::header::ORIGIN);
              }
  
 +            if let Some(ref bytes) = body {
 +                if method == Method::POST {
-+                    headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_static("application/x-www-form-urlencoded"));
++                    headers.insert(reqwest::header::CONTENT_TYPE, HeaderValue::from_str(body_content_type.unwrap_or("application/x-www-form-urlencoded")).map_err(|e| ObscuraNetError::Network(e.to_string()))?);
 +                }
 +                headers.insert(reqwest::header::CONTENT_LENGTH, HeaderValue::from_str(&bytes.len().to_string()).unwrap());
 +            }
@@ -433,6 +662,33 @@ index 86295e3..9c5c6ae 100644
              let mut req_builder = self.get_client().await.request(method.clone(), current_url.as_str())
                  .headers(headers);
  
+@@ -1772,7 +1816,7 @@ mod ssrf_tests {
+         }
+     }
+ 
+-    // SEC-401 / #810 — std's is_private() only covers RFC1918, so CGNAT and
++    // SEC-401 / #810 вЂ” std's is_private() only covers RFC1918, so CGNAT and
+     // other IANA special-purpose ranges (which host cloud metadata) must be
+     // blocked explicitly, including their IPv4-mapped IPv6 forms.
+     #[test]
+@@ -2111,7 +2155,7 @@ mod ssrf_tests {
+         assert_eq!(jar.get_cookie_header_same_site(&target), "seed=1");
+     }
+ 
+-    // #849 — the OBSCURA_FETCH_MAX_BODY_BYTES override #581 gave fetch()/XHR
++    // #849 вЂ” the OBSCURA_FETCH_MAX_BODY_BYTES override #581 gave fetch()/XHR
+     // must also reach the module-script cap; a large SPA bundle otherwise dies
+     // silently at a hardcoded 32 MiB while fetch() of the same URL succeeds.
+     // (nextest runs each test in its own process, so set_var cannot race.)
+@@ -2701,7 +2745,7 @@ mod ssrf_tests {
+ 
+     #[tokio::test]
+     async fn resolver_blocks_hostname_that_resolves_to_loopback() {
+-        // localtest.me is a public DNS name that resolves to 127.0.0.1 — the
++        // localtest.me is a public DNS name that resolves to 127.0.0.1 вЂ” the
+         // canonical DNS-rebinding test. The guard must reject it. If DNS is
+         // unavailable the lookup itself errors (also Err), so the assertion
+         // holds either way.
 diff --git a/crates/obscura-net/src/wreq_client.rs b/crates/obscura-net/src/wreq_client.rs
 index b0ab86f..93db443 100644
 --- a/crates/obscura-net/src/wreq_client.rs

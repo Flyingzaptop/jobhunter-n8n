@@ -16,23 +16,34 @@ try{
  await assert.rejects(page.goto(base+'/blocked',{timeout:5000}));assert.equal(requests.length,0);result.tests.push('main_document_abort_zero_socket_requests');await context.close();
  context=await newApplicationContext(browser);await context.route('**/*',route=>route.continue());page=await context.newPage();await page.goto(base+'/continued');assert.equal((await page.locator('body').textContent()).trim(),'ORIGINAL_RESPONSE');assert.equal(requests.filter(r=>r.url==='/continued').length,1);result.tests.push('main_document_continue_once');await context.close();
  const pdf=Buffer.from([37,80,68,70,45,255,0,128,10,13]);const file='data/acceptance/network-fixture.pdf';await fs.writeFile(file,pdf);const digest=value=>createHash('sha256').update(value).digest('hex');
- const binary=Buffer.from([0,255,128,10,13,254]);let uploadObserved=false,deniedWrites=0;const observedRequests=[];result.observed_requests=observedRequests;
+ const binary=Buffer.from([0,255,128,10,13,254]);let uploadObserved=false,formObserved=false,deniedWrites=0;const observedRequests=[];result.observed_requests=observedRequests;
  context=await newApplicationContext(browser);
  await context.route('**/*',async route=>{
   const request=route.request(),url=new URL(request.url());observedRequests.push({url:url.pathname,method:request.method(),body_bytes:request.postDataBuffer()?.length??0});
   if(url.pathname==='/upload'){
-   assert.equal(request.method(),'POST');const body=request.postDataBuffer();assert.ok(Buffer.isBuffer(body));assert.ok(body.includes(pdf));uploadObserved=true;
+   assert.equal(request.method(),'POST');const body=request.postDataBuffer();assert.ok(Buffer.isBuffer(body));assert.ok(body.includes(pdf));
+   if(request.headers().origin!==base){result.origin_mismatch={expected:base,actual:request.headers().origin??null};await route.abort();return;}
+   uploadObserved=true;
    return route.fulfill({status:200,contentType:'application/json',body:'{"accepted":true}'});
   }
   if(url.pathname==='/binary')return route.fulfill({status:200,contentType:'application/octet-stream',body:binary});
+  if(url.pathname==='/form-submit'){
+   const body=request.postDataBuffer(),contentType=request.headers()['content-type']??'';
+   result.form_transport={method:request.method(),content_type:contentType,body_bytes:body?.length??0,pdf_exact:body?.includes(pdf)??false,unicode_exact:body?.includes(Buffer.from('Żółć'))??false,selected_exact:body?.includes(Buffer.from('name="choice"\r\n\r\nNo'))??false};
+   formObserved=request.method()==='POST'&&/^multipart\/form-data;.*boundary=/.test(contentType)&&Boolean(body?.includes(pdf))&&body.includes(Buffer.from('Żółć'))&&body.includes(Buffer.from('name="choice"\r\n\r\nNo'))&&!body.includes(Buffer.from('name="unchecked"'));
+   return route.fulfill({status:formObserved?200:400,contentType:'text/html',body:formObserved?'SYNTHETIC_FORM_RECEIVED':'SYNTHETIC_FORM_INVALID'});
+  }
+  if(url.pathname==='/form-fixture')return route.fulfill({status:200,contentType:'text/html',body:'<html><body><form method="POST" action="/form-submit" enctype="multipart/form-data"><input id="resume" type="file" name="resume"><input name="email" value="synthetic@example.invalid"><textarea id="note" name="note"></textarea><select id="choice" name="choice"><option value="Yes">Yes</option><option value="No">No</option></select><input type="checkbox" name="unchecked" value="wrong"><button id="send" type="submit">Submit</button></form></body></html>'});
   if(request.method()==='POST'){deniedWrites++;return route.abort();}
   return route.fulfill({status:200,contentType:'text/html',body:'<html><body><input id="file" type="file"><p id="status">waiting</p><script>document.body.dataset.scriptRan="yes";document.querySelector("#file").onchange=()=>{document.querySelector("#status").textContent="change-fired";const x=new XMLHttpRequest(),f=new FormData();f.append("resume",document.querySelector("#file").files[0]);x.onreadystatechange=()=>{if(x.readyState===4)document.querySelector("#status").textContent=x.responseText;};x.open("POST","/upload");x.send(f);};</script></body></html>'});
  });
  page=await context.newPage();await page.goto(base+'/fixture');result.before_upload=await page.evaluate(()=>({script:document.body.dataset.scriptRan,handler:typeof document.querySelector('#file').onchange}));await setApplicationInputFiles(page,'#file',path.resolve(file));
- result.after_upload=await page.locator('#status').textContent();await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('accepted'),{},{timeout:10000});assert.equal(uploadObserved,true);result.tests.push('xhr_multipart_preserves_pdf_bytes');
+ result.after_upload=await page.locator('#status').textContent();await page.waitForFunction(()=>document.querySelector('#status').textContent.includes('accepted'),{},{timeout:10000});assert.equal(uploadObserved,true);result.tests.push('xhr_multipart_preserves_pdf_bytes_and_origin');
  const fetched=await page.evaluate(async()=>Array.from(new Uint8Array(await(await fetch('/binary')).arrayBuffer())));assert.equal(digest(Buffer.from(fetched)),digest(binary));result.tests.push('binary_fulfill_bytes');
  await page.evaluate(async()=>{try{await fetch('/forbidden-submit',{method:'POST',body:'synthetic-only'});}catch{}});
  assert.equal(deniedWrites,1);assert.equal(requests.filter(r=>r.method==='POST').length,0);result.tests.push('javascript_post_abort_zero_socket_requests');
+ await page.goto(base+'/form-fixture');await setApplicationInputFiles(page,'#resume',path.resolve(file));await page.locator('#note').fill('Żółć');await page.locator('#choice').selectOption('No');await page.locator('#send').click();
+ await page.waitForFunction(()=>document.body.textContent.includes('SYNTHETIC_FORM_'),{},{timeout:10000});assert.equal(formObserved,true);result.tests.push('native_form_submit_preserves_multipart_file_and_content_type');
  await context.close();result.pass=true;
 }catch(error){result.pass=false;result.error=error.message;process.exitCode=1;}
 finally{await browser?.close().catch(()=>{});child.kill();await new Promise(resolve=>server.close(resolve));await fs.writeFile('data/acceptance/obscura-network-contract.json',JSON.stringify({...result,server_requests:requests},null,2));console.log(JSON.stringify(result));}
