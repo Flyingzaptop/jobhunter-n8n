@@ -3482,6 +3482,21 @@ sources:
     pagination_strategy: LINKEDIN_PUBLIC_GUEST_OFFSET
     implementation_reference: https://github.com/speedyapply/JobSpy/tree/83efd3d2ee7fce72d2b4cc4adb670f7e2b0e0e6b
 
+  - name: lever-tsmg-validation
+    platform: Lever
+    adapter: lever
+    url: https://jobs.lever.co/tsmg
+    board: tsmg
+    company: TSMG
+    profile: real
+    enabled: true
+    validation_only: true
+    source_class: employer_ats
+    permitted_access: true
+    allowed_hosts: [api.lever.co]
+    max_pages: 1
+    documentation: https://github.com/lever/postings-api
+
   - name: lever-jobgether-validation
     platform: Lever
     adapter: lever

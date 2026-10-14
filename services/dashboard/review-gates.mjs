@@ -14,7 +14,7 @@ export const digest = value => createHash('sha256').update(typeof value === 'str
 export const activeProfileDigest = profile => digest(JSON.stringify(profile));
 export function formBinding(snapshot) {
   return { session_id: snapshot.browser_session_id, url: snapshot.url, fingerprint: snapshot.fingerprint, current_step: snapshot.current_step,
-    fields: (snapshot.fields ?? []).map(field => ({ selector: field.selector, name: field.name, label:field.label,type: field.type, value: field.value, checked: field.checked, required: field.required, visible:field.visible,disabled:field.disabled,readOnly:field.readOnly,form:field.form,form_id:field.form_id,form_selector:field.form_selector,options: field.options })),
+    fields: (snapshot.fields ?? []).map(field => ({ selector: field.selector, name: field.name, label:field.label,group_label:field.group_label,selection_group:field.selection_group,type: field.type, value: field.value, checked: field.checked, required: field.required, visible:field.visible,disabled:field.disabled,readOnly:field.readOnly,form:field.form,form_id:field.form_id,form_selector:field.form_selector,options: field.options })),
     buttons:(snapshot.buttons??[]).map(button=>({selector:button.selector,text:button.text,type:button.type,href:button.href,visible:button.visible,disabled:button.disabled,name:button.name,value:button.value,formAction:button.formAction,formMethod:button.formMethod,form_action:button.form_action,form_method:button.form_method,form:button.form,form_id:button.form_id,form_selector:button.form_selector})),
     forms:snapshot.forms??null,form_action:snapshot.form_action,form_destination:snapshot.form_destination,
     uploaded_file_hashes: snapshot.uploaded_file_hashes ?? [] };

@@ -6,10 +6,16 @@ export function matchingLeverLocation(labels,value){
 }
 export async function chooseLeverLocation(page,locator,value){
  // Lever searches on keyboard events, and clears unselected text on blur.
+ const lookupFailure=page.waitForResponse(response=>new URL(response.url()).pathname==='/searchLocations',{timeout:12000})
+  .then(response=>{if(!response.ok())throw Error(`LEVER_LOCATION_LOOKUP_HTTP_${response.status()}`);return new Promise(()=>{});},()=>new Promise(()=>{}));
+ // Attach rejection handling before typing: a fast 403 may arrive immediately.
+ lookupFailure.catch(()=>{});
+ try{
  await locator.fill('');await locator.pressSequentially(value,{delay:15});
- const options=page.locator('.dropdown-location');await options.first().waitFor({state:'visible',timeout:12000});
+ const options=page.locator('.dropdown-location');await Promise.race([options.first().waitFor({state:'visible',timeout:12000}),lookupFailure]);
  const selected=matchingLeverLocation(await options.allTextContents(),value);
  await options.nth(selected.index).click();
  const input=await locator.inputValue();const stored=await page.locator('#selected-location').inputValue();
  if(input!==selected.label||JSON.parse(stored).name!==selected.label)throw Error('LEVER_LOCATION_NOT_SAVED');
+ }catch(error){await locator.fill('').catch(()=>{});await locator.blur().catch(()=>{});throw error;}
 }

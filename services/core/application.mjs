@@ -1,3 +1,4 @@
+import {choicePeers,choiceGroupQuestion,choiceGroupTarget} from './choice-groups.mjs';
 import {operatorConfirmedAnswer} from './operator-confirmed-answer.mjs';
 import {approvedOptionalOmission} from './optional-field-omission.mjs';
 import {retireSupersededManualHandoffs} from './stale-manual-handoff.mjs';
@@ -71,7 +72,7 @@ export function resolveField(field, { profile, job, view, answerMemory = {}, app
   const skills=Object.values(profile.skills||{}).flat().map(norm), facts=[...(profile.experience||[]),...(profile.projects||[]),...(profile.education||[])];
   let value, source='PROFILE';
   if(field.type==='radio'&&/how did you hear|where did you (?:hear|find)/i.test(field.group_label??''))return /^job board$/i.test(field.label.trim())?{value:true,source:'VACANCY_SOURCE'}:{skip:true};
-  if(/github.*(?:profile|link)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
+  if(/github.*(?:profile|link|url)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
   if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
   if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*(?:and\s*)?country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
   if(/^(?:what is your )?current country of residence$/.test(label)&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
@@ -118,13 +119,14 @@ async function ask({repository,telegram,application,browser,sessionId,field,snap
   if(siteControlReason(field))throw new Error('SITE_CONTROL_IS_NOT_AN_APPLICATION_QUESTION');
   if(field.type==='radio'){const options=snapshot.fields.filter(f=>f.type==='radio'&&f.name===field.name&&f.visible&&!f.disabled);if(options.length>1)field={...field,label:`${field.group_label||'Выбери вариант'}\n${options.map(f=>f.label).join('\n')}`};}
   const status=type==='CAPTCHA'?'CAPTCHA_WAIT':'NEEDS_USER';
-  const pending={selector:field.selector,field_name:field.name,field_type:field.type,required:field.required,form:field.form,group_label:field.group_label,field_path:field.field_path,description:field.description,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:field.label,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
+  const questionText=choiceGroupQuestion(field,snapshot.fields??[]);
+  const pending={selector:field.selector,field_name:field.name,field_type:field.type,required:field.required,form:field.form,group_label:field.group_label,field_path:field.field_path,description:field.description,field_label:snapshot.fields.find(f=>f.selector===field.selector)?.label??field.label,question:questionText,type,fingerprint:snapshot.fingerprint,draft_id:snapshot.draft_id,captcha_generation:snapshot.fields.find(f=>f.name==='captcha_generation')?.value};
   await transition(repository,application.application_id,status,{browser_session_id:sessionId,pending_question:pending,current_step:snapshot.current_step});
-  const question=await persistPendingApplicationQuestion(repository,{applicationId:application.application_id,rawQuestion:field.label,chatId:telegram?.chatId??null});
+  const question=await persistPendingApplicationQuestion(repository,{applicationId:application.application_id,rawQuestion:questionText,chatId:telegram?.chatId??null});
   pending.request_id=question.telegram_request_id;
   await browser.call(`/sessions/${sessionId}/checkpoint`,{pending_question:pending});
   try {
-    const requestId=await telegram.request(repository,application.application_id,field.label);
+    const requestId=await telegram.request(repository,application.application_id,questionText);
     pending.request_id=requestId;await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{pending_question:pending}]);
     if(type==='CAPTCHA' && telegram.token && telegram.chatId){
       const shot=await browser.call(`/sessions/${sessionId}/screenshot`,{});const message=(await repository.pool.query('SELECT telegram_message_id FROM application_questions WHERE telegram_request_id=$1',[requestId])).rows[0];
@@ -252,7 +254,12 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       const generation=view.fields.find(f=>f.name==='captcha_generation')?.value;
       if(!field || !field.visible || field.disabled || (view.fingerprint!==pending.fingerprint&&!(pending.type==='FACT'&&['text','url'].includes(field.type)&&/^Link to your (?:Github|LinkedIn) profile$/i.test(field.label))) || field.label!==(pending.field_label??pending.question) || field.type!==pending.field_type || (pending.type==='CAPTCHA'&&(view.draft_id!==pending.draft_id||generation!==pending.captcha_generation)))return ask({repository,telegram,application,browser,sessionId,field:field||{...pending,label:pending.question,type:pending.field_type},snapshot:view,type:pending.type});
       const answer=answerRow.answer;
-      if(field.type==='radio'){
+      if(field.selection_group){
+        const target=choiceGroupTarget(field,view.fields,answer);if(!target)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});
+        for(const peer of choicePeers(field,view.fields))if(peer.checked&&peer.selector!==target.selector)await browser.call(`/sessions/${sessionId}/check`,{selector:peer.selector,checked:false,approval:'USER_CONFIRMED'});
+        field=target;view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
+      }
+      else if(field.type==='radio'){
         const target=radioAnswerTarget(field,view.fields,answer);if(!target)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});
         field=target;view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED'});
       }
@@ -326,6 +333,13 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
           if(field.checked)continue;
           view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,verified_facts:true});await repository.pool.query('INSERT INTO consents(consent_id,application_id,consent_text,consent_text_hash,consent_type,source) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),application.application_id,consent.consent_text,consent.consent_text_hash,consent.consent_type,'RECRUITMENT_POLICY']);continue;
         }
+        if(field.selection_group){
+          if(typeof knownOptional?.value==='boolean'){
+            if(field.checked!==knownOptional.value)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:knownOptional.value,verified_facts:true,approval:knownOptional.source==='USER_CHAT_EXACT_APPLICATION'?'USER_CONFIRMED':undefined});
+            continue;
+          }
+          if(choicePeers(field,view.fields).some(peer=>peer.checked))continue;
+        }
         if(field.type==='checkbox'&&field.checked||radioGroupAnswered(field,view.fields)&&!(config.fillAllFields&&knownOptional?.value===true&&!field.checked))continue;
         if(!field.options&&!['checkbox','radio'].includes(field.type)&&known(field.value)&&(!config.fillAllFields||knownOptional&&String(field.value).trim()===String(knownOptional.value).trim()))continue;
         const answer=knownOptional??await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job});if(answer?.skip)continue;
@@ -343,7 +357,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
           }
           if(field.required||config.fillAllFields)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
         }
-        const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true});
+        const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true,approval:answer.source==='USER_CHAT_EXACT_APPLICATION'?'USER_CONFIRMED':undefined});
         if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);

@@ -1,4 +1,6 @@
 export function selectedCookieButton(view){
+ const deny=view.buttons?.filter(button=>button.cookie_action==='deny'&&button.visible!==false&&!button.disabled&&!button.final_submit&&button.type!=='submit'&&!button.form_id);
+ if(deny?.length===1)return deny[0];
  let host;try{host=new URL(view.url).hostname;}catch{return null;}
  if(host!=='www.praca.pl'||!String(view.text??'').includes('Zgoda na Pliki Cookies'))return null;
  return view.buttons?.find(button=>button.visible!==false&&!button.disabled&&!button.final_submit&&button.type==='button'&&/^akceptuj wybrane$/i.test(button.text?.trim()??''))??null;
@@ -10,7 +12,8 @@ export async function settleApplicationForm({browser,sessionId,initialView,maxMs
   const praca=new URL(view.url??'https://invalid.local').hostname==='www.praca.pl';
   const cookie=cookieDismissed?null:selectedCookieButton(view);
   if(cookie||!cookieDismissed&&praca&&Date.now()-started>=1000){
-   view=await browser.call(`/sessions/${sessionId}/dismiss-cookies`,{});cookieDismissed=view.cookie_dismissal?.status==='DISMISSED';
+   if(cookie?.cookie_action==='deny'){view=await browser.call(`/sessions/${sessionId}/click`,{selector:cookie.selector});cookieDismissed=!selectedCookieButton(view);}
+   else{view=await browser.call(`/sessions/${sessionId}/dismiss-cookies`,{});cookieDismissed=view.cookie_dismissal?.status==='DISMISSED';}
    if(cookieDismissed){previous=null;stable=0;continue;}
   }
   const ready=view.fields?.some(f=>f.visible&&['text','email','tel','textarea','file'].includes(f.type));
