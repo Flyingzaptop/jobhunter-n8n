@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import {choiceGroupTarget} from './choice-groups.mjs';
 import {rememberQuestionAnswer} from './answer-memory.mjs';
 import {siteControlReason} from '../browser-service/field-purpose.mjs';
 
@@ -10,6 +11,10 @@ export function boundedAnswer(value) {
   return value.trim();
 }
 export function validateQuestionAnswer(question,pending,answer){
+ if(pending?.selection_group&&pending.choices?.length){
+  const peers=pending.choices.map(choice=>({...choice,type:'checkbox',visible:true,selection_group:pending.selection_group}));
+  if(!choiceGroupTarget(peers[0],peers,answer))throw hitlError('INVALID_USER_ANSWER_EXPECTED_OPTION',400);
+ }
  const label=question.raw_question??pending?.field_label??'',boolean=/^(?:да|нет|yes|no|tak|nie|true|false)[.!]?$/iu.test(answer.trim());
  if(boolean&&['text','textarea','url','email','tel','number','date'].includes(pending?.field_type)&&/name|school|university|location|city|country|date|graduation|salary|profile|website|phone|email|years/i.test(label))throw hitlError('INVALID_USER_ANSWER_EXPECTED_CONCRETE_VALUE',400);
  if(boolean&&pending?.field_type==='radio'&&!/consent|agree|\byes\b|\bno\b|\btak\b|\bnie\b/i.test(label))throw hitlError('INVALID_USER_ANSWER_EXPECTED_OPTION',400);

@@ -6,6 +6,12 @@ import {formBinding,digest} from '../services/dashboard/review-gates.mjs';
 import {resolveField} from '../services/core/application.mjs';
 import {selectedCookieButton} from '../services/core/form-settling.mjs';
 import {choiceGroupQuestion,choiceGroupTarget} from '../services/core/choice-groups.mjs';
+import {validateQuestionAnswer} from '../services/core/hitl.mjs';
+test('HITL rejects a generic yes for hours but accepts a specific offered range',()=>{
+ const pending={selection_group:'hours',choices:[{label:'4 - 6 hours',value:'4 - 6 hours'},{label:'6 - 8 hours',value:'6 - 8 hours'}]};
+ assert.throws(()=>validateQuestionAnswer({raw_question:'Hours?'},pending,'да'),/EXPECTED_OPTION/);
+ assert.doesNotThrow(()=>validateQuestionAnswer({raw_question:'Hours?'},pending,'6 - 8 hours'));
+});
 test('human questions contain the full group and a negative answer selects No rather than consenting to Yes',()=>{
  const fields=['Yes','No'].map(value=>({type:'checkbox',selection_group:'payment',form:0,form_id:'a',visible:true,value,label:value,group_label:'Accept payment terms?'}));
  assert.equal(choiceGroupQuestion(fields[0],fields),'Accept payment terms?\nOptions: Yes / No');
