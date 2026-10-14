@@ -7,6 +7,22 @@ import {resolveField} from '../services/core/application.mjs';
 import {selectedCookieButton} from '../services/core/form-settling.mjs';
 import {choiceGroupQuestion,choiceGroupTarget} from '../services/core/choice-groups.mjs';
 import {validateQuestionAnswer} from '../services/core/hitl.mjs';
+import {standingRecruitmentConsent,standingRecruitmentSelectAnswer} from '../services/core/consent-policy.mjs';
+import {answerIntent,reusableQuestionAnswer} from '../services/core/answer-memory.mjs';
+test('standing recruitment consent works for selects without agreeing to relocation or marketing',()=>{
+ const field={type:'select-one',label:'I agree to the Privacy Policy for current recruitment',options:[{label:'I agree',value:'yes'}]};const policy={consent_policy:{current_recruitment_data_processing:true}};
+ assert.equal(standingRecruitmentSelectAnswer(field,policy).value,'yes');
+ assert.equal(standingRecruitmentSelectAnswer({...field,label:field.label+' and relocation'},policy),null);
+ assert.equal(standingRecruitmentSelectAnswer({...field,label:field.label+' and marketing'},policy),null);
+ assert.equal(standingRecruitmentConsent({type:'checkbox',label:'Yes, TSMG can contact me about future job opportunities for up to 10 yearsPrivacy policy'},policy),false);
+});
+test('project work preferences only reuse on an accepted FIT and cannot answer unrelated legal questions',async()=>{
+ const field={selection_group:'contract',group_label:'Are you comfortable working as a freelancer under an Independent Contractor Agreement?',type:'checkbox',value:'Yes',label:'Yes'};
+ assert.equal(answerIntent(field).key,'confirmed_project_conditions');
+ assert.equal(answerIntent({...field,group_label:'Do you agree to waive your legal rights?'}),null);
+ const repository={pool:{query:async sql=>sql.startsWith('SELECT 1 FROM job_analysis')?{rowCount:0,rows:[]}:{rows:[{answer_json:'Yes',memory_id:'m',version:1}]}}};
+ assert.equal(await reusableQuestionAnswer(repository,{profileId:'p',field,job:{job_id:'j'}}),null);
+});
 test('HITL rejects a generic yes for hours but accepts a specific offered range',()=>{
  const pending={selection_group:'hours',choices:[{label:'4 - 6 hours',value:'4 - 6 hours'},{label:'6 - 8 hours',value:'6 - 8 hours'}]};
  assert.throws(()=>validateQuestionAnswer({raw_question:'Hours?'},pending,'да'),/EXPECTED_OPTION/);
@@ -35,6 +51,11 @@ test('approval binding changes when the question behind identical Yes/No choices
 });
 test('GitHub URL is filled from the confirmed profile',()=>{
  assert.equal(resolveField({label:'GitHub URL',type:'text'},{profile:{onboarding:{github_url:'https://github.com/example'}},job:{}}).value,'https://github.com/example');
+});
+test('a GitHub profile is not relabelled as an unknown separate portfolio',()=>{
+ const profile={onboarding:{github_url:'https://github.com/example',portfolio_url:'UNKNOWN'}};
+ assert.equal(resolveField({label:'Portfolio URL',type:'text',required:false},{profile,job:{}}).value,'');
+ assert.equal(resolveField({label:'Portfolio URL',type:'text',required:true},{profile,job:{}}),null);
 });
 test('Lever custom questions retain labels and mandatory attributes when DOM reflection is absent',()=>{
  const [f]=mergeFieldSemantics([{type:'textarea',label:'',required:false}],[{question_label:'Experience?',attribute_required:true}]);

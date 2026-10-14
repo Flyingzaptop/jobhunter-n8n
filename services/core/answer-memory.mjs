@@ -9,6 +9,13 @@ export function productUsageIntent(field){
  return match?{key:'product_usage',scope:{product:match[1].toLowerCase(),extent:'ANY_USE'}}:null;
 }
 export function answerIntent(field,{country,roleContext,employmentType}={}){
+ const projectQuestion=fold(field.selection_group?field.group_label:field.label??field.field_label??field.question);
+ if([
+  'how many hours per day are you available to dedicate to this project',
+  'the project is paid based on validated work completed rather than actual hours worked are you comfortable with this payment structure',
+  'are you comfortable working as a freelancer under an independent contractor agreement',
+  'are you comfortable working on short term projects that may involve repetitive tasks and require consistent attention to detail',
+ ].includes(projectQuestion))return {key:'confirmed_project_conditions',scope:{question:projectQuestion,requires_accepted_fit:true}};
  const productUse=productUsageIntent(field);if(productUse)return productUse;
  const text=fold(field.label??field.field_label??field.question),name=fold(field.name??field.field_name);
  const jurisdiction=/\b(?:poland|polska|polsce)\b/.test(text)?'PL':/\b(?:germany|niemcy|niemczech)\b/.test(text)?'DE':/\b(?:united states|usa|u s a)\b/.test(text)?'USA':/\b(?:european union|unia europejska|unii europejskiej)\b/.test(text)?'EU':null;
@@ -61,6 +68,11 @@ export async function reusableQuestionAnswer(repository,{profileId,field,job}){
  if(intent.key==='product_usage'&&['text','textarea'].includes(field.type))row=(await repository.pool.query('SELECT * FROM candidate_answer_memory WHERE candidate_profile_id=$1 AND semantic_key=$2 AND scope_json=$3 AND active=true',[profileId,'product_usage_detail',{...intent.scope,question:fold(field.label??field.field_label??field.question)}])).rows[0];
  row??=(await repository.pool.query(`SELECT * FROM candidate_answer_memory WHERE candidate_profile_id=$1 AND semantic_key=$2 AND scope_json=$3 AND active=true`,[profileId,intent.key,intent.scope])).rows[0];
  if(!row)return null;
+ if(intent.key==='confirmed_project_conditions'){
+  const accepted=(await repository.pool.query("SELECT 1 FROM job_analysis WHERE job_id=$1 AND analysis_id=(SELECT analysis_id FROM job_analysis WHERE job_id=$1 ORDER BY created_at DESC LIMIT 1) AND decision IN('REVIEW','STRETCH','AUTO_APPLY') AND (analysis_json->>'overall_fit')::numeric>=45",[job.job_id])).rowCount>0;
+  if(!accepted)return null;
+  if(field.selection_group&&field.type==='checkbox')return {value:fold(field.value)===fold(row.answer_json),source:'ANSWER_MEMORY',user_confirmed:true,memory_id:row.memory_id,memory_version:row.version};
+ }
  if(['start_date','notice_period'].includes(intent.key)&&Date.now()-new Date(row.updated_at).getTime()>7*86400000)return null;
  const value=row.answer_json;
  if(field.type==='date'&&(!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(Date.parse(value))||Date.parse(value)<new Date().setHours(0,0,0,0)))return null;

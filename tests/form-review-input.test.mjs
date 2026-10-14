@@ -1,4 +1,10 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {compactFormReviewInput} from '../services/core/form-review-input.mjs';
+import {historicalFormAnswers} from '../services/core/form-review-input.mjs';
+test('unversioned same-page snapshots never become phantom previous steps',()=>{
+ const answers=[{label:'Old blank',value:''},{step:0,label:'First page'},{step:1,label:'Current page'}];
+ assert.deepEqual(historicalFormAnswers(answers,1),[{step:0,label:'First page'}]);
+ assert.deepEqual(historicalFormAnswers(answers,0),[{step:1,label:'Current page'}]);
+});
 test('Lever multi-select questions remain grouped and scoped operator answers survive compaction',()=>{
  const choices=['Yes','No'].map((question,i)=>({question,name:'conditions',selection_group:'conditions',group_label:'Accept project terms?',type:'checkbox',checked:i===1,required:true,expected_answer:i===1,form_id:'a'}));
  const result=compactFormReviewInput({answers:choices,accepted_human_answers:[{question:'Accept project terms?',answer:'No',source:'USER_CHAT'}]});

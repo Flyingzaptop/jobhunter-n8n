@@ -4,7 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { hitlError } from '../core/hitl.mjs';
 import {employerAutomationPolicy} from '../core/employer-policy.mjs';
-import {unsavedRequiredFields} from '../browser-service/required-fields.mjs';
+import {missingRequiredFields,unsavedRequiredFields} from '../browser-service/required-fields.mjs';
 
 export const REVIEW_CAMPAIGN = 'MANUAL_REVIEW_V1';
 export const REVIEW_APPLICATION_LIMIT = 10;
@@ -16,7 +16,7 @@ export function formBinding(snapshot) {
   return { session_id: snapshot.browser_session_id, url: snapshot.url, fingerprint: snapshot.fingerprint, current_step: snapshot.current_step,
     fields: (snapshot.fields ?? []).map(field => ({ selector: field.selector, name: field.name, label:field.label,group_label:field.group_label,selection_group:field.selection_group,type: field.type, value: field.value, checked: field.checked, required: field.required, visible:field.visible,disabled:field.disabled,readOnly:field.readOnly,form:field.form,form_id:field.form_id,form_selector:field.form_selector,options: field.options })),
     buttons:(snapshot.buttons??[]).map(button=>({selector:button.selector,text:button.text,type:button.type,href:button.href,visible:button.visible,disabled:button.disabled,name:button.name,value:button.value,formAction:button.formAction,formMethod:button.formMethod,form_action:button.form_action,form_method:button.form_method,form:button.form,form_id:button.form_id,form_selector:button.form_selector})),
-    forms:snapshot.forms??null,form_action:snapshot.form_action,form_destination:snapshot.form_destination,
+    optional_field_errors:snapshot.optional_field_errors??{},forms:snapshot.forms??null,form_action:snapshot.form_action,form_destination:snapshot.form_destination,
     uploaded_file_hashes: snapshot.uploaded_file_hashes ?? [] };
 }
 export function validateReviewContext({ application, job, cv, profile, snapshot, now = Date.now() }) {
@@ -35,7 +35,7 @@ export function validateReviewContext({ application, job, cv, profile, snapshot,
   if (job.metadata?.employer_policy?.ai_content_disallowed === true || employerAutomationPolicy(snapshot)) throw hitlError('EMPLOYER_AI_ATTESTATION_REQUIRES_MANUAL_REVIEW');
   if(unsavedRequiredFields(snapshot.fields).length)throw hitlError('REQUIRED_FORM_VALUES_NOT_SAVED');
   if(snapshot.fields.some(f=>f.visible&&f.type==='email'&&String(f.value).trim().toLowerCase()!==String(profile.onboarding?.email??'').trim().toLowerCase()))throw hitlError('APPLICATION_EMAIL_DOES_NOT_MATCH_PROFILE');
-  if (snapshot.fields.some(f => f.visible && f.required && !f.disabled && (f.type === 'checkbox' ? f.checked !== true : f.type==='radio' ? f.checked!==true&&!snapshot.fields.some(other=>other.type==='radio'&&other.checked===true&&!other.disabled&&other.visible!==false&&Boolean(f.name)&&other.name===f.name&&(other.form_selector??other.form_id??other.form??null)===(f.form_selector??f.form_id??f.form??null)) : !f.value))) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
+  if (missingRequiredFields(snapshot.fields).length) throw hitlError('REQUIRED_FORM_ANSWER_MISSING');
   if ((snapshot.uploaded_file_hashes?.length || snapshot.fields.some(f=>f.visible&&f.type==='file'&&/resume|\bcv\b/i.test(`${f.name??''} ${f.label??''}`))) && !snapshot.uploaded_file_hashes?.some(file=>file.sha256===cv.sha256)) throw hitlError('UPLOADED_CV_DOES_NOT_MATCH_REVIEW');
 }
 async function buildBinding(repository, applicationId, profile, browser) {

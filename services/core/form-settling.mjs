@@ -23,3 +23,9 @@ export async function settleApplicationForm({browser,sessionId,initialView,maxMs
  }
  return view;
 }
+export function documentProcessing(view){return /(?:^|\n)\s*Analyzing resume(?:\.{3}|…)?\s*(?=\n|$)/i.test(view.text??'');}
+export async function settleDocumentProcessing({browser,sessionId,initialView,maxMs=30000,pollMs=400}){
+ let view=initialView;const deadline=Date.now()+maxMs;
+ while(documentProcessing(view)&&Date.now()<deadline){await new Promise(r=>setTimeout(r,pollMs));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
+ return {view,pending:documentProcessing(view)};
+}

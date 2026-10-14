@@ -17,5 +17,5 @@ export async function chooseLeverLocation(page,locator,value){
  await options.nth(selected.index).click();
  const input=await locator.inputValue();const stored=await page.locator('#selected-location').inputValue();
  if(input!==selected.label||JSON.parse(stored).name!==selected.label)throw Error('LEVER_LOCATION_NOT_SAVED');
- }catch(error){await locator.fill('').catch(()=>{});await locator.blur().catch(()=>{});throw error;}
+ }catch(error){await locator.fill('');await locator.blur();if(await locator.inputValue()!=='')throw Error('LEVER_LOCATION_RESET_UNCONFIRMED');throw error;}
 }

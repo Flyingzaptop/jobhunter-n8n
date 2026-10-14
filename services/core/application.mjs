@@ -1,3 +1,4 @@
+import {historicalFormAnswers} from './form-review-input.mjs';
 import {choicePeers,choiceGroupQuestion,choiceGroupTarget} from './choice-groups.mjs';
 import {operatorConfirmedAnswer} from './operator-confirmed-answer.mjs';
 import {approvedOptionalOmission} from './optional-field-omission.mjs';
@@ -9,7 +10,7 @@ import { transition } from './state.mjs';
 import { browserConfig } from '../browser-service/server.mjs';
 import {persistPendingApplicationQuestion,dismissSiteQuestion} from './hitl.mjs';
 import {employerAutomationPolicy} from './employer-policy.mjs';
-import {settleApplicationForm} from './form-settling.mjs';
+import {settleApplicationForm,settleDocumentProcessing,documentProcessing} from './form-settling.mjs';
 import {confirmedFieldMatches,confirmedConsentScopeMatches} from './confirmed-field.mjs';
 import {enqueueCaptchaHandoff} from './captcha-handoff.mjs';
 import {currentPreparationPolicy} from './preparation-policy.mjs';
@@ -22,7 +23,7 @@ export {employerAutomationPolicy} from './employer-policy.mjs';
 import { controlledSubmitPermission, classifyConsent,isMockUrl } from '../browser-service/policy.mjs';
 import {verifyCurrentCvEvidence} from './cv-evidence.mjs';
 import {missingRequiredFields,unsavedRequiredFields} from '../browser-service/required-fields.mjs';
-import {standingRecruitmentConsent} from './consent-policy.mjs';
+import {standingRecruitmentConsent,standingRecruitmentSelectAnswer} from './consent-policy.mjs';
 import {siteControlReason} from '../browser-service/field-purpose.mjs';
 import {transientApplicationError} from './application-retry.mjs';
 export {missingRequiredFields} from '../browser-service/required-fields.mjs';
@@ -41,7 +42,7 @@ export function finalReviewEvidence({view,profile,job,cv,outstanding=0}){
   const checks={identity:known(name)&&String(name).split(/\s+/).every(part=>haystack.includes(part))&&known(identity.email)&&haystack.includes(identity.email),
     email:(view.fields??[]).filter(f=>f.visible&&(f.type==='email'||/^(?:email|e-mail)(?: address)?$/i.test(f.label??''))).every(f=>String(f.value).trim().toLowerCase()===String(identity.email??'').trim().toLowerCase()),
     job:(view.text??'').includes(job.title)||(view.title??'').includes(job.title),
-    upload:!(/Analyzing resume(?:\.{3}|…)?/i.test(view.text??'')&&atsAdapterFor(view.url)==='lever')&&(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').toLowerCase().includes(f.filename.toLowerCase()))),
+    upload:!(documentProcessing(view)&&atsAdapterFor(view.url)==='lever')&&(view.uploaded_file_hashes??[]).some(f=>f.sha256===cv.sha256&&f.filename===path.basename(cv.pdf_path)&&(f.evidence==='SERVER_UPLOAD_RECEIPT'||(view.text??'').toLowerCase().includes(f.filename.toLowerCase()))),
     questions:outstanding===0,required_fields:missingRequiredFields(view.fields).length===0,
     saved_fields:unsavedRequiredFields(view.fields).length===0,
     claims:cv.qa_json?.pass===true,policy:!employerAutomationPolicy(view),captcha:!view.captcha,validation:!(view.validation_errors??[]).length&&!/\bfailed to upload\b/i.test(view.text??'')};
@@ -60,6 +61,9 @@ export function professionalYears(profile) {
 export function resolveField(field, { profile, job, view, answerMemory = {}, application }) {
   const confirmed=operatorConfirmedAnswer(field,application,job);if(confirmed)return confirmed;
   const identity=profile.onboarding||{}, candidate=profile.candidate||{}, key=norm(field.name), label=norm(String(field.label??'').replace(/\s+[a-f0-9]{8}\s*$/i,'')).replace(/\s+required$/,'').trim(), legal=identity.legal_name||candidate.legal_name||candidate.name;
+  if(field.options&&/^I would like to receive information about training opportunities and courses\b/i.test(field.label??'')){
+    const no=field.options.find(o=>/^no$/i.test(o.label));if(no)return {value:no.value,source:'DECLINE_OPTIONAL_PROMOTIONAL_CONTACT'};
+  }
   const primaryEducation=profile.education?.find(e=>e.primary_for_forms)??profile.education?.[0];
   if(field.required===false&&field.name==='org'&&/^current company/i.test(field.label??'')){
     const current=identity.current_employer??profile.experience?.find(f=>f.provenance==='PROFESSIONAL'&&f.current===true)?.employer;
@@ -74,6 +78,11 @@ export function resolveField(field, { profile, job, view, answerMemory = {}, app
   if(field.type==='radio'&&/how did you hear|where did you (?:hear|find)/i.test(field.group_label??''))return /^job board$/i.test(field.label.trim())?{value:true,source:'VACANCY_SOURCE'}:{skip:true};
   if(/github.*(?:profile|link|url)|link.*github/i.test(field.label??'')&&known(identity.github_url)&&['text','url'].includes(field.type))return {value:identity.github_url,source:'PROFILE'};
   if(field.role==='combobox'&&/country.*(?:resid|living)|kraj.*zamieszkan/i.test(field.description??'')&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
+  if(/^(?:portfolio(?: url)?|personal website|other website)$/.test(label)&&['text','url'].includes(field.type)){
+    if(known(identity.portfolio_url))return {value:identity.portfolio_url,source:'PROFILE'};
+    if(field.required===false)return {value:'',source:'PROFILE_OPTIONAL_URL_NOT_PROVIDED'};
+    return null;
+  }
   if(field.role==='combobox'&&/^location$/i.test(field.label??'')&&/^city,\s*state,\s*(?:and\s*)?country$/i.test(field.description??'')&&known(candidate.base_location?.city)&&known(candidate.base_location?.country))return {value:`${candidate.base_location.city}, ${candidate.base_location.country}`,source:'PROFILE'};
   if(/^(?:what is your )?current country of residence$/.test(label)&&known(candidate.base_location?.country))return {value:candidate.base_location.country,source:'PROFILE'};
   if(/^are you currently locat(?:ed|ion) in either canada uk or poland$/.test(label)&&country(candidate.base_location?.country)==='PL')return {value:'Yes',source:'PROFILE_CURRENT_BASE'};
@@ -306,7 +315,7 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
         if(field.type==='file'&&!field.required&&!String(field.label??'').trim()&&!/resume|\bcv\b|letter|document|attachment|certificate|portfolio/i.test((field.name??'')+' '+(field.selector??'')))continue;
         if(approvedOptionalOmission(field,application,job))continue;
         if(standingRecruitmentConsent(field,policy)){if(!field.checked)view=await browser.call(`/sessions/${sessionId}/check`,{selector:field.selector,checked:true,approval:'USER_CONFIRMED',verified_facts:true});await repository.event('application',application.application_id,'STANDING_RECRUITMENT_CONSENT_APPLIED',{field_label:field.label,authorization_source:policy.consent_policy.authorization_source});continue;}
-        const knownOptional=resolveField(field,{profile,job,view,answerMemory,application})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
+        const knownOptional=standingRecruitmentSelectAnswer(field,policy)??resolveField(field,{profile,job,view,answerMemory,application})??(!field.required&&/github|linkedin|personal website/i.test(field.label)?await reusableQuestionAnswer(repository,{profileId:profile.profile_id,field,job}):null);
         if(!config.fillAllFields&&!field.required&&field.type!=='file'&&!knownOptional)continue;
         const previouslyConfirmed=application.last_state?.confirmed_fields?.[field.selector];
         if(field.type==='checkbox'&&!field.checked&&previouslyConfirmed?.checked===true&&confirmedConsentScopeMatches(field,view,previouslyConfirmed,acknowledgementContext(view,job,profile,cv))){
@@ -357,13 +366,13 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
           }
           if(field.required||config.fillAllFields)return ask({repository,telegram,application,browser,sessionId,field,snapshot:view,type:'FACT'});continue;
         }
-        const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true,approval:answer.source==='USER_CHAT_EXACT_APPLICATION'?'USER_CONFIRMED':undefined});
+        const operation=field.role==='combobox'?'choose':field.options?'select':['checkbox','radio'].includes(field.type)?'check':'fill';view=await browser.call(`/sessions/${sessionId}/${operation}`,{selector:field.selector,value:answer.value,checked:Boolean(answer.value),verified_facts:true,approval:(answer.source==='USER_CHAT_EXACT_APPLICATION'||answer.user_confirmed===true)?'USER_CONFIRMED':undefined});
         if(answer.memory_id)await repository.event('application',application.application_id,'ANSWER_MEMORY_APPLIED',{memory_id:answer.memory_id,version:answer.memory_version,field_name:field.name});
       }
       view=await browser.call(`/sessions/${sessionId}/snapshot`);
       const saveDeadline=Date.now()+5000;
       while(unsavedRequiredFields(view.fields).length&&Date.now()<saveDeadline){await new Promise(resolve=>setTimeout(resolve,200));view=await browser.call(`/sessions/${sessionId}/snapshot`);}
-      const earlier=application.last_state?.form_answers??[];const answerScope=scopeApplicationForm(view);const answered=(answerScope.pass?answerScope.view.fields:view.fields).filter(f=>f.visible&&!['hidden','password','file'].includes(f.type)&&!/captcha|otp|token|secret/i.test(f.name??'')).map(f=>({step:view.current_step,label:f.label,type:f.type,value:f.value,checked:f.checked,required:f.required,name:f.name,form:f.form,group_label:f.group_label,field_path:f.field_path,role:f.role}));const allAnswers=[...earlier.filter(f=>f.step!==view.current_step),...answered];application.last_state={...application.last_state,form_answers:allAnswers};
+      const earlier=application.last_state?.form_answers??[];const answerScope=scopeApplicationForm(view);const answered=(answerScope.pass?answerScope.view.fields:view.fields).filter(f=>f.visible&&!['hidden','password','file'].includes(f.type)&&!/captcha|otp|token|secret/i.test(f.name??'')).map(f=>({step:view.current_step,label:f.label,type:f.type,value:f.value,checked:f.checked,required:f.required,name:f.name,form:f.form,group_label:f.group_label,field_path:f.field_path,role:f.role}));const allAnswers=[...historicalFormAnswers(earlier,view.current_step),...answered];application.last_state={...application.last_state,form_answers:allAnswers};
       await repository.pool.query('UPDATE applications SET last_state=last_state||$2::jsonb WHERE application_id=$1',[application.application_id,{browser_session_id:sessionId,current_step:view.current_step,page_fingerprint:view.fingerprint,current_url:view.url,form_answers:allAnswers}]);
       const finalScope=scopeApplicationForm(view);
       if(!finalScope.pass){await transition(repository,application.application_id,'MANUAL_TAKEOVER',{reason:finalScope.reason});return {application_id:application.application_id,status:'MANUAL_TAKEOVER',reason:finalScope.reason};}
@@ -372,6 +381,8 @@ if(['SUBMITTED','SUBMISSION_UNKNOWN','MANUAL_TAKEOVER'].includes(recovery.status
       if(final){
         const legalName=profile.onboarding?.legal_name||profile.candidate?.legal_name||profile.candidate?.name;
         const reviewFacts=[...(known(legalName)?String(legalName).split(/\s+/):[]),profile.onboarding?.email,job.title,path.basename(cv.pdf_path)];
+        const settled=await settleDocumentProcessing({browser,sessionId,initialView:view});view=settled.view;
+        if(settled.pending){await browser.call(`/sessions/${sessionId}/lease`,{});return {application_id:application.application_id,status:'FILLING',blocked_reason:'DOCUMENT_PROCESSING_PENDING'};}
         const retired=await retireSupersededManualHandoffs(repository,application.application_id,sessionId);
         if(retired)await repository.event('application',application.application_id,'STALE_MANUAL_HANDOFF_RETIRED',{count:retired,browser_session_id:sessionId,human_captcha_solved:false});
         const outstanding=(await repository.pool.query('SELECT count(*)::int AS n FROM application_questions WHERE application_id=$1 AND answered_at IS NULL AND closed_at IS NULL',[application.application_id])).rows[0].n;

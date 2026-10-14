@@ -1,4 +1,5 @@
 // Remove serialization/receipt metadata, not employer answers or CV content.
+export function historicalFormAnswers(answers,currentStep){return (answers??[]).filter(answer=>Number.isInteger(answer.step)&&answer.step>=0&&answer.step!==currentStep);}
 export function compactFormReviewInput(input){
  const document=input.cv??{};
  const textClaim=c=>typeof c==='string'?c:c&&{text:c.text,source_fact_ids:c.source_fact_ids};
