@@ -7,7 +7,7 @@ const evidence={source_kind:'USER_PROVIDED_MASTER_CV',sha256:createHash('sha256'
 if(profile.source_documents?.some(document=>document.sha256===evidence.sha256)){console.log(JSON.stringify({imported:false,reason:'SOURCE_ALREADY_IMPORTED'}));process.exit(0);}
 await mkdir('data/backups',{recursive:true});await writeFile('data/backups/profile-before-master-cv-'+Date.now()+'.yaml',previous,{mode:0o600});
 profile.profile_version='real-onboarding-v3.1-master-cv';profile.source_documents=[...(profile.source_documents??[]),evidence];
-profile.onboarding.github_url='https://github.com/Flyingzaptop';profile.onboarding.date_of_birth='2004-10-16';
+profile.onboarding.github_url='https://github.com/Flyingzaptop';
 // Current email, phone, English B2, five semesters and existing project provenance win over the older document.
 const pwr=profile.education.find(e=>e.id==='edu_pwr_mechanical');Object.assign(pwr,{institution_local:'Politechnika Wrocławska',degree:'Bachelor of Engineering',degree_level:'BACHELOR',start_date:'2022-10',primary_for_forms:true,expected_graduation_date:'UNKNOWN',source_evidence:evidence});
 pwr.statements=[...new Set([...(pwr.statements??[]),'Engineering studies cover mechanics, technical physics, engineering mathematics, technical drawing, CAD, machine design, automation and industrial robotics.'])];
